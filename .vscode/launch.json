@@ -1,0 +1,19 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Spot: hello (stand/sit)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/spot_hello.py",
+      "console": "integratedTerminal",
+      "args": [
+        "--hostname", "192.168.80.3",
+        "--username", "user",
+        "--password", "pass",
+        "--stand-seconds", "5"
+      ],
+      "justMyCode": true
+    }
+  ]
+}
