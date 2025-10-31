@@ -1,0 +1,28 @@
+syntax = "proto3";
+package asr;
+
+service ASR {
+  // Client-streaming audio; server returns partials and a final (POC sends final only).
+  rpc StreamingRecognize(stream StreamingRequest) returns (stream StreamingResponse);
+}
+
+message StreamingConfig {
+  string language_code = 1;   // "en"
+  int32 sample_rate_hz = 2;   // 16000
+  bool enable_punctuation = 3;
+}
+
+message AudioChunk { bytes pcm16 = 1; } // 16-bit mono PCM, 10–30ms per chunk
+
+message StreamingRequest {
+  oneof request {
+    StreamingConfig config = 1; // MUST be first message
+    AudioChunk audio = 2;       // then a sequence of audio chunks
+  }
+}
+
+message StreamingResponse {
+  bool is_final = 1;           // true for the last message
+  string transcript = 2;       // transcript text
+  float stability = 3;         // optional hint for partials (0..1)
+}
