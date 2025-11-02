@@ -20,6 +20,14 @@ def dispatch_intent(intent, robot_command):
     p = intent.get("params", {})
     if name == "estop":
         print("[E-STOP] (hook into EstopClient in production)")
+    elif name == "stand":
+        print("Issuing stand command...")
+        blocking_stand(robot_command, timeout_sec=10)
+        print("Robot is now standing.")
+    elif name == "sit":
+        print("Issuing sit command...")
+        robot_command.sit()
+        print("Robot is now sitting.")
     elif name == "follow":
         print("Would start follow behavior (implement your tracker here).")
     elif name == "walk_to":
@@ -28,5 +36,7 @@ def dispatch_intent(intent, robot_command):
         print(f"Would rotate {p.get('dir')} {p.get('deg')} deg")
     elif name == "ptz_aim":
         print("Would aim PTZ at target:", p.get("target"))
+    elif name == "home":
+        print("Would send robot to home position.")
     else:
         print("Unknown intent:", name)

@@ -1,0 +1,26 @@
+# Voice I/O prototype dependencies
+
+# Let pip also search the local Spot SDK wheel directory (sibling repo)
+--find-links ../spot-sdk/prebuilt
+
+# Boston Dynamics Spot SDK (installed from local wheels above)
+bosdyn_api==5.0.1.2
+bosdyn_client==5.0.1.2
+bosdyn_core==5.0.1.2
+bosdyn_mission==5.0.1.2
+bosdyn_orbit==5.0.1.2
+bosdyn_scout==5.0.1.2
+bosdyn_choreography_client==5.0.1.2
+bosdyn_choreography_protos==5.0.1.2
+
+# ASR (Faster Whisper)
+faster-whisper
+numpy
+
+# Audio / VAD
+sounddevice
+webrtcvad-wheels
+
+# RPC / messages
+grpcio
+protobuf
