@@ -1,3 +1,7 @@
+import sys
+import pathlib
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+
 import time, queue, numpy as np, sounddevice as sd, webrtcvad, grpc
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
@@ -72,13 +76,37 @@ def main():
                         intent = parse_intent(text)
                         if intent:
                             print("→ Intent:", intent)
-                            # TODO: call Spot here to execute intent
+                            # Execute the intent on Spot
+                            # Import here with proper path setup
+                            import sys
+                            import pathlib
+                            project_root = pathlib.Path(__file__).resolve().parents[2]
+                            if str(project_root) not in sys.path:
+                                sys.path.insert(0, str(project_root))
+                            from src.voice_control.spot_dispatch import dispatch_intent
+                            success = dispatch_intent(intent)
+                            if success:
+                                print("✓ Command executed successfully")
+                            else:
+                                print("✗ Command failed or not implemented")
                         else:
                             print("(no intent matched)")
     except KeyboardInterrupt:
         pass
     finally:
         stream.stop(); stream.close()
+        # Gracefully close Spot session
+        try:
+            # Import here to ensure path is set up
+            import sys
+            import pathlib
+            project_root = pathlib.Path(__file__).resolve().parents[2]
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+            from src.voice_control.spot_dispatch import close_spot_session
+            close_spot_session()
+        except Exception as e:
+            print(f"Error closing Spot session: {e}")
 
 if __name__ == "__main__":
     main()

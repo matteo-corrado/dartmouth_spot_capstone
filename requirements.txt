@@ -1,0 +1,17 @@
+# Boston Dynamics SDK (pinned to match your robot 5.0.1.1)
+bosdyn-client==5.0.1.1
+bosdyn-mission==5.0.1.1
+bosdyn-choreography-client==5.0.1.1
+bosdyn-orbit==5.0.1.1
+
+# Utilities
+python-dotenv==1.0.1
+numpy==2.2.6
+requests==2.32.5
+
+# Voice Control dependencies
+faster-whisper>=1.0.0
+sounddevice>=0.4.6
+webrtcvad>=2.0.10
+grpcio>=1.60.0
+grpcio-tools>=1.60.0

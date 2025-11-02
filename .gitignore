@@ -1,8 +1,14 @@
 __pycache__/
 *.py[cod]
+*.egg-info/
+.build/
+.dist/
+.env
 .venv/
+spot-env-christian/
 .vscode/*
 !.vscode/settings.json
 !.vscode/launch.json
 !.vscode/tasks.json
+spot-sdk/
 test/

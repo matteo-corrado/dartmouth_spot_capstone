@@ -102,9 +102,9 @@ class ASRServicer(pbg.ASRServicer):
     def __init__(self):
         # Auto-selects GPU acceleration if available
         self.model = WhisperModel(
-            "large-v3-turbo",
-            device="auto",
-            compute_type="int8_float16"
+            "base",  # Use smaller model for compatibility (change to "large-v3-turbo" if you have GPU)
+            device="cpu",  # Force CPU for compatibility
+            compute_type="int8"  # Works on CPU
         )
 
     def _bytes_to_float32(self, pcm_bytes: bytes) -> np.ndarray:

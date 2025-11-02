@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Tuple, Pattern
 # - callables(match) to compute a value from the match
 COMMANDS = [
     (r"\b(?:stop|halt|freeze)\b",                 "estop", {}),
+    (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
+    (r"\b(?:sit|sit down)\b",                      "sit", {}),
     (r"\b(?:follow me|follow)\b",                 "follow", {}),
     (r"\b(?:come here|come to me)\b",             "walk_to", {"relative": [0.0, -1.0, 0.0]}),
     (r"\bturn\s+left\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b",  "turn", {"deg": "$deg", "dir": "left"}),
