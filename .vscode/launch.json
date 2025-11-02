@@ -2,17 +2,13 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Spot: hello (stand/sit)",
+      "name": "Spot: hello_spot.py",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/src/spot_hello.py",
+      "program": "${workspaceFolder}/spot-sdk/python/examples/hello_spot/hello_spot.py",
       "console": "integratedTerminal",
-      "args": [
-        "--hostname", "192.168.80.3",
-        "--username", "user",
-        "--password", "pass",
-        "--stand-seconds", "5"
-      ],
+      "envFile": "${workspaceFolder}/.env",
+      "args": ["${env:BOSDYN_ROBOT_IP}"],
       "justMyCode": true
     }
   ]
