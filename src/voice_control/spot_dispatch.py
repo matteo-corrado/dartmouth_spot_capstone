@@ -77,12 +77,32 @@ def dispatch_intent(intent):
         session = ensure_spot_session()
         cmd_client = session["cmd"]
         
-        if name == "estop":
-            # Trigger emergency stop via the estop endpoint
-            # Note: This requires an estop endpoint. For safety, we'll issue a stop command
-            print("[Spot] Emergency stop triggered")
-            cmd_client.robot_command(RobotCommandBuilder.stop_command())
-            return True
+        if name == "stop":
+            # Stop current movement/action
+            print("[Spot] Stopping current action...")
+            try:
+                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                print("[Spot] ✓ Stop command sent")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Stop failed: {e}")
+                return False
+            
+        elif name == "freeze":
+            # Freeze robot - stop all movement and hold current position
+            print("[Spot] Freezing robot in place...")
+            try:
+                # First stop any current movement
+                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                # Then issue a stand command to hold position (robot will stay where it is)
+                # This keeps the robot standing but frozen
+                cmd = RobotCommandBuilder.synchro_stand_command()
+                cmd_client.robot_command(cmd)
+                print("[Spot] ✓ Robot frozen - holding position")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Freeze failed: {e}")
+                return False
             
         elif name == "stand":
             # Stand the robot up
@@ -174,6 +194,89 @@ def dispatch_intent(intent):
             print(f"[Spot] PTZ aim at {target} (not yet implemented - requires camera payload)")
             # TODO: Implement PTZ control when camera payload is available
             return False
+        
+        elif name == "save_location":
+            # Save current position as a named location
+            location_name = params.get("location", "").lower()
+            if not location_name:
+                print("[Spot] No location name provided")
+                return False
+            
+            print(f"[Spot] Saving current position as '{location_name}'...")
+            try:
+                from bosdyn.client.graph_nav import GraphNavClient
+                from bosdyn.api.graph_nav import graph_nav_pb2
+                from src.location_manager import save_location
+                
+                # Get current localization state to find waypoint
+                graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
+                localization = graph_nav_client.get_localization_state()
+                
+                if not localization.localization.waypoint_id:
+                    print("[Spot] ✗ Not localized to a map.")
+                    print("[Spot]   Please localize first (robot must see a fiducial or be at a known waypoint)")
+                    return False
+                
+                current_waypoint = localization.localization.waypoint_id
+                save_location(location_name, current_waypoint)
+                print(f"[Spot] ✓ Location '{location_name}' saved at waypoint {current_waypoint}")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Save location failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+                
+        elif name == "go_to":
+            # Navigate to a named location using GraphNav
+            location_name = params.get("location", "").lower()
+            if not location_name:
+                print("[Spot] No location name provided")
+                return False
+            
+            print(f"[Spot] Navigating to '{location_name}'...")
+            try:
+                from bosdyn.client.graph_nav import GraphNavClient
+                from bosdyn.api.graph_nav import graph_nav_pb2
+                from src.location_manager import load_location, list_locations
+                
+                # Load location from saved mappings
+                waypoint_id = load_location(location_name)
+                if not waypoint_id:
+                    available = list(list_locations().keys())
+                    print(f"[Spot] ✗ Location '{location_name}' not found.")
+                    if available:
+                        print(f"[Spot]   Available locations: {', '.join(available)}")
+                    else:
+                        print(f"[Spot]   No locations saved yet. Say 'save location {location_name}' at the desired position.")
+                    return False
+                
+                print(f"[Spot] Found: '{location_name}' -> waypoint {waypoint_id}")
+                
+                # Get GraphNav client
+                graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
+                
+                # Check if localized, try to localize if not
+                localization = graph_nav_client.get_localization_state()
+                if not localization.localization.waypoint_id:
+                    print("[Spot] Not localized. Attempting to localize to nearest fiducial...")
+                    graph_nav_client.set_localization(fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL)
+                    localization = graph_nav_client.get_localization_state()
+                    if not localization.localization.waypoint_id:
+                        print("[Spot] ✗ Localization failed. Please localize manually first.")
+                        print("[Spot]   Use GraphNav tools to localize, or ensure robot sees a fiducial.")
+                        return False
+                
+                # Navigate to waypoint
+                print(f"[Spot] Navigating to waypoint {waypoint_id}...")
+                nav_feedback = graph_nav_client.navigate_to(waypoint_id=waypoint_id)
+                print(f"[Spot] ✓ Navigation command sent to '{location_name}'")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Navigation failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
             
         else:
             print(f"[Spot] Unknown intent: {name}")

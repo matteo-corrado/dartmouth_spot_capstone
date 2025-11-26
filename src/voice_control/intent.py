@@ -16,9 +16,12 @@ from typing import Any, Dict, List, Tuple, Pattern
 # - strings of the form "$name" to substitute a named capture group
 # - callables(match) to compute a value from the match
 COMMANDS = [
-    (r"\b(?:stop|halt|freeze)\b",                 "estop", {}),
+    (r"\b(?:stop|halt)\b",                          "stop", {}),
+    (r"\bfreeze\b",                                 "freeze", {}),
     (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
     (r"\b(?:sit|sit down)\b",                      "sit", {}),
+    (r"\b(?:go to|navigate to|drive to)\s+(?P<location>\w+)\b",  "go_to", {"location": "$location"}),
+    (r"\b(?:save location|remember location|save this as)\s+(?P<location>\w+)\b", "save_location", {"location": "$location"}),
     (r"\b(?:follow me|follow)\b",                 "follow", {}),
     (r"\b(?:come here|come to me)\b",             "walk_to", {"relative": [0.0, -1.0, 0.0]}),
     (r"\bturn\s+left\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b",  "turn", {"deg": "$deg", "dir": "left"}),
