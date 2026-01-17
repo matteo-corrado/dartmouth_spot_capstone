@@ -14,8 +14,8 @@ from faster_whisper import WhisperModel
 
 def record_audio(duration_sec=3, sample_rate=16000):
     """Record audio from default microphone."""
-    print(f"\n🎤 Recording for {duration_sec} seconds...")
-    print("   Speak now!")
+    print(f"\n Recording for {duration_sec} seconds...")
+    print("Speak now!")
     audio = sd.rec(int(duration_sec * sample_rate), samplerate=sample_rate, channels=1, dtype='float32')
     sd.wait()  # Wait until recording is finished
     print("   Recording complete. Processing...\n")
@@ -29,7 +29,7 @@ def main():
     print("1. Load the Whisper model (may take a minute on first run)")
     print("2. Record 3 seconds of audio from your microphone")
     print("3. Transcribe what you said")
-    print("\n⚠️  Make sure your microphone is enabled and working!")
+    print("\nWARNING: Make sure your microphone is enabled and working!")
     print("\nStarting in 2 seconds...")
     import time
     time.sleep(2)
@@ -43,18 +43,18 @@ def main():
             device="cpu",  # Force CPU for compatibility
             compute_type="int8"  # Works on CPU
         )
-        print("   ✓ Model loaded successfully!")
+        print("   Model loaded successfully!")
     except Exception as e:
-        print(f"   ✗ Error loading model: {e}")
+        print(f"   Error loading model: {e}")
         return 1
     
     # Record audio
     print("\n[2/3] Recording audio...")
     try:
         audio = record_audio(duration_sec=3, sample_rate=16000)
-        print(f"   ✓ Recorded {len(audio)} samples ({len(audio)/16000:.2f} seconds)")
+        print(f"   Recorded {len(audio)} samples ({len(audio)/16000:.2f} seconds)")
     except Exception as e:
-        print(f"   ✗ Error recording audio: {e}")
+        print(f"   Error recording audio: {e}")
         print("   Make sure your microphone is connected and permissions are granted.")
         return 1
     
@@ -75,14 +75,14 @@ def main():
         print("=" * 60)
         if text:
             print(f"   Transcript: \"{text}\"")
-            print(f"\n   ✓ Speech-to-text is working!")
+            print(f"\n   Speech-to-text is working!")
         else:
             print("   (No speech detected)")
             print("   Try speaking louder or closer to the microphone.")
         print("=" * 60)
         
     except Exception as e:
-        print(f"   ✗ Error during transcription: {e}")
+        print(f"   Error during transcription: {e}")
         import traceback
         traceback.print_exc()
         return 1

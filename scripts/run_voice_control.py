@@ -35,7 +35,7 @@ def main():
     print("=" * 60)
     print("Spot Voice Control System")
     print("=" * 60)
-    print("\n⚠️  IMPORTANT: Make sure E-Stop is running!")
+    print("\nIMPORTANT: Make sure E-Stop is running!")
     print("   Run this in a separate terminal:")
     print("   python scripts/estop_run.py")
     print("\nPress Enter when E-Stop is running...")

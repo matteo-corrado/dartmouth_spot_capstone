@@ -75,7 +75,7 @@ def main():
                         print("Transcript:", text)
                         intent = parse_intent(text)
                         if intent:
-                            print("→ Intent:", intent)
+                            print("Intent:", intent)
                             # Execute the intent on Spot
                             # Import here with proper path setup
                             import sys
@@ -86,9 +86,9 @@ def main():
                             from src.voice_control.spot_dispatch import dispatch_intent
                             success = dispatch_intent(intent)
                             if success:
-                                print("✓ Command executed successfully")
+                                print("Command executed successfully")
                             else:
-                                print("✗ Command failed or not implemented")
+                                print("Command failed or not implemented")
                         else:
                             print("(no intent matched)")
     except KeyboardInterrupt:

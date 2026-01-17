@@ -85,10 +85,11 @@ The intent parser recognizes these voice commands:
 
 ## Future Improvements
 
-- [ ] Streaming/partial transcription for lower latency
-- [ ] Person following behavior implementation
-- [ ] PTZ camera control (requires payload)
-- [ ] More voice commands (walk forward/back, specific distances)
-- [ ] Text-to-speech feedback
-- [ ] Confidence thresholds and error handling
+Future enhancements:
+- Streaming/partial transcription for lower latency
+- Person following behavior implementation
+- PTZ camera control (requires payload)
+- More voice commands (walk forward/back, specific distances)
+- Text-to-speech feedback
+- Confidence thresholds and error handling
 

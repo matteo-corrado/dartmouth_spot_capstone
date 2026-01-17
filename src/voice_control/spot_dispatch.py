@@ -90,10 +90,10 @@ def dispatch_intent(intent):
             try:
                 cmd = RobotCommandBuilder.synchro_stand_command()
                 cmd_client.robot_command(cmd)
-                print("[Spot] ✓ Stand command sent")
+                print("[Spot] Stand command sent")
                 return True
             except Exception as e:
-                print(f"[Spot] ✗ Stand failed: {e}")
+                print(f"[Spot] Stand failed: {e}")
                 return False
                 
         elif name == "sit":
@@ -102,10 +102,10 @@ def dispatch_intent(intent):
             try:
                 cmd = RobotCommandBuilder.synchro_sit_command()
                 cmd_client.robot_command(cmd)
-                print("[Spot] ✓ Sit command sent")
+                print("[Spot] Sit command sent")
                 return True
             except Exception as e:
-                print(f"[Spot] ✗ Sit failed: {e}")
+                print(f"[Spot] Sit failed: {e}")
                 return False
             
         elif name == "follow":
@@ -169,9 +169,9 @@ def dispatch_intent(intent):
             return True
             
         elif name == "ptz_aim":
-            # PTZ camera aiming (requires camera payload)
+            # PTZ camera aiming
             target = params.get("target", "speaker")
-            print(f"[Spot] PTZ aim at {target} (not yet implemented - requires camera payload)")
+            print(f"[Spot] PTZ aim at {target} (not yet implemented)")
             # TODO: Implement PTZ control when camera payload is available
             return False
             

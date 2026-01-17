@@ -3,12 +3,26 @@ __pycache__/
 *.egg-info/
 .build/
 .dist/
-.env
+
+# Virtual environments
 .venv/
 spot-env-christian/
+
+# Credentials and secrets (NEVER COMMIT THESE)
+.env
+.env.*
+*credentials*
+*secrets*
+Activate.ps1
+
+# VSCode settings
 .vscode/*
 !.vscode/settings.json
 !.vscode/launch.json
 !.vscode/tasks.json
+
+# Dependencies
 spot-sdk/
+
+# Tests
 test/
