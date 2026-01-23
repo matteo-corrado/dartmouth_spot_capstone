@@ -5,6 +5,7 @@ Uses a persistent session connection that stays open for multiple commands.
 """
 import sys
 import pathlib
+import time
 
 # Add project root to path to enable imports
 project_root = pathlib.Path(__file__).resolve().parents[2]
@@ -158,13 +159,13 @@ def dispatch_intent(intent):
             # Rotate in place
             deg = params.get("deg", 0)
             direction = params.get("dir", "left")
-            
+
             # Convert degrees to radians (negative for left, positive for right)
             rad = -abs(deg) if direction == "left" else abs(deg)
             rad = rad * 3.14159 / 180.0  # deg to rad
-            
+
             print(f"[Spot] Turning {direction} {deg} degrees ({rad:.3f} rad)")
-            
+
             # Get current position and add rotation
             state_client = session["state"]
             robot_state = state_client.get_robot_state()
@@ -175,17 +176,19 @@ def dispatch_intent(intent):
             current_y = odom_tform_body.position.y
             # Extract yaw angle from rotation
             current_yaw = odom_tform_body.rotation.to_yaw()
-            
+
             # Add rotation to current yaw
             new_yaw = current_yaw + rad
-            
+
             # Create trajectory command to rotate in place
             goal_pose = SE2Pose(current_x, current_y, new_yaw)
             cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
                 goal_se2=goal_pose.to_proto(),
                 frame_name=ODOM_FRAME_NAME
             )
-            cmd_client.robot_command(cmd)
+            # Send command with timeout to allow execution
+            cmd_client.robot_command(cmd, end_time_secs=time.time() + 5.0)
+            print(f"[Spot] ✓ Turn command sent")
             return True
             
         elif name == "ptz_aim":

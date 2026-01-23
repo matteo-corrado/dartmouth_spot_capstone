@@ -12,3 +12,4 @@ spot-env-christian/
 !.vscode/tasks.json
 spot-sdk/
 test/
+spot-env

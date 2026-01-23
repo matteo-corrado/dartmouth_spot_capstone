@@ -26,6 +26,8 @@ COMMANDS = [
     (r"\b(?:come here|come to me)\b",             "walk_to", {"relative": [0.0, -1.0, 0.0]}),
     (r"\bturn\s+left\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b",  "turn", {"deg": "$deg", "dir": "left"}),
     (r"\bturn\s+right\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b", "turn", {"deg": "$deg", "dir": "right"}),
+    (r"\bturn\s+left\b",  "turn", {"deg": 90, "dir": "left"}),
+    (r"\bturn\s+right\b", "turn", {"deg": 90, "dir": "right"}),
     (r"\b(?:look at me|look here)\b",             "ptz_aim", {"target": "speaker"}),
 ]
 
