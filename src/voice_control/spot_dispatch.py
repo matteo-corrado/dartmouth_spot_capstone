@@ -28,13 +28,19 @@ def ensure_spot_session():
     global _spot_session, _session_context
     
     if _spot_session is None:
-        # Start a persistent session (don't sit/power off on exit for voice control)
-        _session_context = spot_session(
-            stand_on_enter=True,
-            sit_on_exit=False  # Keep robot standing for voice commands
-        )
-        _spot_session = _session_context.__enter__()
-        print("[Spot] Connected and standing ready for voice commands.")
+        try:
+            # Start a persistent session (don't sit/power off on exit for voice control)
+            _session_context = spot_session(
+                stand_on_enter=True,
+                sit_on_exit=False  # Keep robot standing for voice commands
+            )
+            _spot_session = _session_context.__enter__()
+            print("[Spot] Connected and standing ready for voice commands.")
+        except Exception as e:
+            print(f"[Spot] Failed to establish session: {e}")
+            # Clear the context so we can retry
+            _session_context = None
+            raise
     
     return _spot_session
 
