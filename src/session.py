@@ -20,7 +20,10 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
                  username: str = BOSDYN_CLIENT_USERNAME,
                  password: str = BOSDYN_CLIENT_PASSWORD,
                  stand_on_enter: bool = True,
-                 sit_on_exit: bool = True):
+                 sit_on_exit: bool = True,
+                 upload_map: bool = False,
+                 map_path: str = None,
+                 auto_localize: bool = False):
     sdk = create_standard_sdk("dartmouth_spot_capstone")
     robot = sdk.create_robot(hostname)
 
@@ -79,6 +82,21 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
             print(f"[Session] Warning: Stand command failed: {e}")
             # Don't raise - robot might already be standing or estop might be blocking
             # Continue with session anyway
+
+    # Optional: Upload map and localize
+    if upload_map and map_path:
+        try:
+            from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
+            print("[Session] Uploading map...")
+            if upload_graph_and_snapshots(robot, map_path):
+                if auto_localize:
+                    print("[Session] Auto-localizing...")
+                    initialize_localization(robot, use_fiducial=True)
+            else:
+                print("[Session] Warning: Map upload failed")
+        except Exception as e:
+            print(f"[Session] Warning: Map upload/localization error: {e}")
+            # Don't fail the session if map upload fails
 
     try:
         yield {

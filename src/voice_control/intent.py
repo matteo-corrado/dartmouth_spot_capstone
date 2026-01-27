@@ -20,8 +20,8 @@ COMMANDS = [
     (r"\bfreeze\b",                                 "freeze", {}),
     (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
     (r"\b(?:sit|sit down)\b",                      "sit", {}),
-    (r"\b(?:go to|navigate to|drive to)\s+(?P<location>\w+)\b",  "go_to", {"location": "$location"}),
-    (r"\b(?:save location|remember location|save this as)\s+(?P<location>\w+)\b", "save_location", {"location": "$location"}),
+    (r"\b(?:go to|navigate to|drive to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
+    (r"\b(?:save location|remember location|save this as)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)", "save_location", {"location": "$location"}),
     (r"\b(?:follow me|follow)\b",                 "follow", {}),
     (r"\b(?:come here|come to me)\b",             "walk_to", {"relative": [0.0, -1.0, 0.0]}),
     (r"\bturn\s+left\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b",  "turn", {"deg": "$deg", "dir": "left"}),
@@ -113,6 +113,13 @@ def parse_intent(text: str):
             if isinstance(deg, float) and deg.is_integer():
                 deg = int(deg)
             out_params["deg"] = deg
+        
+        # Post-processing: normalize location names (strip, lowercase, replace spaces with underscores)
+        if "location" in out_params and isinstance(out_params["location"], str):
+            location = out_params["location"].strip().lower()
+            # Replace spaces with underscores for consistency
+            location = re.sub(r'\s+', '_', location)
+            out_params["location"] = location
 
         return {"intent": intent_name, "params": out_params, "raw": text}
 

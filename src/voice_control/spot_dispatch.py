@@ -6,6 +6,7 @@ Uses a persistent session connection that stays open for multiple commands.
 import sys
 import pathlib
 import time
+import threading
 
 # Add project root to path to enable imports
 project_root = pathlib.Path(__file__).resolve().parents[2]
@@ -21,6 +22,10 @@ from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PA
 # Global session handle (initialized on first use)
 _spot_session = None
 _session_context = None
+
+# Navigation thread management
+_nav_thread = None
+_nav_stop_event = None
 
 
 def ensure_spot_session():
@@ -268,18 +273,112 @@ def dispatch_intent(intent):
                 # Check if localized, try to localize if not
                 localization = graph_nav_client.get_localization_state()
                 if not localization.localization.waypoint_id:
-                    print("[Spot] Not localized. Attempting to localize to nearest fiducial...")
-                    graph_nav_client.set_localization(fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL)
-                    localization = graph_nav_client.get_localization_state()
-                    if not localization.localization.waypoint_id:
-                        print("[Spot] ✗ Localization failed. Please localize manually first.")
-                        print("[Spot]   Use GraphNav tools to localize, or ensure robot sees a fiducial.")
+                    print("[Spot] Not localized. Attempting waypoint-based localization...")
+                    # Try to localize to first waypoint (assuming robot is at a known waypoint)
+                    try:
+                        from bosdyn.client.frame_helpers import get_odom_tform_body
+                        from bosdyn.client.robot_state import RobotStateClient
+                        from bosdyn.api.graph_nav import nav_pb2
+                        import math
+                        
+                        # Get current robot state
+                        robot_state_client = session["robot"].ensure_client(RobotStateClient.default_service_name)
+                        robot_state = robot_state_client.get_robot_state()
+                        current_odom_tform_body = get_odom_tform_body(
+                            robot_state.kinematic_state.transforms_snapshot).to_proto()
+                        
+                        # Get first waypoint from map
+                        graph = graph_nav_client.download_graph()
+                        if graph.waypoints:
+                            first_waypoint_id = graph.waypoints[0].id
+                            print(f"[Spot] Attempting to localize to waypoint: {first_waypoint_id}")
+                            
+                            # Create localization guess
+                            loc_guess = nav_pb2.Localization()
+                            loc_guess.waypoint_id = first_waypoint_id
+                            loc_guess.waypoint_tform_body.rotation.w = 1.0
+                            
+                            graph_nav_client.set_localization(
+                                initial_guess_localization=loc_guess,
+                                max_distance=0.2,
+                                max_yaw=20.0 * math.pi / 180.0,
+                                fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NO_FIDUCIAL,
+                                ko_tform_body=current_odom_tform_body
+                            )
+                            
+                            # Verify localization
+                            localization = graph_nav_client.get_localization_state()
+                            if not localization.localization.waypoint_id:
+                                print("[Spot] ✗ Localization failed. Robot may not be at a known waypoint.")
+                                print("[Spot]   Please run 'python scripts/setup_map.py --waypoint-init' to localize.")
+                                return False
+                        else:
+                            print("[Spot] ✗ No waypoints in map. Please upload map first.")
+                            return False
+                    except Exception as e:
+                        print(f"[Spot] ✗ Localization error: {e}")
+                        print("[Spot]   Please run 'python scripts/setup_map.py --waypoint-init' to localize.")
                         return False
                 
                 # Navigate to waypoint
                 print(f"[Spot] Navigating to waypoint {waypoint_id}...")
-                nav_feedback = graph_nav_client.navigate_to(waypoint_id=waypoint_id)
-                print(f"[Spot] ✓ Navigation command sent to '{location_name}'")
+                
+                # Stop any existing navigation thread
+                global _nav_thread, _nav_stop_event
+                if _nav_thread and _nav_thread.is_alive():
+                    print("[Spot] Stopping previous navigation...")
+                    if _nav_stop_event:
+                        _nav_stop_event.set()
+                    _nav_thread.join(timeout=1.0)
+                
+                # Start navigation in background thread
+                _nav_stop_event = threading.Event()
+                
+                def navigate_continuously():
+                    """Keep navigation command active until destination reached."""
+                    nav_to_cmd_id = None
+                    try:
+                        while not _nav_stop_event.is_set():
+                            # Issue navigation command repeatedly to keep it active
+                            nav_to_cmd_id = graph_nav_client.navigate_to(
+                                waypoint_id, 1.0, command_id=nav_to_cmd_id
+                            )
+                            
+                            # Check if navigation is complete
+                            try:
+                                status = graph_nav_client.navigation_feedback(nav_to_cmd_id)
+                                from bosdyn.api.graph_nav import graph_nav_pb2
+                                
+                                if status.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
+                                    print(f"[Spot] ✓ Reached destination '{location_name}'!")
+                                    break
+                                elif status.status in [
+                                    graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
+                                    graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
+                                    graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED
+                                ]:
+                                    status_names = {
+                                        graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST: "LOST",
+                                        graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK: "STUCK",
+                                        graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED: "IMPAIRED"
+                                    }
+                                    print(f"[Spot] ⚠️  Navigation status: {status_names.get(status.status, 'UNKNOWN')}")
+                                    break
+                            except Exception as e:
+                                # If we can't get feedback, continue navigating
+                                pass
+                            
+                            # Sleep before next command (keep command active)
+                            if _nav_stop_event.wait(0.5):
+                                break
+                    except Exception as e:
+                        print(f"[Spot] Navigation thread error: {e}")
+                
+                _nav_thread = threading.Thread(target=navigate_continuously, daemon=True)
+                _nav_thread.start()
+                
+                print(f"[Spot] ✓ Navigation started to '{location_name}'")
+                print(f"[Spot]   (Navigation will continue until destination reached)")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Navigation failed: {e}")
