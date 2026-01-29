@@ -16,19 +16,60 @@ from typing import Any, Dict, List, Tuple, Pattern
 # - strings of the form "$name" to substitute a named capture group
 # - callables(match) to compute a value from the match
 COMMANDS = [
+    # === SAFETY & STOP ===
     (r"\b(?:stop|halt)\b",                          "stop", {}),
     (r"\bfreeze\b",                                 "freeze", {}),
+    (r"\b(?:emergency\s+stop|e[\s-]?stop)\b",       "estop", {}),
+
+    # === POSTURE ===
     (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
-    (r"\b(?:sit|sit down)\b",                      "sit", {}),
-    (r"\b(?:go to|navigate to|drive to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
-    (r"\b(?:save location|remember location|save this as)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)", "save_location", {"location": "$location"}),
-    (r"\b(?:follow me|follow)\b",                 "follow", {}),
-    (r"\b(?:come here|come to me)\b",             "walk_to", {"relative": [0.0, -1.0, 0.0]}),
+    (r"\b(?:sit|sit down|lay down)\b",             "sit", {}),
+    (r"\b(?:self[\s-]?right|get up from fall|recover)\b", "selfright", {}),
+
+    # === BODY HEIGHT ===
+    (r"\b(?:crouch|lower body|get low|duck)\b",    "body_height", {"height": -0.15}),
+    (r"\b(?:stand tall|raise body|stretch up|max height)\b", "body_height", {"height": 0.1}),
+    (r"\b(?:normal height|default height|regular height)\b", "body_height", {"height": 0.0}),
+
+    # === WALKING WITH DISTANCE ===
+    (r"\b(?:walk|move|go)\s+forward\s+(?P<dist>\d+(?:\.\d+)?)\s*(?:m(?:eters?)?|ft|feet)?\b", "walk", {"direction": "forward", "distance": "$dist"}),
+    (r"\b(?:walk|move|go)\s+(?:backward|back)\s+(?P<dist>\d+(?:\.\d+)?)\s*(?:m(?:eters?)?|ft|feet)?\b", "walk", {"direction": "backward", "distance": "$dist"}),
+    (r"\b(?:walk|move|go)\s+forward\b",            "walk", {"direction": "forward", "distance": 1.0}),
+    (r"\b(?:walk|move|go)\s+(?:backward|back)\b",  "walk", {"direction": "backward", "distance": 1.0}),
+    (r"\bback\s*up\b",                             "walk", {"direction": "backward", "distance": 1.0}),
+
+    # === STRAFING ===
+    (r"\b(?:strafe|move|step)\s+left\s+(?P<dist>\d+(?:\.\d+)?)\s*(?:m(?:eters?)?|ft|feet)?\b", "strafe", {"direction": "left", "distance": "$dist"}),
+    (r"\b(?:strafe|move|step)\s+right\s+(?P<dist>\d+(?:\.\d+)?)\s*(?:m(?:eters?)?|ft|feet)?\b", "strafe", {"direction": "right", "distance": "$dist"}),
+    (r"\b(?:strafe|step)\s+left\b",                "strafe", {"direction": "left", "distance": 0.5}),
+    (r"\b(?:strafe|step)\s+right\b",               "strafe", {"direction": "right", "distance": 0.5}),
+
+    # === TURNING ===
     (r"\bturn\s+left\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b",  "turn", {"deg": "$deg", "dir": "left"}),
     (r"\bturn\s+right\s+(?P<deg>\d+(?:\.\d+)?)\s*(?:deg(?:rees)?)?\b", "turn", {"deg": "$deg", "dir": "right"}),
-    (r"\bturn\s+left\b",  "turn", {"deg": 90, "dir": "left"}),
-    (r"\bturn\s+right\b", "turn", {"deg": 90, "dir": "right"}),
-    (r"\b(?:look at me|look here)\b",             "ptz_aim", {"target": "speaker"}),
+    (r"\bturn\s+left\b",                           "turn", {"deg": 90, "dir": "left"}),
+    (r"\bturn\s+right\b",                          "turn", {"deg": 90, "dir": "right"}),
+    (r"\b(?:turn around|spin around|about face|one eighty|180)\b", "turn", {"deg": 180, "dir": "left"}),
+
+    # === SPEED CONTROL ===
+    (r"\b(?:slow\s+(?:down|mode)|walk\s+slowly|go\s+slow)\b", "set_speed", {"speed": "slow"}),
+    (r"\b(?:normal\s+speed|regular\s+speed|default\s+speed)\b", "set_speed", {"speed": "normal"}),
+    (r"\b(?:fast\s+(?:mode)?|walk\s+fast|go\s+fast|speed\s+up)\b", "set_speed", {"speed": "fast"}),
+
+    # === NAVIGATION ===
+    (r"\b(?:go to|navigate to|drive to|walk to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
+    (r"\b(?:save location|remember location|save this as|mark this as)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)", "save_location", {"location": "$location"}),
+    (r"\b(?:come here|come to me)\b",              "walk_to", {"relative": [0.0, -1.0, 0.0]}),
+
+    # === STATUS & POWER ===
+    (r"\b(?:battery|battery status|how much battery|charge level|power level)\b", "battery_status", {}),
+    (r"\b(?:status|status check|how are you|robot status)\b", "status", {}),
+    (r"\b(?:power off|shut\s*down|turn off)\b",    "power_off", {}),
+
+    # === OTHER ===
+    (r"\b(?:follow me|follow)\b",                  "follow", {}),
+    (r"\b(?:look at me|look here)\b",              "ptz_aim", {"target": "speaker"}),
+    (r"\b(?:list locations|what locations|show locations|saved locations)\b", "list_locations", {}),
 ]
 
 # Precompile with IGNORECASE for more robust matching

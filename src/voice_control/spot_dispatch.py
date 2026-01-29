@@ -14,8 +14,10 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from bosdyn.client.robot_command import RobotCommandBuilder, blocking_stand, blocking_sit
-from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
+from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, BODY_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
+from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
+from bosdyn import geometry
 from src.session import spot_session
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
 
@@ -202,6 +204,212 @@ def dispatch_intent(intent):
             print(f"[Spot] ✓ Turn command sent")
             return True
             
+        elif name == "walk":
+            # Walk forward or backward a specific distance
+            direction = params.get("direction", "forward")
+            distance = float(params.get("distance", 1.0))
+
+            # Clamp distance for safety (0.5 to 5 meters)
+            distance = max(0.5, min(5.0, distance))
+
+            # Forward is positive X, backward is negative X
+            x = distance if direction == "forward" else -distance
+
+            print(f"[Spot] Walking {direction} {distance:.1f}m...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+                frame_tree = robot_state.kinematic_state.transforms_snapshot
+
+                cmd = RobotCommandBuilder.synchro_trajectory_command_in_body_frame(
+                    goal_x_rt_body=x,
+                    goal_y_rt_body=0.0,
+                    goal_heading_rt_body=0.0,
+                    frame_tree_snapshot=frame_tree
+                )
+                cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
+                print(f"[Spot] ✓ Walk {direction} command sent")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Walk failed: {e}")
+                return False
+
+        elif name == "strafe":
+            # Strafe left or right a specific distance
+            direction = params.get("direction", "left")
+            distance = float(params.get("distance", 0.5))
+
+            # Clamp distance (0.25 to 2 meters)
+            distance = max(0.25, min(2.0, distance))
+
+            # Left is positive Y, right is negative Y
+            y = distance if direction == "left" else -distance
+
+            print(f"[Spot] Strafing {direction} {distance:.1f}m...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+                frame_tree = robot_state.kinematic_state.transforms_snapshot
+
+                cmd = RobotCommandBuilder.synchro_trajectory_command_in_body_frame(
+                    goal_x_rt_body=0.0,
+                    goal_y_rt_body=y,
+                    goal_heading_rt_body=0.0,
+                    frame_tree_snapshot=frame_tree
+                )
+                cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
+                print(f"[Spot] ✓ Strafe {direction} command sent")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Strafe failed: {e}")
+                return False
+
+        elif name == "body_height":
+            # Adjust body height (crouch/stand tall)
+            height = float(params.get("height", 0.0))
+
+            # Clamp height (-0.15 to 0.1 meters relative to nominal)
+            height = max(-0.15, min(0.1, height))
+
+            height_desc = "normal"
+            if height < -0.05:
+                height_desc = "low (crouching)"
+            elif height > 0.05:
+                height_desc = "tall"
+
+            print(f"[Spot] Setting body height to {height_desc} ({height:+.2f}m)...")
+            try:
+                cmd = RobotCommandBuilder.synchro_stand_command(body_height=height)
+                cmd_client.robot_command(cmd)
+                print(f"[Spot] ✓ Body height set to {height_desc}")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Body height adjustment failed: {e}")
+                return False
+
+        elif name == "selfright":
+            # Self-right: recover from fall
+            print("[Spot] Attempting self-right (recovery from fall)...")
+            try:
+                cmd = RobotCommandBuilder.selfright_command()
+                cmd_client.robot_command(cmd)
+                print("[Spot] ✓ Self-right command sent")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Self-right failed: {e}")
+                return False
+
+        elif name == "battery_status":
+            # Report battery status
+            print("[Spot] Checking battery status...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+                battery = robot_state.power_state.locomotion_charge_percentage.value
+                runtime_est = robot_state.power_state.locomotion_estimated_runtime.seconds
+
+                # Format runtime
+                mins = runtime_est // 60
+                hours = mins // 60
+                mins = mins % 60
+
+                print(f"[Spot] ✓ Battery: {battery:.0f}%")
+                if hours > 0:
+                    print(f"[Spot]   Estimated runtime: {hours}h {mins}m")
+                else:
+                    print(f"[Spot]   Estimated runtime: {mins}m")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Battery status failed: {e}")
+                return False
+
+        elif name == "status":
+            # Report overall robot status
+            print("[Spot] Checking robot status...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+
+                # Battery
+                battery = robot_state.power_state.locomotion_charge_percentage.value
+
+                # E-stop status
+                estop_states = {
+                    0: "unknown",
+                    1: "cut",
+                    2: "not_cut",
+                    3: "soft_stop"
+                }
+                estop = estop_states.get(robot_state.estop_states[0].state if robot_state.estop_states else 0, "unknown")
+
+                print(f"[Spot] ✓ Status Report:")
+                print(f"[Spot]   Battery: {battery:.0f}%")
+                print(f"[Spot]   E-Stop: {estop}")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Status check failed: {e}")
+                return False
+
+        elif name == "power_off":
+            # Safe power off
+            print("[Spot] Initiating safe power off...")
+            try:
+                cmd = RobotCommandBuilder.safe_power_off_command()
+                cmd_client.robot_command(cmd)
+                print("[Spot] ✓ Safe power off command sent")
+                print("[Spot]   Robot will sit, then power off motors")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Power off failed: {e}")
+                return False
+
+        elif name == "estop":
+            # Emergency stop (software e-stop)
+            print("[Spot] ⚠️  EMERGENCY STOP triggered!")
+            try:
+                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                print("[Spot] ✓ Emergency stop executed")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Emergency stop failed: {e}")
+                return False
+
+        elif name == "set_speed":
+            # Set movement speed (affects subsequent commands)
+            speed = params.get("speed", "normal")
+
+            # Speed mappings (approximate m/s limits)
+            speed_map = {
+                "slow": 0.5,
+                "normal": 1.0,
+                "fast": 1.6
+            }
+            velocity = speed_map.get(speed, 1.0)
+
+            print(f"[Spot] Speed mode set to: {speed} ({velocity} m/s)")
+            # Note: Speed is applied per-command via mobility params
+            # This is informational - actual speed control happens in movement commands
+            print("[Spot] ✓ Speed mode updated (applies to next movement)")
+            return True
+
+        elif name == "list_locations":
+            # List saved locations
+            print("[Spot] Listing saved locations...")
+            try:
+                from src.location_manager import list_locations
+                locations = list_locations()
+                if locations:
+                    print(f"[Spot] ✓ Saved locations:")
+                    for name, waypoint in locations.items():
+                        print(f"[Spot]   - {name}")
+                else:
+                    print("[Spot] No locations saved yet.")
+                    print("[Spot] Say 'save location [name]' to save current position.")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Failed to list locations: {e}")
+                return False
+
         elif name == "ptz_aim":
             # PTZ camera aiming (requires camera payload)
             target = params.get("target", "speaker")

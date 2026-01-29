@@ -49,16 +49,37 @@ cd src/voice_control
 python client_mic.py
 ```
 
-## Supported Commands
+## Voice Commands
 
-The intent parser recognizes these voice commands:
+| Category | Command | Example Phrases |
+|----------|---------|-----------------|
+| **Safety** | Stop | "stop", "halt" |
+| | Freeze | "freeze" |
+| | E-Stop | "emergency stop", "e-stop" |
+| **Posture** | Stand | "stand", "stand up", "get up" |
+| | Sit | "sit", "sit down" |
+| | Self-right | "self right", "recover" |
+| **Movement** | Walk forward | "walk forward", "walk forward 2 meters" |
+| | Walk backward | "walk back", "back up", "walk backward 1 meter" |
+| | Strafe left | "strafe left", "step left", "move left 0.5 meters" |
+| | Strafe right | "strafe right", "step right" |
+| **Turning** | Turn left | "turn left", "turn left 45 degrees" |
+| | Turn right | "turn right", "turn right 90" |
+| | Turn around | "turn around", "spin around", "180" |
+| **Body** | Crouch | "crouch", "lower body", "duck" |
+| | Stand tall | "stand tall", "raise body", "max height" |
+| | Normal height | "normal height" |
+| **Speed** | Slow | "slow down", "walk slowly" |
+| | Normal | "normal speed" |
+| | Fast | "fast mode", "speed up" |
+| **Navigation** | Go to | "go to kitchen", "navigate to lobby" |
+| | Save location | "save location kitchen", "remember this as home" |
+| | List locations | "list locations", "what locations" |
+| **Status** | Battery | "battery", "battery status" |
+| | Status | "status", "status check" |
+| | Power off | "power off", "shut down" |
 
-- **"stop"** / **"halt"** / **"freeze"**: Emergency stop
-- **"follow me"** / **"follow"**: Start following behavior (not yet implemented)
-- **"come here"** / **"come to me"**: Walk towards speaker (relative position)
-- **"turn left [N] degrees"**: Rotate left by N degrees (e.g., "turn left 45")
-- **"turn right [N] degrees"**: Rotate right by N degrees (e.g., "turn right 90")
-- **"look at me"** / **"look here"**: Aim PTZ camera at speaker (not yet implemented)
+**Distance defaults:** Walk = 1m, Strafe = 0.5m, Turn = 90°
 
 ## How It Works
 
@@ -72,8 +93,9 @@ The intent parser recognizes these voice commands:
 ## Configuration
 
 - **ASR Server Port**: Default `localhost:50055` (hardcoded in `client_mic.py`)
-- **Whisper Model**: `large-v3-turbo` (configured in `server.py`)
+- **Whisper Model**: `small` or `large-v3-turbo` (configured in `server.py`)
 - **Audio Settings**: 16kHz, 30ms frames, VAD level 2
+- **LLM Intent Parser**: Optional Ollama with `qwen2.5:3b` for natural language understanding
 
 ## Troubleshooting
 
@@ -83,12 +105,31 @@ The intent parser recognizes these voice commands:
 - **"No speech detected"**: Check microphone permissions and audio levels
 - **ASR server slow**: First run downloads model (~3GB). Subsequent runs are faster.
 
+## LLM Intent Parser (Optional)
+
+For better natural language understanding, install Ollama:
+
+```bash
+# Install Ollama on Jetson
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl start ollama
+
+# Pull recommended model
+ollama pull qwen2.5:3b
+
+# Test the LLM parser
+python src/voice_control/intent_llm.py
+```
+
+The system uses regex matching first (fast), then falls back to LLM for complex phrases.
+
 ## Future Improvements
 
+- [x] More voice commands (walk, strafe, body height, speed control)
+- [x] LLM-based natural language understanding
 - [ ] Streaming/partial transcription for lower latency
 - [ ] Person following behavior implementation
 - [ ] PTZ camera control (requires payload)
-- [ ] More voice commands (walk forward/back, specific distances)
 - [ ] Text-to-speech feedback
 - [ ] Confidence thresholds and error handling
 
