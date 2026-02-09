@@ -11,6 +11,7 @@ from bosdyn.client.time_sync import TimeSyncClient
 from bosdyn.client.robot_command import RobotCommandClient, blocking_stand, blocking_sit
 from bosdyn.client.robot_command import RobotCommandBuilder
 from bosdyn.client.exceptions import RetryableRpcError
+from bosdyn.client.keepalive import KeepaliveClient, remove_all_policies
 
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
 
@@ -50,29 +51,35 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
 
     # Power on and stand (optional)
     if stand_on_enter:
+        # Clear stale keepalive policies that may block motor power-on
+        try:
+            keepalive_client = robot.ensure_client(KeepaliveClient.default_service_name)
+            status = keepalive_client.get_status()
+            if status.status:
+                print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
+                remove_all_policies(keepalive_client, attempts=3)
+                print("[Session] ✓ Keepalive policies cleared")
+        except Exception as e:
+            print(f"[Session] Note: Could not clear keepalive policies: {e}")
+
         # Check if robot is already powered before trying to power on
         robot_state = state_client.get_robot_state()
         is_powered = robot_state.power_state.motor_power_state == robot_state.power_state.STATE_ON
-        
+
         if not is_powered:
             try:
                 robot.power_on(timeout_sec=20)
             except Exception as e:
-                # If power-on fails due to estop, check if motors are already on
                 error_type = type(e).__name__
                 if "KeepaliveMotorsOff" in error_type or "KeepaliveMotorsOffError" in str(e):
-                    print("[Session] Warning: Cannot power on - estop may be blocking motors.")
-                    print("[Session] Checking if motors are already powered...")
-                    # Re-check power state - might have changed
-                    robot_state = state_client.get_robot_state()
-                    is_powered = robot_state.power_state.motor_power_state == robot_state.power_state.STATE_ON
-                    if not is_powered:
-                        print("[Session] Motors are not powered. Ensure estop keepalive is in 'allow' state.")
-                        raise
-                    else:
-                        print("[Session] Motors are already powered, continuing...")
+                    print("[Session] Warning: Cannot power on - keepalive blocking motors.")
+                    print("[Session] Try releasing e-stop from tablet, then retry.")
+                    raise
+                elif "Estopped" in error_type or "EstoppedError" in str(e):
+                    print("[Session] Warning: Robot is e-stopped.")
+                    print("[Session] Release e-stop from the tablet, then retry.")
+                    raise
                 else:
-                    # For other errors, raise them
                     raise
         
         # Robot is powered (or we powered it on), now stand

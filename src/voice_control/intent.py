@@ -136,7 +136,9 @@ def parse_intent(text: str):
     """
     if not text:
         return None
-    t = text.strip()
+    # Clean up Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
+    t = re.sub(r'\.\s*', ' ', text).strip()
+    t = re.sub(r'\s+', ' ', t)
     for pat, intent_name, params in COMMAND_PATTERNS:
         m = pat.search(t)
         if not m:

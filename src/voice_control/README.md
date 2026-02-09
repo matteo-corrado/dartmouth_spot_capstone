@@ -25,6 +25,12 @@ This directory contains the voice I/O system for controlling Spot via natural la
    ```
    Keep this running in a separate terminal!
 
+3. **Upload GraphNav map (required for navigation commands):**
+   ```bash
+   python scripts/setup_map.py --map-path maps/YOUR_MAP_FOLDER
+   ```
+   Without a map, "go to" commands will fail with "No waypoints in map".
+
 ## Usage
 
 ### Option 1: Integrated Script (Recommended)

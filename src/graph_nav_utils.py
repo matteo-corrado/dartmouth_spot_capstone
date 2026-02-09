@@ -133,8 +133,11 @@ def initialize_localization(robot, use_fiducial: bool = True) -> bool:
         if use_fiducial:
             print("[GraphNav] Attempting fiducial-based localization...")
             print("   (Make sure robot can see a fiducial from the map)")
+            # For fiducial init, provide an empty localization as initial guess
+            empty_localization = nav_pb2.Localization()
             graph_nav_client.set_localization(
-                fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL
+                initial_guess_localization=empty_localization,
+                fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NEAREST
             )
         else:
             # Get first waypoint from map

@@ -10,6 +10,7 @@ import pathlib
 # Add parent to path for local imports
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
+import re
 import time
 import queue
 import argparse
@@ -21,6 +22,7 @@ import grpc
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
+from intent_llm import parse_intent_llm  # LLM fallback for natural language
 
 # Optional noise reduction (for final audio, not real-time)
 try:
@@ -38,7 +40,7 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 VAD_LEVEL = 2                    # webrtcvad aggressiveness (0-3)
-SILENCE_TIMEOUT = 0.8            # Seconds of silence to end utterance
+SILENCE_TIMEOUT = 0.5            # Seconds of silence to end utterance
 MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
 ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than noise
@@ -47,13 +49,18 @@ ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than 
 # Audio Queue (filled by callback)
 # ============================================================================
 audio_queue = queue.Queue()
+MIC_CHANNEL = 0  # 0=left (beamformed), 1=right (ASR); set from --channel arg
 
 
 def audio_callback(indata, frames, time_info, status):
     """Sounddevice callback - converts stereo to mono PCM16."""
     if status:
         print(f"[Audio: {status}]")
-    mono = indata.mean(axis=1).astype(np.float32)
+    # Select channel: 0=left (beamformed), 1=right (ASR) for stereo mics like XVF3800
+    if indata.shape[1] >= 2:
+        mono = indata[:, MIC_CHANNEL].astype(np.float32)
+    else:
+        mono = indata[:, 0].astype(np.float32)
     pcm16 = (mono * 32767).astype(np.int16).tobytes()
     audio_queue.put(pcm16)
 
@@ -72,11 +79,14 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> tuple:
     samples_needed = int(SAMPLE_RATE * duration_sec)
 
     def callback(indata, frames, time_info, status):
-        mono = indata.mean(axis=1).astype(np.float32)
+        if indata.shape[1] >= 2:
+            mono = indata[:, MIC_CHANNEL].astype(np.float32)
+        else:
+            mono = indata[:, 0].astype(np.float32)
         samples.append(mono.copy())
 
     try:
-        with sd.InputStream(device=device, channels=1, samplerate=SAMPLE_RATE,
+        with sd.InputStream(device=device, channels=2, samplerate=SAMPLE_RATE,
                            callback=callback, blocksize=FRAME_SAMPLES):
             start = time.time()
             while sum(len(s) for s in samples) < samples_needed:
@@ -87,7 +97,6 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> tuple:
         noise_audio = np.concatenate(samples)[:samples_needed]
         noise_rms = np.sqrt(np.mean(noise_audio ** 2))
         print(f"[Noise floor RMS: {noise_rms:.5f}]")
-        print(f"[Energy threshold: {noise_rms * ENERGY_THRESHOLD_MULTIPLIER:.5f}]")
         return noise_rms, noise_audio
 
     except Exception as e:
@@ -114,8 +123,10 @@ def apply_noise_reduction(audio_float32: np.ndarray, noise_profile: np.ndarray) 
             y=audio_float32,
             sr=SAMPLE_RATE,
             y_noise=noise_profile,
-            prop_decrease=0.75,
-            stationary=True
+            prop_decrease=0.85,         # More aggressive (was 0.75) - better for loud Jetson/Spot fans
+            stationary=True,            # Spot's fan noise is constant
+            freq_mask_smooth_hz=500,    # Smooth out robot fan noise (low freq hum)
+            time_mask_smooth_ms=50      # Reduce motor noise (short bursts)
         ).astype(np.float32)
     except Exception as e:
         print(f"[Noise reduction error: {e}]")
@@ -199,11 +210,16 @@ def main():
     parser.add_argument("--no-noise-reduction", action="store_true", help="Disable noise reduction")
     parser.add_argument("--energy-mult", type=float, default=ENERGY_THRESHOLD_MULTIPLIER,
                         help=f"Energy threshold multiplier (default: {ENERGY_THRESHOLD_MULTIPLIER})")
+    parser.add_argument("--channel", type=int, default=0, choices=[0, 1],
+                        help="Mic channel: 0=left (beamformed), 1=right (ASR). Default: 0")
     args = parser.parse_args()
 
     if args.list_devices:
         print(sd.query_devices())
         return
+
+    global MIC_CHANNEL
+    MIC_CHANNEL = args.channel
 
     # ========================================================================
     # Startup
@@ -213,8 +229,9 @@ def main():
     print("=" * 60)
 
     # Show device info
+    ch_label = "left/beamformed" if MIC_CHANNEL == 0 else "right/ASR"
     if args.device is not None:
-        print(f"Audio device: {args.device}")
+        print(f"Audio device: {args.device} (channel {MIC_CHANNEL}: {ch_label})")
     else:
         try:
             info = sd.query_devices(sd.default.device[0])
@@ -225,6 +242,7 @@ def main():
     # Calibrate noise floor
     noise_rms, noise_profile = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
     energy_threshold = noise_rms * args.energy_mult
+    print(f"[Energy threshold: {energy_threshold:.5f} ({args.energy_mult}x noise)]")
 
     if NOISE_REDUCE_AVAILABLE and not args.no_noise_reduction:
         print("[Noise reduction: ENABLED]")
@@ -244,7 +262,7 @@ def main():
     try:
         stream = sd.InputStream(
             device=args.device,
-            channels=1,
+            channels=2,
             samplerate=SAMPLE_RATE,
             callback=audio_callback,
             blocksize=FRAME_SAMPLES
@@ -355,6 +373,9 @@ def main():
         cleanup_spot()
 
 
+MIN_SPEECH_DURATION = 0.5  # Reject utterances shorter than this (likely noise)
+
+
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list, noise_profile):
     """Process recorded speech: apply noise reduction, send to ASR, execute command."""
     if not speech_float_buffer:
@@ -363,6 +384,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # Combine audio
     audio_float = np.concatenate(speech_float_buffer)
     duration = len(audio_float) / SAMPLE_RATE
+
+    # Reject very short clips (noise bursts, not speech)
+    if duration < MIN_SPEECH_DURATION:
+        print(f"[Too short ({duration:.2f}s) — skipping]")
+        return
 
     # Apply noise reduction (batch, not real-time)
     if noise_profile is not None and NOISE_REDUCE_AVAILABLE:
@@ -383,20 +409,37 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     print(f"HEARD: \"{transcript}\"")
     print("=" * 60)
 
-    # Parse and execute
-    intent = parse_intent(transcript)
+    # Clean transcript: strip Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
+    clean = re.sub(r'\.\s*', ' ', transcript).strip()
+    clean = re.sub(r'\s+', ' ', clean)
+    if clean != transcript:
+        print(f"CLEAN: \"{clean}\"")
+
+    # Parse intent: Try regex first (fast ~1ms), fallback to LLM for natural language
+    intent = parse_intent(clean)
+
+    if not intent:
+        # Regex didn't match - try LLM for natural language understanding
+        print("[Regex didn't match, trying LLM...]")
+        intent = parse_intent_llm(clean)
 
     if intent:
         cmd = intent['intent']
         params = intent.get('params', {})
-        print(f"Command: {cmd}" + (f" {params}" if params else ""))
+        confidence = intent.get('confidence', 1.0)
+
+        # Show confidence for LLM results
+        if confidence < 1.0:
+            print(f"Command: {cmd} (confidence: {confidence:.0%})" + (f" {params}" if params else ""))
+        else:
+            print(f"Command: {cmd}" + (f" {params}" if params else ""))
 
         if execute_on_spot(intent):
             print(">>> SUCCESS")
         else:
             print(">>> FAILED")
     else:
-        print("(Not recognized - try: stand, sit, stop, turn left/right)")
+        print("(Not recognized - try: stand, sit, stop, turn left/right, go to [location])")
 
 
 if __name__ == "__main__":

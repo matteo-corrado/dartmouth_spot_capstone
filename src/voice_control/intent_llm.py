@@ -23,7 +23,7 @@ import requests
 from typing import Optional, Dict, Any
 
 # Default model - change based on what you have installed
-DEFAULT_MODEL = "qwen2.5:3b"  # Best balance of speed and accuracy for Jetson
+DEFAULT_MODEL = "qwen2.5:3b"  # Local model, fast inference on Jetson
 
 # Intent schema for the robot
 INTENT_SCHEMA = {
@@ -64,61 +64,26 @@ INTENT_SCHEMA = {
     "ptz_aim": "Aim camera at target - params: {target: 'speaker'}"
 }
 
-# Optimized prompt for small models
-SYSTEM_PROMPT = f"""You are a command parser for a Boston Dynamics Spot robot. Extract the intent and parameters from voice commands.
+# Ultra-optimized prompt for tiny models (qwen2.5:0.5b)
+SYSTEM_PROMPT = """Parse robot voice command to JSON. Return {"intent": "cmd", "params": {}, "confidence": 0.9} or {"intent": null, "confidence": 0.0} if unclear.
 
-Available commands:
-{json.dumps(INTENT_SCHEMA, indent=2)}
-
-Return ONLY valid JSON in this exact format:
-{{"intent": "command_name", "params": {{}}, "confidence": 0.95}}
-
-If unclear, return:
-{{"intent": null, "confidence": 0.0}}
+Commands: stop, stand, sit, walk (forward/backward + distance), turn (left/right + degrees), strafe (left/right + distance), go_to (location), save_location (location), battery_status, body_height (height: -0.15 to 0.1), set_speed (slow/normal/fast)
 
 Examples:
-Input: "turn left 45 degrees"
-Output: {{"intent": "turn", "params": {{"deg": 45, "dir": "left"}}, "confidence": 0.95}}
-
-Input: "could you rotate counterclockwise about 45"
-Output: {{"intent": "turn", "params": {{"deg": 45, "dir": "left"}}, "confidence": 0.85}}
-
-Input: "walk forward 2 meters"
-Output: {{"intent": "walk", "params": {{"direction": "forward", "distance": 2.0}}, "confidence": 0.95}}
-
-Input: "move back a bit"
-Output: {{"intent": "walk", "params": {{"direction": "backward", "distance": 1.0}}, "confidence": 0.8}}
-
-Input: "strafe to the left"
-Output: {{"intent": "strafe", "params": {{"direction": "left", "distance": 0.5}}, "confidence": 0.85}}
-
-Input: "go to the kitchen"
-Output: {{"intent": "go_to", "params": {{"location": "kitchen"}}, "confidence": 0.9}}
-
-Input: "remember this spot as home base"
-Output: {{"intent": "save_location", "params": {{"location": "home_base"}}, "confidence": 0.9}}
-
-Input: "please stop now"
-Output: {{"intent": "stop", "params": {{}}, "confidence": 0.95}}
-
-Input: "how much battery do you have"
-Output: {{"intent": "battery_status", "params": {{}}, "confidence": 0.9}}
-
-Input: "crouch down"
-Output: {{"intent": "body_height", "params": {{"height": -0.15}}, "confidence": 0.9}}
-
-Input: "turn around"
-Output: {{"intent": "turn", "params": {{"deg": 180, "dir": "left"}}, "confidence": 0.95}}
-
-Input: "what's the weather"
-Output: {{"intent": null, "confidence": 0.0}}
+"stop" → {"intent":"stop","params":{},"confidence":0.95}
+"turn left 45 degrees" → {"intent":"turn","params":{"deg":45,"dir":"left"},"confidence":0.95}
+"rotate counterclockwise 45" → {"intent":"turn","params":{"deg":45,"dir":"left"},"confidence":0.85}
+"walk forward 2 meters" → {"intent":"walk","params":{"direction":"forward","distance":2.0},"confidence":0.95}
+"go to kitchen" → {"intent":"go_to","params":{"location":"kitchen"},"confidence":0.9}
+"crouch down" → {"intent":"body_height","params":{"height":-0.15},"confidence":0.9}
+"what's the weather" → {"intent":null,"confidence":0.0}
 """
 
 
 def parse_intent_llm(
     text: str,
     model: str = DEFAULT_MODEL,
-    timeout: float = 3.0,
+    timeout: float = 10.0,
     temperature: float = 0.1
 ) -> Optional[Dict[str, Any]]:
     """Parse intent using local Ollama model.
@@ -126,7 +91,7 @@ def parse_intent_llm(
     Args:
         text: Voice command transcript
         model: Ollama model name (default: qwen2.5:3b)
-        timeout: Request timeout in seconds (default: 3.0)
+        timeout: Request timeout in seconds (default: 10.0 for Jetson)
         temperature: Generation temperature 0-1, lower = more deterministic (default: 0.1)
 
     Returns:

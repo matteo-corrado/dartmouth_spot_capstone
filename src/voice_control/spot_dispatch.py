@@ -484,7 +484,7 @@ def dispatch_intent(intent):
                     print("[Spot] Not localized. Attempting waypoint-based localization...")
                     # Try to localize to first waypoint (assuming robot is at a known waypoint)
                     try:
-                        from bosdyn.client.frame_helpers import get_odom_tform_body
+                        # get_odom_tform_body already imported at top
                         from bosdyn.client.robot_state import RobotStateClient
                         from bosdyn.api.graph_nav import nav_pb2
                         import math
