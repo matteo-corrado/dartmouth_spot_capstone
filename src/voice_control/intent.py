@@ -67,8 +67,6 @@ COMMANDS = [
     (r"\b(?:power off|shut\s*down|turn off)\b",    "power_off", {}),
 
     # === OTHER ===
-    (r"\b(?:follow me|follow)\b",                  "follow", {}),
-    (r"\b(?:look at me|look here)\b",              "ptz_aim", {"target": "speaker"}),
     (r"\b(?:list locations|what locations|show locations|saved locations)\b", "list_locations", {}),
 ]
 

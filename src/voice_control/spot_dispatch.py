@@ -13,13 +13,10 @@ project_root = pathlib.Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from bosdyn.client.robot_command import RobotCommandBuilder, blocking_stand, blocking_sit
-from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, BODY_FRAME_NAME, get_odom_tform_body
+from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
-from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
-from bosdyn import geometry
 from src.session import spot_session
-from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
 from src.location_manager import list_locations as _list_saved_locations
 
 # Global session handle (initialized on first use)
@@ -214,12 +211,6 @@ def dispatch_intent(intent):
             except Exception as e:
                 print(f"[Spot] ✗ Sit failed: {e}")
                 return False
-            
-        elif name == "follow":
-            # TODO: Implement person following behavior
-            # This would require vision/person tracking integration
-            print("[Spot] Follow behavior not yet implemented (requires person tracking)")
-            return False
             
         elif name == "walk_to":
             # Walk to relative position
@@ -483,13 +474,6 @@ def dispatch_intent(intent):
                 print(f"[Spot] ✗ Failed to list locations: {e}")
                 return False
 
-        elif name == "ptz_aim":
-            # PTZ camera aiming (requires camera payload)
-            target = params.get("target", "speaker")
-            print(f"[Spot] PTZ aim at {target} (not yet implemented - requires camera payload)")
-            # TODO: Implement PTZ control when camera payload is available
-            return False
-        
         elif name == "save_location":
             # Save current position as a named location
             location_name = params.get("location", "").lower()
