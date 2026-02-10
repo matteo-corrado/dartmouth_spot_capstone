@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
-"""Integrated voice control script for Spot.
+"""Integrated voice control script for Spot — LLM Brain Mode.
 
-This script provides a convenient way to run the voice control system.
-It requires:
+Architecture (Boston Dynamics "Robots That Can Chat" style):
+    Mic → VAD → Whisper ASR → LLM Brain (state + history + personality) → Action + Response
+
+Requires:
 1. E-Stop running (via scripts/estop_run.py in separate terminal)
-2. ASR server running (starts automatically or can run separately)
-3. Client microphone listening for voice commands
+2. Ollama running with a model pulled (e.g. qwen2.5:7b)
+3. ASR server running (starts automatically or can run separately)
 
 Usage:
-    python scripts/run_voice_control.py [--no-server] [--server-only]
-    
+    python scripts/run_voice_control.py [--model qwen2.5:7b] [--no-server] [--server-only]
+
+    --model: Ollama model for LLM brain (default: qwen2.5:7b)
     --no-server: Don't start ASR server (assumes it's running elsewhere)
     --server-only: Only start ASR server, don't start client
+    --no-brain: Disable LLM brain, use regex-only (legacy mode)
 """
 import sys
 import pathlib
@@ -28,18 +32,30 @@ def main():
                         help="Don't start ASR server (assumes it's already running)")
     parser.add_argument("--server-only", action="store_true",
                         help="Only start ASR server, don't start client")
+    parser.add_argument("--model", type=str, default="qwen2.5:7b",
+                        help="Ollama model for LLM brain (default: qwen2.5:7b)")
+    parser.add_argument("--no-brain", action="store_true",
+                        help="Disable LLM brain, use regex-only (legacy mode)")
     args = parser.parse_args()
     
     project_root = pathlib.Path(__file__).resolve().parents[1]
     voice_dir = project_root / "src" / "voice_control"
     
     print("=" * 60)
-    print("Spot Voice Control System")
+    print("Spot Voice Control System — LLM Brain Mode")
     print("=" * 60)
-    print("\n⚠️  IMPORTANT: Make sure E-Stop is running!")
-    print("   Run this in a separate terminal:")
-    print("   python scripts/estop_run.py")
-    print("\nPress Enter when E-Stop is running...")
+    if not args.no_brain:
+        print(f"\n  LLM Model: {args.model}")
+    else:
+        print("\n  Mode: Regex-only (legacy)")
+    print("\n  IMPORTANT: Make sure E-Stop is running!")
+    print("  Run this in a separate terminal:")
+    print("    python scripts/estop_run.py")
+    if not args.no_brain:
+        print(f"\n  Also ensure Ollama is running with model pulled:")
+        print(f"    sudo systemctl start ollama")
+        print(f"    ollama pull {args.model}")
+    print("\nPress Enter when ready...")
     input()
     
     if not args.no_server and not args.server_only:
@@ -138,19 +154,23 @@ def main():
     
     if not args.no_server:
         print("\n[2/2] Starting voice client (microphone listener)...")
-        print("   Speak commands when prompted.")
-        print("   Commands: 'stop', 'follow me', 'come here', 'turn left 45', 'turn right 90', etc.")
-        print("   Press Ctrl+C to stop.\n")
     else:
         print("\n[1/1] Starting voice client (microphone listener)...")
         print("   (ASR server should be running on localhost:50055)")
-        print("   Press Ctrl+C to stop.\n")
-    
+
+    print("   Speak naturally — Spot will understand and respond.")
+    print("   Safety commands (stop/freeze/estop) are always instant.")
+    print("   Press Ctrl+C to stop.\n")
+
+    # Build client command with model and brain args
+    client_cmd = [sys.executable, str(voice_dir / "client_mic.py")]
+    if not args.no_brain:
+        client_cmd.extend(["--model", args.model])
+    else:
+        client_cmd.append("--no-brain")
+
     try:
-        client_proc = subprocess.run(
-            [sys.executable, str(voice_dir / "client_mic.py")],
-            cwd=str(voice_dir)
-        )
+        client_proc = subprocess.run(client_cmd, cwd=str(voice_dir))
         return client_proc.returncode
     except KeyboardInterrupt:
         print("\n\nShutting down...")

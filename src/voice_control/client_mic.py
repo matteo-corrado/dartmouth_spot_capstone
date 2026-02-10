@@ -1,14 +1,20 @@
 """
-Voice control client for Spot with noise handling.
+Voice control client for Spot with LLM brain.
 
-Uses energy-based gating combined with VAD to filter out constant fan/system noise
-from Spot and Jetson. Applies noise reduction to the final audio before ASR.
+Architecture (Boston Dynamics "Robots That Can Chat" style):
+    Mic → VAD → Whisper ASR → LLM Brain (state + history + personality) → Action + Response
+
+Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
+Everything else goes through the LLM brain which decides what to do AND what to say.
 """
 import sys
 import pathlib
 
-# Add parent to path for local imports
+# Add parent and project root to path for local imports
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
+project_root = pathlib.Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 import re
 import time
@@ -22,7 +28,7 @@ import grpc
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
-from intent_llm import parse_intent_llm  # LLM fallback for natural language
+from llm_brain import SpotBrain, DEFAULT_MODEL
 
 # Optional noise reduction (for final audio, not real-time)
 try:
@@ -177,9 +183,6 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 def execute_on_spot(intent: dict) -> bool:
     """Execute parsed intent on Spot robot."""
     try:
-        project_root = pathlib.Path(__file__).resolve().parents[2]
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
         from src.voice_control.spot_dispatch import dispatch_intent
         return dispatch_intent(intent)
     except Exception as e:
@@ -187,16 +190,42 @@ def execute_on_spot(intent: dict) -> bool:
         return False
 
 
+def get_spot_state() -> dict:
+    """Get current robot state for LLM context."""
+    try:
+        from src.voice_control.spot_dispatch import get_robot_state_dict
+        return get_robot_state_dict()
+    except Exception as e:
+        print(f"[State error: {e}]")
+        return {}
+
+
 def cleanup_spot():
     """Clean up Spot session on exit."""
     try:
-        project_root = pathlib.Path(__file__).resolve().parents[2]
-        if str(project_root) not in sys.path:
-            sys.path.insert(0, str(project_root))
         from src.voice_control.spot_dispatch import close_spot_session
         close_spot_session()
     except Exception:
         pass
+
+
+# Safety commands that bypass the LLM for zero-latency execution
+SAFETY_PATTERNS = [
+    (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
+    (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
+    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
+]
+
+
+def check_safety_command(text: str):
+    """Check if text is a safety command (zero-latency, no LLM needed).
+
+    Returns intent dict if safety command, None otherwise.
+    """
+    for pattern, intent_name in SAFETY_PATTERNS:
+        if pattern.search(text):
+            return {"intent": intent_name, "params": {}, "raw": text}
+    return None
 
 
 # ============================================================================
@@ -212,6 +241,10 @@ def main():
                         help=f"Energy threshold multiplier (default: {ENERGY_THRESHOLD_MULTIPLIER})")
     parser.add_argument("--channel", type=int, default=0, choices=[0, 1],
                         help="Mic channel: 0=left (beamformed), 1=right (ASR). Default: 0")
+    parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
+                        help=f"Ollama model for LLM brain (default: {DEFAULT_MODEL})")
+    parser.add_argument("--no-brain", action="store_true",
+                        help="Disable LLM brain, use regex+LLM-fallback (legacy mode)")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -225,7 +258,7 @@ def main():
     # Startup
     # ========================================================================
     print("=" * 60)
-    print("SPOT VOICE CONTROL")
+    print("SPOT VOICE CONTROL — LLM Brain Mode")
     print("=" * 60)
 
     # Show device info
@@ -255,6 +288,20 @@ def main():
     channel = grpc.insecure_channel(args.server)
     stub = ASRStub(channel)
 
+    # Initialize LLM Brain
+    brain = None
+    if not args.no_brain:
+        print(f"\nInitializing LLM brain (model: {args.model})...")
+        brain = SpotBrain(model=args.model)
+        if brain.is_available():
+            print(f"[Brain] Ready — model: {args.model}")
+        else:
+            print(f"[Brain] Ollama not available — falling back to regex-only mode")
+            print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {args.model}")
+            brain = None
+    else:
+        print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
+
     # Initialize VAD
     vad = webrtcvad.Vad(VAD_LEVEL)
 
@@ -273,8 +320,11 @@ def main():
         print("Run with --list-devices to see available devices")
         return
 
+    mode = f"LLM Brain ({args.model})" if brain else "Regex-only (legacy)"
     print("\n" + "=" * 60)
-    print("LISTENING - Commands: stand, sit, stop, turn left/right")
+    print(f"LISTENING — Mode: {mode}")
+    print("  Safety commands (stop/freeze/estop) always instant")
+    print("  Everything else goes through the LLM brain")
     print("=" * 60 + "\n")
 
     # ========================================================================
@@ -337,7 +387,7 @@ def main():
                     # Max duration check
                     if duration > MAX_UTTERANCE_SECONDS:
                         print(f"\n>>> Max duration reached, processing...")
-                        process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile)
+                        process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile, brain)
                         is_speaking = False
                         speech_buffer.clear()
                         speech_float_buffer.clear()
@@ -356,7 +406,7 @@ def main():
                             # Check silence timeout
                             if elapsed_silence > SILENCE_TIMEOUT:
                                 print(f"\n>>> Processing...")
-                                process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile)
+                                process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile, brain)
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
@@ -376,8 +426,16 @@ def main():
 MIN_SPEECH_DURATION = 0.5  # Reject utterances shorter than this (likely noise)
 
 
-def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list, noise_profile):
-    """Process recorded speech: apply noise reduction, send to ASR, execute command."""
+def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
+                      noise_profile, brain=None):
+    """Process recorded speech through ASR then LLM brain (or regex fallback).
+
+    Flow:
+        Audio → Whisper ASR → transcript
+        transcript → safety check (instant regex for stop/estop/freeze)
+        transcript → LLM brain (state + history → action + response)
+        OR (legacy) → regex parser → intent → dispatch
+    """
     if not speech_float_buffer:
         return
 
@@ -409,37 +467,70 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     print(f"HEARD: \"{transcript}\"")
     print("=" * 60)
 
-    # Clean transcript: strip Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
+    # Clean transcript
     clean = re.sub(r'\.\s*', ' ', transcript).strip()
     clean = re.sub(r'\s+', ' ', clean)
     if clean != transcript:
         print(f"CLEAN: \"{clean}\"")
 
-    # Parse intent: Try regex first (fast ~1ms), fallback to LLM for natural language
-    intent = parse_intent(clean)
+    # ------------------------------------------------------------------
+    # 1. Safety fast-path: stop/freeze/estop bypass LLM (zero latency)
+    # ------------------------------------------------------------------
+    safety = check_safety_command(clean)
+    if safety:
+        print(f"[SAFETY] {safety['intent']} — executing immediately")
+        if execute_on_spot(safety):
+            print(">>> SAFETY COMMAND EXECUTED")
+        else:
+            print(">>> SAFETY COMMAND FAILED")
+        return
 
-    if not intent:
-        # Regex didn't match - try LLM for natural language understanding
-        print("[Regex didn't match, trying LLM...]")
-        intent = parse_intent_llm(clean)
+    # ------------------------------------------------------------------
+    # 2. LLM Brain mode (primary)
+    # ------------------------------------------------------------------
+    if brain is not None:
+        # Collect current robot state for context
+        state = get_spot_state()
+
+        result = brain.process(clean, state)
+        response = result.get("response", "")
+        action = result.get("action")
+
+        # Show what the robot "says"
+        if response:
+            print(f"\nSPOT: \"{response}\"")
+
+        # Execute action if the brain decided on one
+        if action:
+            intent = action  # action already has {intent, params} structure
+            cmd = intent["intent"]
+            params = intent.get("params", {})
+            print(f"Action: {cmd}" + (f" {params}" if params else ""))
+
+            if execute_on_spot(intent):
+                print(">>> SUCCESS")
+            else:
+                print(">>> FAILED")
+        else:
+            print("(No physical action — conversation only)")
+        return
+
+    # ------------------------------------------------------------------
+    # 3. Legacy regex-only fallback (--no-brain mode)
+    # ------------------------------------------------------------------
+    intent = parse_intent(clean)
 
     if intent:
         cmd = intent['intent']
         params = intent.get('params', {})
-        confidence = intent.get('confidence', 1.0)
-
-        # Show confidence for LLM results
-        if confidence < 1.0:
-            print(f"Command: {cmd} (confidence: {confidence:.0%})" + (f" {params}" if params else ""))
-        else:
-            print(f"Command: {cmd}" + (f" {params}" if params else ""))
+        print(f"Command: {cmd}" + (f" {params}" if params else ""))
 
         if execute_on_spot(intent):
             print(">>> SUCCESS")
         else:
             print(">>> FAILED")
     else:
-        print("(Not recognized - try: stand, sit, stop, turn left/right, go to [location])")
+        print("(Not recognized — try: stand, sit, stop, turn left/right, go to [location])")
 
 
 if __name__ == "__main__":

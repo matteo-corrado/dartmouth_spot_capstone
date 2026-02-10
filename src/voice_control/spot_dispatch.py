@@ -20,6 +20,7 @@ from bosdyn.api.spot import robot_command_pb2 as spot_command_pb2
 from bosdyn import geometry
 from src.session import spot_session
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
+from src.location_manager import list_locations as _list_saved_locations
 
 # Global session handle (initialized on first use)
 _spot_session = None
@@ -28,6 +29,78 @@ _session_context = None
 # Navigation thread management
 _nav_thread = None
 _nav_stop_event = None
+
+
+def get_robot_state_dict() -> dict:
+    """Collect current robot state for the LLM brain context.
+
+    Returns a dict with battery, posture, location, etc.
+    Safe to call even if the session is not active yet.
+    """
+    state = {
+        "battery_percent": "unknown",
+        "estimated_runtime_minutes": "unknown",
+        "is_powered": False,
+        "is_standing": "unknown",
+        "current_location": "unknown",
+        "saved_locations": ", ".join(_list_saved_locations().keys()) or "none",
+        "estop_status": "unknown",
+    }
+
+    if _spot_session is None:
+        state["session"] = "not connected"
+        return state
+
+    try:
+        state_client = _spot_session["state"]
+        robot_state = state_client.get_robot_state()
+
+        # Battery
+        state["battery_percent"] = round(
+            robot_state.power_state.locomotion_charge_percentage.value
+        )
+        runtime_sec = robot_state.power_state.locomotion_estimated_runtime.seconds
+        state["estimated_runtime_minutes"] = runtime_sec // 60
+
+        # Power / motor state
+        is_on = (
+            robot_state.power_state.motor_power_state
+            == robot_state.power_state.STATE_ON
+        )
+        state["is_powered"] = is_on
+
+        # E-stop
+        estop_map = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
+        if robot_state.estop_states:
+            state["estop_status"] = estop_map.get(
+                robot_state.estop_states[0].state, "unknown"
+            )
+
+    except Exception as e:
+        state["state_error"] = str(e)
+
+    # Current localization (GraphNav)
+    try:
+        from bosdyn.client.graph_nav import GraphNavClient
+
+        gn = _spot_session["robot"].ensure_client(
+            GraphNavClient.default_service_name
+        )
+        loc = gn.get_localization_state()
+        wp = loc.localization.waypoint_id
+        if wp:
+            # Reverse-lookup friendly name from locations.json
+            locs = _list_saved_locations()
+            friendly = next(
+                (name for name, wid in locs.items() if wid == wp), None
+            )
+            state["current_location"] = friendly or wp
+        else:
+            state["current_location"] = "not localized"
+    except Exception:
+        pass
+
+    return state
 
 
 def ensure_spot_session():
