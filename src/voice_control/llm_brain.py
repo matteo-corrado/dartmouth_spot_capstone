@@ -26,7 +26,8 @@ from typing import Optional, Dict, Any, List
 DEFAULT_MODEL = "qwen2.5:7b"
 OLLAMA_URL = "http://localhost:11434"
 MAX_HISTORY = 20          # messages (10 user + 10 assistant exchanges)
-REQUEST_TIMEOUT = 15.0    # seconds — generous for first inference on Jetson
+REQUEST_TIMEOUT = 30.0    # seconds per request
+FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
 
 # ---------------------------------------------------------------------------
 # System prompt — personality only (tools handle the action schema)
@@ -290,6 +291,7 @@ class SpotBrain:
         self.ollama_url = ollama_url
         self.history: List[Dict[str, Any]] = []
         self._available = None  # cached availability check
+        self._first_request = True
 
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is pulled."""
@@ -342,6 +344,10 @@ class SpotBrain:
         messages = self._build_messages(transcript, state)
 
         try:
+            timeout = FIRST_REQUEST_TIMEOUT if self._first_request else REQUEST_TIMEOUT
+            if self._first_request:
+                print("[Brain] First request — loading model, this may take a moment...")
+
             t0 = time.time()
             r = requests.post(
                 f"{self.ollama_url}/api/chat",
@@ -356,9 +362,10 @@ class SpotBrain:
                         "num_predict": 300,
                     },
                 },
-                timeout=REQUEST_TIMEOUT,
+                timeout=timeout,
             )
             elapsed = time.time() - t0
+            self._first_request = False
 
             if r.status_code != 200:
                 print(f"[Brain] Ollama error {r.status_code}: {r.text[:200]}")
