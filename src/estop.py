@@ -8,6 +8,32 @@ from bosdyn.client.time_sync import TimeSyncClient
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
 
 
+def claim_estop(estop_client: EstopClient, name: str, timeout_sec: int) -> EstopEndpoint:
+    """Claim the E-Stop by deregistering existing endpoints and registering ours.
+
+    Uses force_simple_setup to replace the entire E-Stop configuration,
+    taking over from any other client (tablet, other scripts, etc.).
+    """
+    # Check who currently holds the E-Stop
+    try:
+        status = estop_client.get_status()
+        active_endpoints = status.endpoints
+        if active_endpoints:
+            names = [ep.endpoint.name for ep in active_endpoints]
+            print(f"[E-Stop] Active endpoints found: {names}")
+            print(f"[E-Stop] Claiming E-Stop from existing holders...")
+        else:
+            print("[E-Stop] No active endpoints, registering fresh.")
+    except Exception as e:
+        print(f"[E-Stop] Could not query status ({e}), proceeding with claim...")
+
+    # force_simple_setup replaces the entire config with just our endpoint
+    endpoint = EstopEndpoint(estop_client, name=name, estop_timeout=timeout_sec)
+    endpoint.force_simple_setup()
+    print(f"[E-Stop] Claimed successfully as '{name}'")
+    return endpoint
+
+
 @contextmanager
 def estop_session(hostname: str = BOSDYN_ROBOT_IP,
                   username: str = BOSDYN_CLIENT_USERNAME,
@@ -28,8 +54,7 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
             time.sleep(0.2)
 
     estop_client: EstopClient = robot.ensure_client(EstopClient.default_service_name)
-    endpoint = EstopEndpoint(estop_client, name=name, estop_timeout=timeout_sec)
-    endpoint.force_simple_setup()  # become sole E-Stop
+    endpoint = claim_estop(estop_client, name, timeout_sec)
 
     keepalive = EstopKeepAlive(endpoint)
     keepalive.allow()  # ALLOW = not stopping robot
