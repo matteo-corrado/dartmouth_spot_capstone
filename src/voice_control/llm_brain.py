@@ -1,13 +1,12 @@
-"""LLM Brain for Spot — conversational robot control via Ollama tool calling.
+"""LLM Brain for Spot — conversational robot control via Ollama structured JSON.
 
-Instead of prompt-engineering the LLM to output JSON, we define each robot
-action as a native Ollama tool/function.  The model decides which tool to
-call (if any) AND produces a spoken response — no fragile JSON parsing needed.
+Uses Ollama's format="json" to guarantee valid JSON output from the model.
+The model decides which action to perform (if any) AND produces a spoken
+response, all in a single JSON object. No tool calling protocol needed —
+small models are much more reliable at filling in JSON fields.
 
 Architecture inspired by Boston Dynamics' "Robots That Can Chat" demo, adapted
 for local inference on Jetson AGX Orin via Ollama.
-
-Requires Ollama >= 0.4 for tool calling support.
 
 Models (recommended):
     ollama pull qwen2.5:7b       # Good balance of speed + reasoning
@@ -30,7 +29,7 @@ REQUEST_TIMEOUT = 30.0    # seconds per request
 FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
 
 # ---------------------------------------------------------------------------
-# System prompt — personality only (tools handle the action schema)
+# System prompt — includes action catalog and JSON output schema
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """\
 You are Spot, a Boston Dynamics quadruped robot at Dartmouth College. \
@@ -39,251 +38,62 @@ you are a four-legged robot, you can walk, navigate, and perform physical \
 actions. You have a sense of humor and personality. Keep responses concise \
 (1-2 sentences for actions, a bit more for conversation).
 
-Rules:
-- ALWAYS reply with a short spoken response, even when calling a tool. \
-For example, if asked to walk forward, say something like "Walking forward 2 meters!" \
-while also calling the walk tool.
-- When you physically cannot do something (browse web, send email), say so honestly.
-- Reference your current state when relevant (battery, location, etc.).
-- Location names should be lowercase with underscores (e.g. "work_area").
-- "turn around" means turn 180 degrees.
-- Default walk distance is 1 meter if not specified.
-- Default turn angle is 90 degrees if not specified."""
+You MUST respond with a JSON object. Every response must be valid JSON with exactly these fields:
+{
+  "action": "<action_name or null>",
+  "params": {<action parameters or empty>},
+  "response": "<what you say to the user>"
+}
 
-# ---------------------------------------------------------------------------
-# Tool definitions — each maps to an intent in spot_dispatch.py
-# ---------------------------------------------------------------------------
-SPOT_TOOLS = [
-    # --- Safety ---
-    {
-        "type": "function",
-        "function": {
-            "name": "stop",
-            "description": "Stop all movement immediately",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "freeze",
-            "description": "Hold current position",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "estop",
-            "description": "Emergency stop — use only when truly urgent",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    # --- Posture ---
-    {
-        "type": "function",
-        "function": {
-            "name": "stand",
-            "description": "Stand up from sitting position",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "sit",
-            "description": "Sit down",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "selfright",
-            "description": "Recover from a fall",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    # --- Movement ---
-    {
-        "type": "function",
-        "function": {
-            "name": "walk",
-            "description": "Walk forward or backward a specified distance",
-            "parameters": {
-                "type": "object",
-                "required": ["direction", "distance"],
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["forward", "backward"],
-                        "description": "Direction to walk",
-                    },
-                    "distance": {
-                        "type": "number",
-                        "description": "Distance in meters (0.5 to 5.0)",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "strafe",
-            "description": "Move sideways left or right",
-            "parameters": {
-                "type": "object",
-                "required": ["direction", "distance"],
-                "properties": {
-                    "direction": {
-                        "type": "string",
-                        "enum": ["left", "right"],
-                        "description": "Direction to strafe",
-                    },
-                    "distance": {
-                        "type": "number",
-                        "description": "Distance in meters (0.25 to 2.0)",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "turn",
-            "description": "Rotate in place by a specified angle",
-            "parameters": {
-                "type": "object",
-                "required": ["deg", "dir"],
-                "properties": {
-                    "deg": {
-                        "type": "number",
-                        "description": "Degrees to turn (0 to 360). Use 180 for 'turn around'.",
-                    },
-                    "dir": {
-                        "type": "string",
-                        "enum": ["left", "right"],
-                        "description": "Direction to turn",
-                    },
-                },
-            },
-        },
-    },
-    # --- Body ---
-    {
-        "type": "function",
-        "function": {
-            "name": "body_height",
-            "description": "Adjust body height: -0.15 = crouch, 0 = normal, 0.1 = tall",
-            "parameters": {
-                "type": "object",
-                "required": ["height"],
-                "properties": {
-                    "height": {
-                        "type": "number",
-                        "description": "Height offset in meters (-0.15 to 0.1)",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "set_speed",
-            "description": "Set movement speed mode",
-            "parameters": {
-                "type": "object",
-                "required": ["speed"],
-                "properties": {
-                    "speed": {
-                        "type": "string",
-                        "enum": ["slow", "normal", "fast"],
-                        "description": "Speed mode",
-                    },
-                },
-            },
-        },
-    },
-    # --- Navigation ---
-    {
-        "type": "function",
-        "function": {
-            "name": "go_to",
-            "description": "Navigate to a saved location by name",
-            "parameters": {
-                "type": "object",
-                "required": ["location"],
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "Name of the saved location (e.g. 'work_area', 'corner')",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "save_location",
-            "description": "Save the current position with a name",
-            "parameters": {
-                "type": "object",
-                "required": ["location"],
-                "properties": {
-                    "location": {
-                        "type": "string",
-                        "description": "Name for this location (e.g. 'kitchen', 'lab_door')",
-                    },
-                },
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_locations",
-            "description": "List all saved locations the robot can navigate to",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    # --- Status ---
-    {
-        "type": "function",
-        "function": {
-            "name": "battery_status",
-            "description": "Check battery level and estimated runtime",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "status",
-            "description": "Get full robot status report",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "power_off",
-            "description": "Safely power off the robot",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-]
+AVAILABLE ACTIONS:
+- stop: Stop all movement. No params.
+- freeze: Hold current position. No params.
+- estop: Emergency stop (urgent only). No params.
+- stand: Stand up from sitting. No params.
+- sit: Sit down. No params.
+- selfright: Recover from a fall. No params.
+- walk: Walk forward/backward. Params: {"direction": "forward"|"backward", "distance": <meters>}. Default distance 1.0.
+- strafe: Move sideways. Params: {"direction": "left"|"right", "distance": <meters>}. Default distance 0.5.
+- turn: Rotate in place. Params: {"deg": <degrees 0-360>, "dir": "left"|"right"}. Default 90 degrees. "turn around" = 180.
+- body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.
+- set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.
+- go_to: Navigate to saved location. Params: {"location": "<name>"}. Use lowercase_with_underscores.
+- save_location: Save current position. Params: {"location": "<name>"}.
+- list_locations: List saved locations. No params.
+- battery_status: Check battery level. No params.
+- status: Full robot status report. No params.
+- power_off: Safely power off. No params.
+
+RULES:
+- When the user asks you to do something physical, set "action" to the action name and include params.
+- When the user is just chatting, set "action" to null and "params" to {}.
+- ALWAYS include a "response" — a short spoken reply.
+- Location names must be lowercase with underscores.
+- If you cannot do something (browse web, send email), say so and set action to null.
+
+EXAMPLES:
+User: "Stand up"
+{"action": "stand", "params": {}, "response": "Standing up!"}
+
+User: "Walk forward 2 meters"
+{"action": "walk", "params": {"direction": "forward", "distance": 2.0}, "response": "Walking forward 2 meters!"}
+
+User: "Turn around"
+{"action": "turn", "params": {"deg": 180, "dir": "left"}, "response": "Turning around!"}
+
+User: "How are you doing?"
+{"action": null, "params": {}, "response": "I'm doing great! Battery is looking good and I'm ready to help."}
+
+User: "Go to the kitchen"
+{"action": "go_to", "params": {"location": "kitchen"}, "response": "On my way to the kitchen!"}"""
 
 
 class SpotBrain:
-    """Conversational LLM brain for Spot robot using Ollama tool calling.
+    """Conversational LLM brain for Spot robot using Ollama structured JSON.
 
-    The model receives tools (robot actions) and conversation context.
-    It decides which tool to call (if any) AND produces a spoken response.
-    No JSON parsing needed — Ollama handles the structured output natively.
+    The model receives the action catalog in the system prompt and responds
+    with a JSON object containing action + response. Ollama enforces valid
+    JSON at the grammar level, so parsing is reliable.
     """
 
     def __init__(self, model: str = DEFAULT_MODEL, ollama_url: str = OLLAMA_URL):
@@ -315,7 +125,6 @@ class SpotBrain:
 
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build the message list for the Ollama chat API."""
-        # Inject current state into system prompt
         state_lines = "\n".join(f"- {k}: {v}" for k, v in state.items())
         system_content = SYSTEM_PROMPT + f"\n\nCurrent robot state:\n{state_lines}"
 
@@ -354,7 +163,7 @@ class SpotBrain:
                 json={
                     "model": self.model,
                     "messages": messages,
-                    "tools": SPOT_TOOLS,
+                    "format": "json",
                     "stream": False,
                     "options": {
                         "temperature": 0.3,
@@ -373,36 +182,37 @@ class SpotBrain:
 
             message = r.json().get("message", {})
             content = (message.get("content") or "").strip()
-            tool_calls = message.get("tool_calls") or []
 
-            print(f"[Brain] LLM responded in {elapsed:.1f}s"
-                  f" (content: {len(content)} chars, tools: {len(tool_calls)})")
+            print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
 
-            # --- Extract action from tool call ---
+            # --- Parse JSON response ---
             action = None
-            if tool_calls:
-                tc = tool_calls[0]  # use first tool call
-                func = tc.get("function", {})
-                intent_name = func.get("name", "")
-                params = func.get("arguments", {})
+            response = ""
 
-                # Normalize params
-                params = self._normalize_params(intent_name, params)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError:
+                print(f"[Brain] Failed to parse JSON (should not happen with format=json): {content[:200]}")
+                return {"action": None, "response": content, "raw_llm": content}
 
-                action = {"intent": intent_name, "params": params}
-                print(f"[Brain] Tool call: {intent_name}({params})")
+            # Extract response text
+            response = str(data.get("response", "")).strip()
 
-            # --- Spoken response ---
-            response = content
+            # Extract action
+            action_name = data.get("action")
+            if action_name and isinstance(action_name, str) and action_name.lower() != "null":
+                params = data.get("params", {})
+                if not isinstance(params, dict):
+                    params = {}
+                params = self._normalize_params(action_name, params)
+                action = {"intent": action_name, "params": params}
+                print(f"[Brain] Action: {action_name}({params})")
+            else:
+                print("[Brain] No action (conversation only)")
 
-            # If model called a tool but didn't produce text, generate a fallback
-            if action and not response:
-                response = self._fallback_response(action)
-
-            # Update conversation history
+            # Update conversation history (store response text only)
             self.history.append({"role": "user", "content": transcript})
-            # Store assistant reply as text (not tool calls) for history continuity
-            self.history.append({"role": "assistant", "content": response or ""})
+            self.history.append({"role": "assistant", "content": content})
 
             # Trim history to sliding window
             if len(self.history) > MAX_HISTORY:
@@ -411,11 +221,11 @@ class SpotBrain:
             return {
                 "action": action,
                 "response": response,
-                "raw_llm": json.dumps(message, default=str),
+                "raw_llm": content,
             }
 
         except requests.Timeout:
-            print(f"[Brain] Timeout after {REQUEST_TIMEOUT}s — model may be loading")
+            print(f"[Brain] Timeout after {timeout}s — model may be loading")
             return {"action": None, "response": "", "raw_llm": ""}
         except requests.ConnectionError:
             print("[Brain] Cannot connect to Ollama. Is it running?")
@@ -427,8 +237,7 @@ class SpotBrain:
 
     @staticmethod
     def _normalize_params(intent: str, params: dict) -> dict:
-        """Normalize and validate tool call parameters."""
-        # Ensure params is a dict (some models return a string)
+        """Normalize and validate action parameters."""
         if isinstance(params, str):
             try:
                 params = json.loads(params)
@@ -468,64 +277,6 @@ class SpotBrain:
 
         return params
 
-    @staticmethod
-    def _fallback_response(action: dict) -> str:
-        """Generate a simple spoken response when the model only produced a tool call."""
-        intent = action.get("intent", "")
-        params = action.get("params", {})
-
-        responses = {
-            "stop": "Stopping!",
-            "freeze": "Freezing in place.",
-            "estop": "Emergency stop!",
-            "stand": "Standing up.",
-            "sit": "Sitting down.",
-            "selfright": "Attempting to recover.",
-            "battery_status": "Checking my battery.",
-            "status": "Running a status check.",
-            "power_off": "Powering off. Goodbye!",
-            "list_locations": "Here are my saved locations.",
-        }
-
-        if intent in responses:
-            return responses[intent]
-
-        if intent == "walk":
-            d = params.get("direction", "forward")
-            dist = params.get("distance", 1.0)
-            return f"Walking {d} {dist} meters."
-
-        if intent == "strafe":
-            d = params.get("direction", "left")
-            dist = params.get("distance", 0.5)
-            return f"Strafing {d} {dist} meters."
-
-        if intent == "turn":
-            deg = params.get("deg", 90)
-            d = params.get("dir", "left")
-            return f"Turning {d} {deg} degrees."
-
-        if intent == "go_to":
-            loc = params.get("location", "there")
-            return f"On my way to {loc}!"
-
-        if intent == "save_location":
-            loc = params.get("location", "here")
-            return f"Saving this spot as {loc}."
-
-        if intent == "body_height":
-            h = params.get("height", 0)
-            if h < -0.05:
-                return "Crouching down."
-            elif h > 0.05:
-                return "Standing tall."
-            return "Returning to normal height."
-
-        if intent == "set_speed":
-            return f"Speed set to {params.get('speed', 'normal')}."
-
-        return "Got it."
-
     def clear_history(self):
         """Clear conversation history."""
         self.history.clear()
@@ -557,7 +308,7 @@ def process_with_brain(transcript: str, state: Optional[Dict[str, Any]] = None,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("=" * 60)
-    print("Spot LLM Brain — Interactive Test (Tool Calling)")
+    print("Spot LLM Brain — Interactive Test (Structured JSON)")
     print("=" * 60)
 
     import sys
@@ -571,7 +322,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"Using model: {model}")
-    print(f"Tools: {len(SPOT_TOOLS)} robot actions defined")
     print("Type messages as if speaking to Spot. Type 'quit' to exit.\n")
 
     # Simulate some robot state
@@ -601,7 +351,7 @@ if __name__ == "__main__":
             print(f"Spot: {result['response']}")
         if result["action"]:
             a = result["action"]
-            print(f"  -> Tool: {a['intent']}({a.get('params', {})})")
+            print(f"  -> Action: {a['intent']}({a.get('params', {})})")
         else:
             print("  -> (no action)")
         print()
