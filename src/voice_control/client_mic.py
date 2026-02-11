@@ -246,6 +246,8 @@ def main():
                         help=f"Ollama model for LLM brain (default: {DEFAULT_MODEL})")
     parser.add_argument("--no-brain", action="store_true",
                         help="Disable LLM brain, use regex+LLM-fallback (legacy mode)")
+    parser.add_argument("--debug-audio", action="store_true",
+                        help="Print audio levels periodically to diagnose mic issues")
     args = parser.parse_args()
 
     if args.list_devices:
@@ -419,7 +421,10 @@ def main():
 
                 # Periodic status when idle
                 if not is_speaking and frame_count % 166 == 0:  # ~5 seconds
-                    print("[Listening...]")
+                    if args.debug_audio:
+                        print(f"[Listening... rms={frame_rms:.5f} threshold={energy_threshold:.5f}]")
+                    else:
+                        print("[Listening...]")
 
     except KeyboardInterrupt:
         print("\n\nShutting down...")
