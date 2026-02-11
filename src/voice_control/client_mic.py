@@ -46,10 +46,11 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 VAD_LEVEL = 2                    # webrtcvad aggressiveness (0-3)
-SILENCE_TIMEOUT = 0.5            # Seconds of silence to end utterance
+SILENCE_TIMEOUT = 1.0            # Seconds of silence to end utterance (robot fans are loud)
 MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
+MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)  # ~267 frames
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
-ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than noise
+ENERGY_THRESHOLD_MULTIPLIER = 3.0  # Speech must be this many times louder than noise (robot is noisy)
 
 # ============================================================================
 # Audio Queue (filled by callback)
@@ -333,10 +334,10 @@ def main():
     window = b""
     speech_buffer = bytearray()
     speech_float_buffer = []
+    speech_frame_count = 0  # track audio frames (not wall clock) for max duration
 
     is_speaking = False
     last_speech_time = None
-    speech_start_time = None
     frame_count = 0
 
     try:
@@ -371,26 +372,29 @@ def main():
                         # Speech started
                         print("\n>>> Speech detected...")
                         is_speaking = True
-                        speech_start_time = time.time()
+                        speech_frame_count = 0
                         speech_buffer.clear()
                         speech_float_buffer.clear()
 
                     last_speech_time = time.time()
                     speech_buffer.extend(frame)
                     speech_float_buffer.append(pcm16_to_float32(frame))
+                    speech_frame_count += 1
 
-                    # Progress indicator
-                    duration = time.time() - speech_start_time
-                    if int(duration * 2) > int((duration - 0.03) * 2):  # Every 0.5s
-                        print(f"    Recording: {duration:.1f}s")
+                    # Progress indicator (based on audio frames, not wall clock)
+                    audio_duration = speech_frame_count * FRAME_MS / 1000.0
+                    if speech_frame_count % 17 == 0:  # ~every 0.5s of audio
+                        print(f"    Recording: {audio_duration:.1f}s")
 
-                    # Max duration check
-                    if duration > MAX_UTTERANCE_SECONDS:
-                        print(f"\n>>> Max duration reached, processing...")
+                    # Max duration check (based on audio frames, not wall clock)
+                    if speech_frame_count >= MAX_UTTERANCE_FRAMES:
+                        print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                         process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile, brain)
                         is_speaking = False
                         speech_buffer.clear()
                         speech_float_buffer.clear()
+                        # Drain queued audio that accumulated during processing
+                        _drain_audio_queue()
 
                 else:
                     if is_speaking:
@@ -410,6 +414,8 @@ def main():
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
+                                # Drain queued audio that accumulated during processing
+                                _drain_audio_queue()
 
                 # Periodic status when idle
                 if not is_speaking and frame_count % 166 == 0:  # ~5 seconds
@@ -421,6 +427,19 @@ def main():
         stream.stop()
         stream.close()
         cleanup_spot()
+
+
+def _drain_audio_queue():
+    """Discard all queued audio frames that accumulated during processing."""
+    drained = 0
+    while not audio_queue.empty():
+        try:
+            audio_queue.get_nowait()
+            drained += 1
+        except queue.Empty:
+            break
+    if drained:
+        print(f"[Drained {drained} stale audio chunks]")
 
 
 MIN_SPEECH_DURATION = 0.5  # Reject utterances shorter than this (likely noise)
@@ -467,11 +486,16 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     print(f"HEARD: \"{transcript}\"")
     print("=" * 60)
 
-    # Clean transcript
+    # Clean transcript (remove Whisper punctuation artifacts)
     clean = re.sub(r'\.\s*', ' ', transcript).strip()
     clean = re.sub(r'\s+', ' ', clean)
     if clean != transcript:
         print(f"CLEAN: \"{clean}\"")
+
+    # Reject empty or punctuation-only transcripts (Whisper hallucination on noise)
+    if not clean or len(clean) < 2:
+        print("[Empty transcript — likely noise, skipping]")
+        return
 
     # ------------------------------------------------------------------
     # 1. Safety fast-path: stop/freeze/estop bypass LLM (zero latency)
