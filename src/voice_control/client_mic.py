@@ -46,7 +46,7 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 VAD_LEVEL = 2                    # webrtcvad aggressiveness (0-3)
-SILENCE_TIMEOUT = 1.0            # Seconds of silence to end utterance (robot fans are loud)
+SILENCE_TIMEOUT = 1.5            # Seconds of silence to end utterance (needs headroom for multi-word commands)
 MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
 MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)  # ~267 frames
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
@@ -435,19 +435,32 @@ def main():
 
 
 def _drain_audio_queue():
-    """Discard all queued audio frames that accumulated during processing."""
-    drained = 0
+    """Discard stale audio frames that accumulated during processing,
+    but keep the most recent ~1 second so new speech isn't lost."""
+    # Drain everything into a list first
+    frames = []
     while not audio_queue.empty():
         try:
-            audio_queue.get_nowait()
-            drained += 1
+            frames.append(audio_queue.get_nowait())
         except queue.Empty:
             break
+
+    if not frames:
+        return
+
+    # Keep the last ~1 second of audio (could contain new speech)
+    keep_count = max(1000 // FRAME_MS, 1)  # ~33 frames at 30ms
+    drained = max(0, len(frames) - keep_count)
+
+    # Put the kept frames back into the queue
+    for frame in frames[drained:]:
+        audio_queue.put(frame)
+
     if drained:
-        print(f"[Drained {drained} stale audio chunks]")
+        print(f"[Drained {drained} stale audio chunks, kept {len(frames) - drained}]")
 
 
-MIN_SPEECH_DURATION = 0.5  # Reject utterances shorter than this (likely noise)
+MIN_SPEECH_DURATION = 0.35  # Reject utterances shorter than this (likely noise)
 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,

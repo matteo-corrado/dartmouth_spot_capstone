@@ -52,15 +52,26 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
     # Power on and stand (optional)
     if stand_on_enter:
         # Clear stale keepalive policies that may block motor power-on
-        try:
-            keepalive_client = robot.ensure_client(KeepaliveClient.default_service_name)
-            status = keepalive_client.get_status()
-            if status.status:
-                print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
-                remove_all_policies(keepalive_client, attempts=3)
-                print("[Session] ✓ Keepalive policies cleared")
-        except Exception as e:
-            print(f"[Session] Note: Could not clear keepalive policies: {e}")
+        def _clear_keepalive_policies():
+            try:
+                keepalive_client = robot.ensure_client(KeepaliveClient.default_service_name)
+                status = keepalive_client.get_status()
+                if status.status:
+                    print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
+                    remove_all_policies(keepalive_client, attempts=3)
+                    # Wait for robot to process the removal
+                    time.sleep(2)
+                    # Verify policies are actually gone
+                    remaining = keepalive_client.get_status()
+                    if remaining.status:
+                        print(f"[Session] Warning: {len(remaining.status)} policy(ies) still remain, retrying...")
+                        remove_all_policies(keepalive_client, attempts=3)
+                        time.sleep(2)
+                    print("[Session] ✓ Keepalive policies cleared")
+            except Exception as e:
+                print(f"[Session] Note: Could not clear keepalive policies: {e}")
+
+        _clear_keepalive_policies()
 
         # Check if robot is already powered before trying to power on
         robot_state = state_client.get_robot_state()
@@ -72,9 +83,15 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
             except Exception as e:
                 error_type = type(e).__name__
                 if "KeepaliveMotorsOff" in error_type or "KeepaliveMotorsOffError" in str(e):
-                    print("[Session] Warning: Cannot power on - keepalive blocking motors.")
-                    print("[Session] Try releasing e-stop from tablet, then retry.")
-                    raise
+                    # Retry once: clear policies again and try power on
+                    print("[Session] Keepalive still blocking — clearing policies again and retrying...")
+                    _clear_keepalive_policies()
+                    try:
+                        robot.power_on(timeout_sec=20)
+                    except Exception:
+                        print("[Session] Warning: Cannot power on - keepalive still blocking motors.")
+                        print("[Session] Try releasing e-stop from tablet, then retry.")
+                        raise
                 elif "Estopped" in error_type or "EstoppedError" in str(e):
                     print("[Session] Warning: Robot is e-stopped.")
                     print("[Session] Release e-stop from the tablet, then retry.")
