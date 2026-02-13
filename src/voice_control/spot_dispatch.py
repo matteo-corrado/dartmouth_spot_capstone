@@ -28,6 +28,11 @@ _nav_thread = None
 _nav_stop_event = None
 
 
+def is_navigating() -> bool:
+    """Check if the robot is currently navigating (motor noise expected)."""
+    return _nav_thread is not None and _nav_thread.is_alive()
+
+
 def get_robot_state_dict() -> dict:
     """Collect current robot state for the LLM brain context.
 

@@ -46,6 +46,8 @@ ls /dev/cu.usbmodem*
 # Connect (replace with your device number)
 sudo screen /dev/cu.usbmodem14217250298003 115200
 
- python client_mic.py --device 24 --energy-mult 1.0
+ python client_mic.py --device 24 --energy-mult 2.0
+ python src/voice_control/client_mic.py --device 24 --channel 0 --energy-mult 2.0 --debug-audio
+
 python src/voice_control/client_mic.py --list-devices
 ```

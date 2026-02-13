@@ -1,13 +1,11 @@
 {
-  "work_area": "dented-dassie-fB4UeQADpyOtI5Gm7op1qQ==",
-  "spot_room": "repand-crow-xbguoaq6lkF5urp5v.Zz+Q==",
-  "couch": "yon-weaver-oFlFSkfJ2JWZLa.vRSDLXQ==",
   "waypoint_6": "adroit-mite-YPV1XkjfcyZwA1fTGHXbMQ==",
   "waypoint_17": "affine-algae-DbB+Aokak3j8bbEWo4OWgg==",
   "waypoint_29": "amok-cicada-Wz9ekM.mzAKpF+9L9upvUw==",
   "waypoint_35": "burbly-hyena-6o39Nr6+uWmU7XcgDL8iSQ==",
   "waypoint_28": "curved-isopod-LRxfZ27MJovTcBVvSx2QrA==",
   "waypoint_9": "cushy-wolf-ZkwJOKNNOnd.MmmcsdTwbQ==",
+  "work_area": "dented-dassie-fB4UeQADpyOtI5Gm7op1qQ==",
   "waypoint_30": "flip-chick-UPvm8T6QoKrnEbOI16TcVg==",
   "waypoint_26": "floral-dove-L1O6hua1LuSrOKaPnUkoQw==",
   "waypoint_2": "gainly-embryo-cE5p9czlIfMVCKaeDDmKTg==",
@@ -27,6 +25,7 @@
   "localize_-_1": "pained-moray-M.rkyCCXV450+fu5CBK7WQ==",
   "waypoint_23": "pent-coyote-xXgCwAJTP3zqnjn7XXJ0Cw==",
   "waypoint_10": "pushy-impala-xnVZvMhGGe66JgEjPQP5Rg==",
+  "spot_room": "repand-crow-xbguoaq6lkF5urp5v.Zz+Q==",
   "waypoint_20": "rigged-shark-EYfVEep327jJb8.lJT6DcA==",
   "waypoint_3": "sacked-remora-6Z8gDUyVZf8wBHdltjPbIg==",
   "corner": "scared-beetle-uz8w5Xi9E1qUw6qSW9Rpzw==",
@@ -34,5 +33,6 @@
   "waypoint_31": "tan-hornet-C2dbsQURnJDF6WGBM++yjw==",
   "waypoint_33": "velar-newt-bQPPcFc27n1cUlId7VoE2w==",
   "waypoint_24": "webby-leech-cf08nzssDUyUVa5R4m1Zxw==",
-  "start": "whippy-krill-DuKzlNuEmury6IRipRT43A=="
+  "start": "whippy-krill-DuKzlNuEmury6IRipRT43A==",
+  "couch": "yon-weaver-oFlFSkfJ2JWZLa.vRSDLXQ=="
 }

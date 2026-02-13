@@ -20,6 +20,7 @@ import re
 import time
 import queue
 import argparse
+from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
 import webrtcvad
@@ -30,12 +31,13 @@ from asr_pb2_grpc import ASRStub
 from intent import parse_intent
 from llm_brain import SpotBrain, DEFAULT_MODEL
 
-# Optional noise reduction (for final audio, not real-time)
-try:
-    import noisereduce as nr
-    NOISE_REDUCE_AVAILABLE = True
-except ImportError:
-    NOISE_REDUCE_AVAILABLE = False
+class VoiceState(Enum):
+    WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
+    LISTENING = auto()   # Wake word heard, waiting for speech
+    RECORDING = auto()   # Speech detected, accumulating audio
+
+
+LISTENING_TIMEOUT = 300.0  # 5 minutes before requiring wake word again
 
 # ============================================================================
 # Configuration
@@ -45,12 +47,17 @@ FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
-VAD_LEVEL = 2                    # webrtcvad aggressiveness (0-3)
-SILENCE_TIMEOUT = 1.5            # Seconds of silence to end utterance (needs headroom for multi-word commands)
+VAD_LEVEL = 1                    # webrtcvad aggressiveness (0-3); 1 = catches softer speech at close range
+SILENCE_TIMEOUT = 0.5            # Seconds of silence to end utterance
 MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
 MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)  # ~267 frames
+SPEECH_ONSET_FRAMES = 3          # Consecutive VAD+energy frames to confirm speech onset (~90ms)
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
-ENERGY_THRESHOLD_MULTIPLIER = 3.0  # Speech must be this many times louder than noise (robot is noisy)
+ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than noise
+NOISE_EMA_ALPHA = 0.01           # EMA smoothing for adaptive noise floor (slow adaptation)
+NOISE_FLOOR_MIN = 0.001          # Minimum noise floor (prevent threshold from dropping to zero)
+NOISE_FLOOR_MAX = 0.05           # Maximum noise floor (prevent threshold from going absurdly high)
+NAV_ENERGY_MULT = 3.0            # Extra energy multiplier during navigation (suppresses motor noise)
 
 # ============================================================================
 # Audio Queue (filled by callback)
@@ -75,10 +82,10 @@ def audio_callback(indata, frames, time_info, status):
 # ============================================================================
 # Noise Calibration
 # ============================================================================
-def calibrate_noise_floor(duration_sec: float, device=None) -> tuple:
+def calibrate_noise_floor(duration_sec: float, device=None) -> float:
     """
-    Measure ambient noise to establish energy threshold.
-    Returns (noise_rms, noise_samples_float32).
+    Measure ambient noise to establish initial energy threshold.
+    Returns noise_rms (seeds the adaptive noise floor).
     """
     print(f"\n[Calibrating noise floor for {duration_sec}s - please stay quiet...]")
 
@@ -104,11 +111,11 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> tuple:
         noise_audio = np.concatenate(samples)[:samples_needed]
         noise_rms = np.sqrt(np.mean(noise_audio ** 2))
         print(f"[Noise floor RMS: {noise_rms:.5f}]")
-        return noise_rms, noise_audio
+        return noise_rms
 
     except Exception as e:
         print(f"[Calibration error: {e}]")
-        return 0.01, None  # Default fallback
+        return 0.01  # Default fallback
 
 
 # ============================================================================
@@ -118,26 +125,6 @@ def compute_rms(pcm_bytes: bytes) -> float:
     """Compute RMS energy of PCM16 audio."""
     audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
     return np.sqrt(np.mean(audio ** 2))
-
-
-def apply_noise_reduction(audio_float32: np.ndarray, noise_profile: np.ndarray) -> np.ndarray:
-    """Apply noise reduction to audio (batch processing, not real-time)."""
-    if not NOISE_REDUCE_AVAILABLE or noise_profile is None:
-        return audio_float32
-
-    try:
-        return nr.reduce_noise(
-            y=audio_float32,
-            sr=SAMPLE_RATE,
-            y_noise=noise_profile,
-            prop_decrease=0.85,         # More aggressive (was 0.75) - better for loud Jetson/Spot fans
-            stationary=True,            # Spot's fan noise is constant
-            freq_mask_smooth_hz=500,    # Smooth out robot fan noise (low freq hum)
-            time_mask_smooth_ms=50      # Reduce motor noise (short bursts)
-        ).astype(np.float32)
-    except Exception as e:
-        print(f"[Noise reduction error: {e}]")
-        return audio_float32
 
 
 def pcm16_to_float32(pcm_bytes: bytes) -> np.ndarray:
@@ -210,6 +197,15 @@ def cleanup_spot():
         pass
 
 
+def _is_robot_moving() -> bool:
+    """Check if robot is actively navigating (motor noise expected)."""
+    try:
+        from src.voice_control.spot_dispatch import is_navigating
+        return is_navigating()
+    except Exception:
+        return False
+
+
 # Safety commands that bypass the LLM for zero-latency execution
 SAFETY_PATTERNS = [
     (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
@@ -229,15 +225,25 @@ def check_safety_command(text: str):
     return None
 
 
+# Wake phrase pattern — matches Whisper transcriptions of "Hey Spot"
+# Whisper base commonly produces: "Hey spot", "Hey, spot", "A spot", "A-spot",
+# "Stay spot", "Say spot", etc.
+WAKE_PHRASE_PATTERN = re.compile(
+    r"(?:hey|a|stay|say|heh)\s*[,\-]?\s*spot\b",
+    re.IGNORECASE
+)
+
+
 # ============================================================================
 # Main Voice Control Loop
 # ============================================================================
 def main():
+    global MIC_CHANNEL, SILENCE_TIMEOUT, MIN_SPEECH_DURATION
+
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--server", default="localhost:50055", help="ASR server address")
     parser.add_argument("--device", type=int, default=None, help="Audio device index")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices")
-    parser.add_argument("--no-noise-reduction", action="store_true", help="Disable noise reduction")
     parser.add_argument("--energy-mult", type=float, default=ENERGY_THRESHOLD_MULTIPLIER,
                         help=f"Energy threshold multiplier (default: {ENERGY_THRESHOLD_MULTIPLIER})")
     parser.add_argument("--channel", type=int, default=0, choices=[0, 1],
@@ -248,14 +254,23 @@ def main():
                         help="Disable LLM brain, use regex+LLM-fallback (legacy mode)")
     parser.add_argument("--debug-audio", action="store_true",
                         help="Print audio levels periodically to diagnose mic issues")
+    parser.add_argument("--silence-timeout", type=float, default=SILENCE_TIMEOUT,
+                        help=f"Seconds of silence to end utterance (default: {SILENCE_TIMEOUT})")
+    parser.add_argument("--min-speech", type=float, default=MIN_SPEECH_DURATION,
+                        help=f"Min speech duration in seconds (default: {MIN_SPEECH_DURATION})")
+    parser.add_argument("--vad-level", type=int, default=VAD_LEVEL, choices=[0, 1, 2, 3],
+                        help=f"WebRTC VAD aggressiveness 0-3 (default: {VAD_LEVEL})")
+    parser.add_argument("--no-wake-word", action="store_true",
+                        help="Disable wake word detection (always listening)")
     args = parser.parse_args()
 
     if args.list_devices:
         print(sd.query_devices())
         return
 
-    global MIC_CHANNEL
     MIC_CHANNEL = args.channel
+    SILENCE_TIMEOUT = args.silence_timeout
+    MIN_SPEECH_DURATION = args.min_speech
 
     # ========================================================================
     # Startup
@@ -275,16 +290,11 @@ def main():
         except:
             print("Audio device: system default")
 
-    # Calibrate noise floor
-    noise_rms, noise_profile = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
-    energy_threshold = noise_rms * args.energy_mult
-    print(f"[Energy threshold: {energy_threshold:.5f} ({args.energy_mult}x noise)]")
-
-    if NOISE_REDUCE_AVAILABLE and not args.no_noise_reduction:
-        print("[Noise reduction: ENABLED]")
-    else:
-        print("[Noise reduction: DISABLED]")
-        noise_profile = None
+    # Calibrate noise floor (seeds the adaptive noise tracker)
+    noise_rms = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
+    rolling_noise_rms = noise_rms  # Will be updated adaptively during operation
+    energy_threshold = rolling_noise_rms * args.energy_mult
+    print(f"[Energy threshold: {energy_threshold:.5f} ({args.energy_mult}x noise, adaptive)]")
 
     # Connect to ASR
     print(f"\nConnecting to ASR server at {args.server}...")
@@ -298,6 +308,7 @@ def main():
         brain = SpotBrain(model=args.model)
         if brain.is_available():
             print(f"[Brain] Ready — model: {args.model}")
+            brain.warm_up()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
             print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {args.model}")
@@ -306,7 +317,14 @@ def main():
         print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
 
     # Initialize VAD
-    vad = webrtcvad.Vad(VAD_LEVEL)
+    vad = webrtcvad.Vad(args.vad_level)
+
+    # Wake word mode (ASR-based: Whisper detects "Hey Spot" in transcript)
+    use_wake_word = not args.no_wake_word
+    if use_wake_word:
+        print("[WakeWord] ASR-based detection (say 'Hey Spot' to activate)")
+    else:
+        print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
     # Open audio stream
     try:
@@ -324,8 +342,10 @@ def main():
         return
 
     mode = f"LLM Brain ({args.model})" if brain else "Regex-only (legacy)"
+    ww_status = "ON (ASR-based)" if use_wake_word else "OFF"
     print("\n" + "=" * 60)
     print(f"LISTENING — Mode: {mode}")
+    print(f"  Wake word: {ww_status}")
     print("  Safety commands (stop/freeze/estop) always instant")
     print("  Everything else goes through the LLM brain")
     print("=" * 60 + "\n")
@@ -341,6 +361,12 @@ def main():
     is_speaking = False
     last_speech_time = None
     frame_count = 0
+    consecutive_speech = 0       # Tracks consecutive VAD-positive frames for onset debounce
+    pending_speech_frames = []   # Buffers frames during onset confirmation
+
+    # Wake word state (ASR-based: no separate model needed)
+    state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
+    listening_start_time = time.time()
 
     try:
         while True:
@@ -358,7 +384,12 @@ def main():
                 frame_rms = compute_rms(frame)
 
                 # Energy gating: only check VAD if energy is above threshold
-                if frame_rms > energy_threshold:
+                # During navigation, raise threshold to suppress motor noise
+                effective_threshold = energy_threshold
+                if _is_robot_moving():
+                    effective_threshold *= NAV_ENERGY_MULT
+
+                if frame_rms > effective_threshold:
                     try:
                         is_speech = vad.is_speech(frame, SAMPLE_RATE)
                     except:
@@ -367,38 +398,74 @@ def main():
                     is_speech = False
 
                 # ============================================================
-                # Speech Detection State Machine
+                # LISTENING timeout: return to WAKE_WORD after 10s
+                # ============================================================
+                if state == VoiceState.LISTENING and not is_speaking:
+                    if time.time() - listening_start_time > LISTENING_TIMEOUT:
+                        print("[Listening timeout — say 'Hey Spot' to activate]")
+                        state = VoiceState.WAKE_WORD
+                        continue
+
+                # ============================================================
+                # Speech Detection State Machine (with onset debounce)
                 # ============================================================
                 if is_speech:
+                    consecutive_speech += 1
+
                     if not is_speaking:
-                        # Speech started
-                        print("\n>>> Speech detected...")
+                        # Buffer frames while confirming onset
+                        pending_speech_frames.append(frame)
+                        if consecutive_speech < SPEECH_ONSET_FRAMES:
+                            continue  # Wait for more consecutive VAD frames
+
+                        # Onset confirmed — start recording with buffered frames
+                        if state == VoiceState.WAKE_WORD:
+                            print("\n>>> Speech detected (wake word mode — safety only)...")
+                        else:
+                            print("\n>>> Speech detected...")
                         is_speaking = True
                         speech_frame_count = 0
                         speech_buffer.clear()
                         speech_float_buffer.clear()
+                        for pf in pending_speech_frames:
+                            speech_buffer.extend(pf)
+                            speech_float_buffer.append(pcm16_to_float32(pf))
+                            speech_frame_count += 1
+                        pending_speech_frames.clear()
+                        last_speech_time = time.time()
+                    else:
+                        # Already recording — add frame normally
+                        last_speech_time = time.time()
+                        speech_buffer.extend(frame)
+                        speech_float_buffer.append(pcm16_to_float32(frame))
+                        speech_frame_count += 1
 
-                    last_speech_time = time.time()
-                    speech_buffer.extend(frame)
-                    speech_float_buffer.append(pcm16_to_float32(frame))
-                    speech_frame_count += 1
+                        # Progress indicator (based on audio frames, not wall clock)
+                        audio_duration = speech_frame_count * FRAME_MS / 1000.0
+                        if speech_frame_count % 17 == 0:  # ~every 0.5s of audio
+                            print(f"    Recording: {audio_duration:.1f}s")
 
-                    # Progress indicator (based on audio frames, not wall clock)
-                    audio_duration = speech_frame_count * FRAME_MS / 1000.0
-                    if speech_frame_count % 17 == 0:  # ~every 0.5s of audio
-                        print(f"    Recording: {audio_duration:.1f}s")
-
-                    # Max duration check (based on audio frames, not wall clock)
-                    if speech_frame_count >= MAX_UTTERANCE_FRAMES:
-                        print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
-                        process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile, brain)
-                        is_speaking = False
-                        speech_buffer.clear()
-                        speech_float_buffer.clear()
-                        # Drain queued audio that accumulated during processing
-                        _drain_audio_queue()
+                        # Max duration check (based on audio frames, not wall clock)
+                        if speech_frame_count >= MAX_UTTERANCE_FRAMES:
+                            print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
+                            safety_only = (state == VoiceState.WAKE_WORD)
+                            result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                                                       brain, safety_only=safety_only)
+                            is_speaking = False
+                            speech_buffer.clear()
+                            speech_float_buffer.clear()
+                            _drain_audio_queue()
+                            if result == "wake_detected" and state == VoiceState.WAKE_WORD:
+                                print(">>> Now listening for commands...")
+                                state = VoiceState.LISTENING
+                                listening_start_time = time.time()
+                            elif use_wake_word and state == VoiceState.LISTENING:
+                                listening_start_time = time.time()
 
                 else:
+                    consecutive_speech = 0
+                    pending_speech_frames.clear()
+
                     if is_speaking:
                         # Add trailing frames for context
                         if len(speech_float_buffer) > 0:
@@ -412,17 +479,31 @@ def main():
                             # Check silence timeout
                             if elapsed_silence > SILENCE_TIMEOUT:
                                 print(f"\n>>> Processing...")
-                                process_utterance(stub, speech_buffer, speech_float_buffer, noise_profile, brain)
+                                safety_only = (state == VoiceState.WAKE_WORD)
+                                result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                                                           brain, safety_only=safety_only)
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
-                                # Drain queued audio that accumulated during processing
                                 _drain_audio_queue()
+                                if result == "wake_detected" and state == VoiceState.WAKE_WORD:
+                                    print(">>> Now listening for commands...")
+                                    state = VoiceState.LISTENING
+                                    listening_start_time = time.time()
+                                elif use_wake_word and state == VoiceState.LISTENING:
+                                    listening_start_time = time.time()
+                    else:
+                        # Fully idle: update adaptive noise floor
+                        rolling_noise_rms = (1 - NOISE_EMA_ALPHA) * rolling_noise_rms + NOISE_EMA_ALPHA * frame_rms
+                        rolling_noise_rms = max(NOISE_FLOOR_MIN, min(NOISE_FLOOR_MAX, rolling_noise_rms))
+                        energy_threshold = rolling_noise_rms * args.energy_mult
 
                 # Periodic status when idle
                 if not is_speaking and frame_count % 166 == 0:  # ~5 seconds
                     if args.debug_audio:
-                        print(f"[Listening... rms={frame_rms:.5f} threshold={energy_threshold:.5f}]")
+                        print(f"[{state.name} rms={frame_rms:.5f} noise={rolling_noise_rms:.5f} threshold={energy_threshold:.5f}]")
+                    elif state == VoiceState.WAKE_WORD:
+                        print("[Say 'Hey Spot' to activate...]")
                     else:
                         print("[Listening...]")
 
@@ -460,21 +541,29 @@ def _drain_audio_queue():
         print(f"[Drained {drained} stale audio chunks, kept {len(frames) - drained}]")
 
 
-MIN_SPEECH_DURATION = 0.35  # Reject utterances shorter than this (likely noise)
+MIN_SPEECH_DURATION = 0.15  # Reject utterances shorter than this (monosyllables like "sit" are ~0.2s)
 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
-                      noise_profile, brain=None):
+                      brain=None, safety_only=False):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
+
+    Args:
+        safety_only: If True, only execute safety commands (stop/freeze/estop).
+                     Non-safety speech is discarded. Used when wake word not detected.
+
+    Returns:
+        "wake_detected" if a wake phrase was found, None otherwise.
 
     Flow:
         Audio → Whisper ASR → transcript
+        transcript → wake phrase check (if safety_only)
         transcript → safety check (instant regex for stop/estop/freeze)
         transcript → LLM brain (state + history → action + response)
         OR (legacy) → regex parser → intent → dispatch
     """
     if not speech_float_buffer:
-        return
+        return None
 
     # Combine audio
     audio_float = np.concatenate(speech_float_buffer)
@@ -483,12 +572,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # Reject very short clips (noise bursts, not speech)
     if duration < MIN_SPEECH_DURATION:
         print(f"[Too short ({duration:.2f}s) — skipping]")
-        return
-
-    # Apply noise reduction (batch, not real-time)
-    if noise_profile is not None and NOISE_REDUCE_AVAILABLE:
-        print("[Applying noise reduction...]")
-        audio_float = apply_noise_reduction(audio_float, noise_profile)
+        return None
 
     # Convert to PCM16 and send to ASR
     pcm_bytes = float32_to_pcm16(audio_float)
@@ -498,7 +582,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
 
     if not transcript:
         print("[No speech recognized]")
-        return
+        return None
 
     print("\n" + "=" * 60)
     print(f"HEARD: \"{transcript}\"")
@@ -513,10 +597,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # Reject empty or punctuation-only transcripts (Whisper hallucination on noise)
     if not clean or len(clean) < 2:
         print("[Empty transcript — likely noise, skipping]")
-        return
+        return None
 
     # ------------------------------------------------------------------
     # 1. Safety fast-path: stop/freeze/estop bypass LLM (zero latency)
+    #    Safety commands ALWAYS execute, regardless of wake word state.
     # ------------------------------------------------------------------
     safety = check_safety_command(clean)
     if safety:
@@ -525,7 +610,33 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             print(">>> SAFETY COMMAND EXECUTED")
         else:
             print(">>> SAFETY COMMAND FAILED")
-        return
+        return None
+
+    # ------------------------------------------------------------------
+    # 1b. Wake phrase detection (when in WAKE_WORD state / safety_only)
+    # ------------------------------------------------------------------
+    wake_activated = False
+    if safety_only:
+        wake_match = WAKE_PHRASE_PATTERN.search(clean)
+        if wake_match:
+            # Strip wake phrase from transcript
+            remainder = clean[wake_match.end():].strip()
+            remainder = re.sub(r'^[,\s]+', '', remainder)  # strip leading punctuation
+            print(f"[Wake] Detected in: \"{clean}\"")
+            if remainder and len(remainder) >= 2:
+                # Command follows wake phrase — process it now ("Hey Spot stand")
+                print(f"[Wake] Command: \"{remainder}\"")
+                clean = remainder
+                safety_only = False  # Allow full processing below
+                wake_activated = True
+            else:
+                # Just the wake phrase, no command — wait for next utterance
+                print("[Wake] Activated — waiting for command...")
+                return "wake_detected"
+        else:
+            # No wake phrase, no safety command — discard
+            print(f"[Ignored \"{clean}\" — say 'Hey Spot' first]")
+            return None
 
     # ------------------------------------------------------------------
     # 2. LLM Brain mode (primary)
@@ -555,7 +666,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 print(">>> FAILED")
         else:
             print("(No physical action — conversation only)")
-        return
+        return "wake_detected" if wake_activated else None
 
     # ------------------------------------------------------------------
     # 3. Legacy regex-only fallback (--no-brain mode)
@@ -573,6 +684,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             print(">>> FAILED")
     else:
         print("(Not recognized — try: stand, sit, stop, turn left/right, go to [location])")
+
+    return "wake_detected" if wake_activated else None
 
 
 if __name__ == "__main__":

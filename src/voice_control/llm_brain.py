@@ -123,6 +123,37 @@ class SpotBrain:
             self._available = False
             return False
 
+    def warm_up(self):
+        """Send a trivial prompt to pre-load model into VRAM."""
+        if not self.is_available():
+            return
+        print(f"[Brain] Warming up model '{self.model}'...")
+        t0 = time.time()
+        try:
+            r = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "Respond with valid JSON: {\"ok\": true}"},
+                        {"role": "user", "content": "ping"},
+                    ],
+                    "format": "json",
+                    "stream": False,
+                    "keep_alive": "30m",
+                    "options": {"num_predict": 10, "num_gpu": 99},
+                },
+                timeout=FIRST_REQUEST_TIMEOUT,
+            )
+            elapsed = time.time() - t0
+            self._first_request = False
+            if r.status_code == 200:
+                print(f"[Brain] Model warm in {elapsed:.1f}s")
+            else:
+                print(f"[Brain] Warm-up got status {r.status_code}")
+        except Exception as e:
+            print(f"[Brain] Warm-up error: {e}")
+
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build the message list for the Ollama chat API."""
         state_lines = "\n".join(f"- {k}: {v}" for k, v in state.items())
@@ -165,10 +196,12 @@ class SpotBrain:
                     "messages": messages,
                     "format": "json",
                     "stream": False,
+                    "keep_alive": "30m",
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
-                        "num_predict": 300,
+                        "num_predict": 150,
+                        "num_gpu": 99,
                     },
                 },
                 timeout=timeout,
