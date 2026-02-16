@@ -203,6 +203,21 @@ def list_waypoints(robot) -> List[str]:
         return []
 
 
+def get_graph_waypoint_order(robot) -> List[str]:
+    """Return all waypoint IDs in graph recording order.
+
+    The graph's waypoints list preserves the order they were recorded,
+    which represents the natural traversal path of the map.
+    """
+    graph_nav_client = robot.ensure_client(GraphNavClient.default_service_name)
+    try:
+        graph = graph_nav_client.download_graph()
+        return [wp.id for wp in graph.waypoints]
+    except Exception as e:
+        print(f"[GraphNav] Failed to get waypoint order: {e}")
+        return []
+
+
 def get_localization_state(robot) -> Optional[dict]:
     """Get current localization state.
     

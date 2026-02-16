@@ -16,6 +16,7 @@ Models (recommended):
 
 import json
 import time
+import base64
 import requests
 from typing import Optional, Dict, Any, List
 
@@ -23,10 +24,12 @@ from typing import Optional, Dict, Any, List
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "qwen2.5:7b"
+VLM_MODEL = "qwen2.5-vl:7b"
 OLLAMA_URL = "http://localhost:11434"
 MAX_HISTORY = 20          # messages (10 user + 10 assistant exchanges)
 REQUEST_TIMEOUT = 30.0    # seconds per request
 FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
+VLM_TIMEOUT = 60.0       # seconds — VLM inference is slower
 
 # ---------------------------------------------------------------------------
 # System prompt — includes action catalog and JSON output schema
@@ -58,8 +61,12 @@ AVAILABLE ACTIONS:
 - body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.
 - set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.
 - go_to: Navigate to saved location. Params: {"location": "<name>"}. Use lowercase_with_underscores.
+- tour: Visit locations in sequence (one pass). Params: {"locations": ["loc1", "loc2"]} for specific stops, or {"locations": "all"} to visit all. Use for "loop the map", "visit everywhere", "go to A then B then C".
+- patrol: Loop through locations continuously until stopped. Params: same as tour. Use for "patrol", "keep looping", "keep patrolling".
+- come_back: Return to position before last navigation. No params. Use for "come back", "go home", "return".
 - save_location: Save current position. Params: {"location": "<name>"}.
 - list_locations: List saved locations. No params.
+- describe: Take a photo and describe what you see. Use when user asks about surroundings, what's in front of you, etc. Params: {"camera": "front"|"left"|"right"|"back"}. Default "front".
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
@@ -85,7 +92,25 @@ User: "How are you doing?"
 {"action": null, "params": {}, "response": "I'm doing great! Battery is looking good and I'm ready to help."}
 
 User: "Go to the kitchen"
-{"action": "go_to", "params": {"location": "kitchen"}, "response": "On my way to the kitchen!"}"""
+{"action": "go_to", "params": {"location": "kitchen"}, "response": "On my way to the kitchen!"}
+
+User: "What do you see?"
+{"action": "describe", "params": {"camera": "front"}, "response": "Let me take a look..."}
+
+User: "What's to your left?"
+{"action": "describe", "params": {"camera": "left"}, "response": "Let me check what's on my left..."}
+
+User: "Loop the map"
+{"action": "tour", "params": {"locations": "all"}, "response": "Starting a tour of all locations!"}
+
+User: "Go to kitchen then hallway then lab"
+{"action": "tour", "params": {"locations": ["kitchen", "hallway", "lab"]}, "response": "On my way! I'll visit kitchen, hallway, and lab in order."}
+
+User: "Patrol the map"
+{"action": "patrol", "params": {"locations": "all"}, "response": "Starting patrol! I'll keep looping until you tell me to stop."}
+
+User: "Come back"
+{"action": "come_back", "params": {}, "response": "Heading back to where I started!"}"""
 
 
 class SpotBrain:
@@ -285,6 +310,16 @@ class SpotBrain:
             loc = str(params["location"]).strip().lower().replace(" ", "_")
             params["location"] = loc
 
+        # Normalize locations list (tour/patrol)
+        if "locations" in params:
+            locs = params["locations"]
+            if isinstance(locs, list):
+                params["locations"] = [
+                    str(l).strip().lower().replace(" ", "_") for l in locs
+                ]
+            elif isinstance(locs, str) and locs != "all":
+                params["locations"] = [locs.strip().lower().replace(" ", "_")]
+
         # Clamp degrees
         if "deg" in params:
             try:
@@ -309,6 +344,60 @@ class SpotBrain:
                 params["height"] = 0.0
 
         return params
+
+    def query_vlm(self, image_bytes: bytes, question: str) -> str:
+        """Send image + question to the VLM for visual description.
+
+        Args:
+            image_bytes: JPEG image data from Spot camera.
+            question: The user's original question (e.g. "what do you see?").
+
+        Returns:
+            VLM's text response describing the image.
+        """
+        image_b64 = base64.b64encode(image_bytes).decode()
+
+        vlm_prompt = (
+            f"You are Spot, a Boston Dynamics robot at Dartmouth College. "
+            f"A user asked: \"{question}\". Describe what you see in 2-3 sentences. "
+            f"Be specific about objects, people, and surroundings."
+        )
+
+        try:
+            print(f"[Brain] Querying VLM ({VLM_MODEL})...")
+            t0 = time.time()
+            r = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": VLM_MODEL,
+                    "messages": [
+                        {"role": "user", "content": vlm_prompt, "images": [image_b64]}
+                    ],
+                    "stream": False,
+                    "keep_alive": "5m",
+                    "options": {"num_gpu": 99, "num_predict": 200},
+                },
+                timeout=VLM_TIMEOUT,
+            )
+            elapsed = time.time() - t0
+
+            if r.status_code != 200:
+                print(f"[Brain] VLM error {r.status_code}: {r.text[:200]}")
+                return "Sorry, I couldn't process the image right now."
+
+            content = r.json().get("message", {}).get("content", "").strip()
+            print(f"[Brain] VLM responded in {elapsed:.1f}s")
+            return content or "I can see the image but I'm having trouble describing it."
+
+        except requests.Timeout:
+            print(f"[Brain] VLM timeout after {VLM_TIMEOUT}s")
+            return "Sorry, the image analysis took too long."
+        except requests.ConnectionError:
+            print("[Brain] VLM cannot connect to Ollama")
+            return "Sorry, I can't access my vision system right now."
+        except Exception as e:
+            print(f"[Brain] VLM error: {e}")
+            return "Sorry, something went wrong with my vision."
 
     def clear_history(self):
         """Clear conversation history."""

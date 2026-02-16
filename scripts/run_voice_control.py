@@ -1,21 +1,18 @@
 #!/usr/bin/env python3
-"""Integrated voice control script for Spot — LLM Brain Mode.
+"""Integrated voice control for Spot.
 
-Architecture (Boston Dynamics "Robots That Can Chat" style):
-    Mic → VAD → Whisper ASR → LLM Brain (state + history + personality) → Action + Response
+    Mic → VAD → Riva ASR (Canary-Qwen-2.5B) → LLM Brain → Action + TTS Response
 
 Requires:
-1. E-Stop running (via scripts/estop_run.py in separate terminal)
-2. Ollama running with a model pulled (e.g. qwen2.5:7b)
-3. ASR server running (starts automatically or can run separately)
+1. E-Stop running (scripts/estop_run.py in separate terminal)
+2. Riva server running (scripts/setup_riva.sh start)
+3. Ollama running with qwen2.5:7b pulled
+4. ASR bridge server (starts automatically)
 
 Usage:
-    python scripts/run_voice_control.py [--model qwen2.5:7b] [--no-server] [--server-only]
-
-    --model: Ollama model for LLM brain (default: qwen2.5:7b)
-    --no-server: Don't start ASR server (assumes it's running elsewhere)
-    --server-only: Only start ASR server, don't start client
-    --no-brain: Disable LLM brain, use regex-only (legacy mode)
+    python scripts/run_voice_control.py
+    python scripts/run_voice_control.py --no-tts      # silent mode
+    python scripts/run_voice_control.py --server-only  # ASR server only
 """
 import sys
 import pathlib
@@ -32,29 +29,41 @@ def main():
                         help="Don't start ASR server (assumes it's already running)")
     parser.add_argument("--server-only", action="store_true",
                         help="Only start ASR server, don't start client")
-    parser.add_argument("--model", type=str, default="qwen2.5:7b",
-                        help="Ollama model for LLM brain (default: qwen2.5:7b)")
     parser.add_argument("--no-brain", action="store_true",
-                        help="Disable LLM brain, use regex-only (legacy mode)")
+                        help="Disable LLM brain (regex-only)")
+    parser.add_argument("--no-tts", action="store_true",
+                        help="Disable text-to-speech")
+    parser.add_argument("--debug-audio", action="store_true",
+                        help="Print audio levels for mic diagnostics")
     args = parser.parse_args()
     
     project_root = pathlib.Path(__file__).resolve().parents[1]
     voice_dir = project_root / "src" / "voice_control"
     
     print("=" * 60)
-    print("Spot Voice Control System — LLM Brain Mode")
+    print("Spot Voice Control System")
     print("=" * 60)
+    print("\n  IMPORTANT: Make sure these are running:")
+    print("  1. E-Stop:      python scripts/estop_run.py")
+    print("  2. Riva server:  scripts/setup_riva.sh start")
     if not args.no_brain:
-        print(f"\n  LLM Model: {args.model}")
+        print("  3. Ollama:       sudo systemctl start ollama")
+
+    # Quick check: is Riva server reachable on port 50051?
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        riva_ok = sock.connect_ex(('127.0.0.1', 50051)) == 0
+        sock.close()
+    except Exception:
+        riva_ok = False
+
+    if riva_ok:
+        print("\n  ✓ Riva server detected on port 50051")
     else:
-        print("\n  Mode: Regex-only (legacy)")
-    print("\n  IMPORTANT: Make sure E-Stop is running!")
-    print("  Run this in a separate terminal:")
-    print("    python scripts/estop_run.py")
-    if not args.no_brain:
-        print(f"\n  Also ensure Ollama is running with model pulled:")
-        print(f"    sudo systemctl start ollama")
-        print(f"    ollama pull {args.model}")
+        print("\n  ✗ Riva server NOT detected on port 50051")
+        print("    Start it with: scripts/setup_riva.sh start")
+
     print("\nPress Enter when ready...")
     input()
     
@@ -97,7 +106,7 @@ def main():
                 while True:
                     line = output_queue.get_nowait()
                     print(f"   [Server] {line}")
-                    if "Server listening" in line or "listening on" in line:
+                    if "listening on" in line.lower() or "ready for connections" in line.lower():
                         server_ready = True
             except queue_module.Empty:
                 pass
@@ -162,12 +171,14 @@ def main():
     print("   Safety commands (stop/freeze/estop) are always instant.")
     print("   Press Ctrl+C to stop.\n")
 
-    # Build client command with model and brain args
+    # Build client command
     client_cmd = [sys.executable, str(voice_dir / "client_mic.py")]
-    if not args.no_brain:
-        client_cmd.extend(["--model", args.model])
-    else:
+    if args.no_brain:
         client_cmd.append("--no-brain")
+    if args.no_tts:
+        client_cmd.append("--no-tts")
+    if args.debug_audio:
+        client_cmd.append("--debug-audio")
 
     try:
         client_proc = subprocess.run(client_cmd, cwd=str(voice_dir))

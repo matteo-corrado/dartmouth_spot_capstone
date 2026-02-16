@@ -49,5 +49,9 @@ sudo screen /dev/cu.usbmodem14217250298003 115200
  python client_mic.py --device 24 --energy-mult 2.0
  python src/voice_control/client_mic.py --device 24 --channel 0 --energy-mult 2.0 --debug-audio
 
+python scripts/run_voice_control.py                  # standard setup
+python scripts/run_voice_control.py --debug-audio    # with audio level logging
+python scripts/run_voice_control.py --no-tts         # silent mode
+
 python src/voice_control/client_mic.py --list-devices
 ```

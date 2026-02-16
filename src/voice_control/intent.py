@@ -58,6 +58,11 @@ COMMANDS = [
 
     # === NAVIGATION ===
     (r"\b(?:go to|navigate to|drive to|walk to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
+    (r"\b(?:loop|tour)\s+(?:the\s+)?map\b",        "tour", {"locations": "all"}),
+    (r"\bvisit\s+all\s+(?:locations|waypoints|places)\b", "tour", {"locations": "all"}),
+    (r"\bpatrol\s+(?:the\s+)?map\b",               "patrol", {"locations": "all"}),
+    (r"\b(?:keep\s+)?patrol(?:ling)?\b",            "patrol", {"locations": "all"}),
+    (r"\b(?:come\s+back|go\s+home|return\s+(?:to\s+)?(?:start|home|base))\b", "come_back", {}),
     (r"\b(?:save location|remember location|save this as|mark this as)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)", "save_location", {"location": "$location"}),
     (r"\b(?:come here|come to me)\b",              "walk_to", {"relative": [0.0, -1.0, 0.0]}),
 

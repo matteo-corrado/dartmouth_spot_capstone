@@ -30,6 +30,7 @@ from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
 from llm_brain import SpotBrain, DEFAULT_MODEL
+from spot_tts import SpotTTS
 
 class VoiceState(Enum):
     WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
@@ -64,10 +65,13 @@ NAV_ENERGY_MULT = 3.0            # Extra energy multiplier during navigation (su
 # ============================================================================
 audio_queue = queue.Queue()
 MIC_CHANNEL = 0  # 0=left (beamformed), 1=right (ASR); set from --channel arg
+_mic_muted = False  # Set True during TTS playback to prevent feedback
 
 
 def audio_callback(indata, frames, time_info, status):
     """Sounddevice callback - converts stereo to mono PCM16."""
+    if _mic_muted:
+        return  # Mic muted during TTS — discard all audio
     if status:
         print(f"[Audio: {status}]")
     # Select channel: 0=left (beamformed), 1=right (ASR) for stereo mics like XVF3800
@@ -77,6 +81,24 @@ def audio_callback(indata, frames, time_info, status):
         mono = indata[:, 0].astype(np.float32)
     pcm16 = (mono * 32767).astype(np.int16).tobytes()
     audio_queue.put(pcm16)
+
+
+def _mute_mic():
+    """Mute mic (called by TTS before playback)."""
+    global _mic_muted
+    _mic_muted = True
+
+
+def _unmute_mic():
+    """Unmute mic and drain stale audio (called by TTS after playback)."""
+    global _mic_muted
+    _mic_muted = False
+    # Drain any residual audio that leaked through during mute transition
+    while not audio_queue.empty():
+        try:
+            audio_queue.get_nowait()
+        except queue.Empty:
+            break
 
 
 # ============================================================================
@@ -238,39 +260,19 @@ WAKE_PHRASE_PATTERN = re.compile(
 # Main Voice Control Loop
 # ============================================================================
 def main():
-    global MIC_CHANNEL, SILENCE_TIMEOUT, MIN_SPEECH_DURATION
 
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
-    parser.add_argument("--server", default="localhost:50055", help="ASR server address")
-    parser.add_argument("--device", type=int, default=None, help="Audio device index")
-    parser.add_argument("--list-devices", action="store_true", help="List audio devices")
-    parser.add_argument("--energy-mult", type=float, default=ENERGY_THRESHOLD_MULTIPLIER,
-                        help=f"Energy threshold multiplier (default: {ENERGY_THRESHOLD_MULTIPLIER})")
-    parser.add_argument("--channel", type=int, default=0, choices=[0, 1],
-                        help="Mic channel: 0=left (beamformed), 1=right (ASR). Default: 0")
-    parser.add_argument("--model", type=str, default=DEFAULT_MODEL,
-                        help=f"Ollama model for LLM brain (default: {DEFAULT_MODEL})")
-    parser.add_argument("--no-brain", action="store_true",
-                        help="Disable LLM brain, use regex+LLM-fallback (legacy mode)")
-    parser.add_argument("--debug-audio", action="store_true",
-                        help="Print audio levels periodically to diagnose mic issues")
-    parser.add_argument("--silence-timeout", type=float, default=SILENCE_TIMEOUT,
-                        help=f"Seconds of silence to end utterance (default: {SILENCE_TIMEOUT})")
-    parser.add_argument("--min-speech", type=float, default=MIN_SPEECH_DURATION,
-                        help=f"Min speech duration in seconds (default: {MIN_SPEECH_DURATION})")
-    parser.add_argument("--vad-level", type=int, default=VAD_LEVEL, choices=[0, 1, 2, 3],
-                        help=f"WebRTC VAD aggressiveness 0-3 (default: {VAD_LEVEL})")
-    parser.add_argument("--no-wake-word", action="store_true",
-                        help="Disable wake word detection (always listening)")
+    parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
+    parser.add_argument("--device", type=int, default=24, help="Audio device index (default: 24 = XVF3800)")
+    parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
+    parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
+    parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
+    parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
     args = parser.parse_args()
 
     if args.list_devices:
         print(sd.query_devices())
         return
-
-    MIC_CHANNEL = args.channel
-    SILENCE_TIMEOUT = args.silence_timeout
-    MIN_SPEECH_DURATION = args.min_speech
 
     # ========================================================================
     # Startup
@@ -280,9 +282,8 @@ def main():
     print("=" * 60)
 
     # Show device info
-    ch_label = "left/beamformed" if MIC_CHANNEL == 0 else "right/ASR"
     if args.device is not None:
-        print(f"Audio device: {args.device} (channel {MIC_CHANNEL}: {ch_label})")
+        print(f"Audio device: {args.device}")
     else:
         try:
             info = sd.query_devices(sd.default.device[0])
@@ -293,31 +294,45 @@ def main():
     # Calibrate noise floor (seeds the adaptive noise tracker)
     noise_rms = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
     rolling_noise_rms = noise_rms  # Will be updated adaptively during operation
-    energy_threshold = rolling_noise_rms * args.energy_mult
-    print(f"[Energy threshold: {energy_threshold:.5f} ({args.energy_mult}x noise, adaptive)]")
+    energy_threshold = rolling_noise_rms * ENERGY_THRESHOLD_MULTIPLIER
+    print(f"[Energy threshold: {energy_threshold:.5f} ({ENERGY_THRESHOLD_MULTIPLIER}x noise, adaptive)]")
 
     # Connect to ASR
-    print(f"\nConnecting to ASR server at {args.server}...")
-    channel = grpc.insecure_channel(args.server)
+    asr_server = "localhost:50055"
+    print(f"\nConnecting to ASR server at {asr_server}...")
+    channel = grpc.insecure_channel(asr_server)
     stub = ASRStub(channel)
 
     # Initialize LLM Brain
     brain = None
     if not args.no_brain:
-        print(f"\nInitializing LLM brain (model: {args.model})...")
-        brain = SpotBrain(model=args.model)
+        print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
+        brain = SpotBrain(model=DEFAULT_MODEL)
         if brain.is_available():
-            print(f"[Brain] Ready — model: {args.model}")
+            print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
             brain.warm_up()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
-            print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {args.model}")
+            print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
             brain = None
     else:
         print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
 
+    # Initialize TTS (with mic mute/unmute callbacks to prevent feedback)
+    tts = None
+    if not args.no_tts:
+        print("\nInitializing TTS...")
+        tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic)
+        if tts.is_available():
+            print("[TTS] Ready (mic will mute during playback)")
+        else:
+            print("[TTS] Not available (install piper-tts). Continuing without speech output.")
+            tts = None
+    else:
+        print("\n[TTS] Disabled (--no-tts flag)")
+
     # Initialize VAD
-    vad = webrtcvad.Vad(args.vad_level)
+    vad = webrtcvad.Vad(VAD_LEVEL)
 
     # Wake word mode (ASR-based: Whisper detects "Hey Spot" in transcript)
     use_wake_word = not args.no_wake_word
@@ -341,7 +356,7 @@ def main():
         print("Run with --list-devices to see available devices")
         return
 
-    mode = f"LLM Brain ({args.model})" if brain else "Regex-only (legacy)"
+    mode = f"LLM Brain ({DEFAULT_MODEL})" if brain else "Regex-only (legacy)"
     ww_status = "ON (ASR-based)" if use_wake_word else "OFF"
     print("\n" + "=" * 60)
     print(f"LISTENING — Mode: {mode}")
@@ -450,7 +465,7 @@ def main():
                             print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                             safety_only = (state == VoiceState.WAKE_WORD)
                             result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                       brain, safety_only=safety_only)
+                                                       brain, safety_only=safety_only, tts=tts)
                             is_speaking = False
                             speech_buffer.clear()
                             speech_float_buffer.clear()
@@ -481,7 +496,7 @@ def main():
                                 print(f"\n>>> Processing...")
                                 safety_only = (state == VoiceState.WAKE_WORD)
                                 result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                           brain, safety_only=safety_only)
+                                                           brain, safety_only=safety_only, tts=tts)
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
@@ -496,7 +511,7 @@ def main():
                         # Fully idle: update adaptive noise floor
                         rolling_noise_rms = (1 - NOISE_EMA_ALPHA) * rolling_noise_rms + NOISE_EMA_ALPHA * frame_rms
                         rolling_noise_rms = max(NOISE_FLOOR_MIN, min(NOISE_FLOOR_MAX, rolling_noise_rms))
-                        energy_threshold = rolling_noise_rms * args.energy_mult
+                        energy_threshold = rolling_noise_rms * ENERGY_THRESHOLD_MULTIPLIER
 
                 # Periodic status when idle
                 if not is_speaking and frame_count % 166 == 0:  # ~5 seconds
@@ -545,12 +560,13 @@ MIN_SPEECH_DURATION = 0.15  # Reject utterances shorter than this (monosyllables
 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
-                      brain=None, safety_only=False):
+                      brain=None, safety_only=False, tts=None):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
         safety_only: If True, only execute safety commands (stop/freeze/estop).
                      Non-safety speech is discarded. Used when wake word not detected.
+        tts: SpotTTS instance for spoken responses (None = no speech output).
 
     Returns:
         "wake_detected" if a wake phrase was found, None otherwise.
@@ -660,11 +676,45 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             params = intent.get("params", {})
             print(f"Action: {cmd}" + (f" {params}" if params else ""))
 
-            if execute_on_spot(intent):
-                print(">>> SUCCESS")
+            # Special VLM flow for "describe" action
+            if cmd == "describe":
+                if tts and response:
+                    tts.speak(response)  # "Let me take a look..."
+                camera = params.get("camera", "front")
+                try:
+                    from src.voice_control.spot_dispatch import capture_frame
+                    image_bytes = capture_frame(camera)
+                    if image_bytes:
+                        vlm_response = brain.query_vlm(image_bytes, clean)
+                        print(f"\nSPOT (VLM): \"{vlm_response}\"")
+                        if tts:
+                            tts.wait()  # wait for initial response to finish
+                            tts.speak(vlm_response)
+                    else:
+                        fallback = "Sorry, I couldn't capture an image right now."
+                        print(f"\nSPOT: \"{fallback}\"")
+                        if tts:
+                            tts.wait()
+                            tts.speak(fallback)
+                except Exception as e:
+                    print(f"[VLM] Error: {e}")
+                    fallback = "Sorry, my vision system isn't working right now."
+                    print(f"\nSPOT: \"{fallback}\"")
+                    if tts:
+                        tts.wait()
+                        tts.speak(fallback)
             else:
-                print(">>> FAILED")
+                # Normal action — speak response and execute simultaneously
+                if tts and response:
+                    tts.speak(response)  # non-blocking
+                if execute_on_spot(intent):
+                    print(">>> SUCCESS")
+                else:
+                    print(">>> FAILED")
         else:
+            # Conversation only — speak response
+            if tts and response:
+                tts.speak(response)
             print("(No physical action — conversation only)")
         return "wake_detected" if wake_activated else None
 
