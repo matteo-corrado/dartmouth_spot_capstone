@@ -26,7 +26,7 @@ def main():
     if args.map_path:
         map_path = pathlib.Path(args.map_path)
     else:
-        map_path = project_root / "maps" / "lab_map" / "downloaded_graph"
+        map_path = project_root / "maps" / "lab_map2"
     
     if not map_path.exists():
         print(f"✗ Map directory not found: {map_path}")

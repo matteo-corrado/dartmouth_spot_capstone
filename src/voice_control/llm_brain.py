@@ -41,12 +41,9 @@ you are a four-legged robot, you can walk, navigate, and perform physical \
 actions. You have a sense of humor and personality. Keep responses concise \
 (1-2 sentences for actions, a bit more for conversation).
 
-You MUST respond with a JSON object. Every response must be valid JSON with exactly these fields:
-{
-  "action": "<action_name or null>",
-  "params": {<action parameters or empty>},
-  "response": "<what you say to the user>"
-}
+You MUST respond with a JSON object. Every response must be valid JSON with exactly these fields IN THIS ORDER:
+{"action": "<action_name or null>", "params": {<parameters or empty>}, "response": "<what you say>"}
+IMPORTANT: Always output "action" first, then "params", then "response". This ordering is required.
 
 AVAILABLE ACTIONS:
 - stop: Stop all movement. No params.
@@ -66,6 +63,7 @@ AVAILABLE ACTIONS:
 - come_back: Return to position before last navigation. No params. Use for "come back", "go home", "return".
 - save_location: Save current position. Params: {"location": "<name>"}.
 - list_locations: List saved locations. No params.
+- open_door: Open a push-button door. Extends arm to press button, holds door open while walking through, then stows arm. No params needed (uses tuned defaults). Use for "open the door", "push the door", "open door".
 - describe: Take a photo and describe what you see. Use when user asks about surroundings, what's in front of you, etc. Params: {"camera": "front"|"left"|"right"|"back"}. Default "front".
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
@@ -110,7 +108,10 @@ User: "Patrol the map"
 {"action": "patrol", "params": {"locations": "all"}, "response": "Starting patrol! I'll keep looping until you tell me to stop."}
 
 User: "Come back"
-{"action": "come_back", "params": {}, "response": "Heading back to where I started!"}"""
+{"action": "come_back", "params": {}, "response": "Heading back to where I started!"}
+
+User: "Open the door"
+{"action": "open_door", "params": {}, "response": "Opening the door! Stand back."}"""
 
 
 class SpotBrain:
@@ -155,25 +156,28 @@ class SpotBrain:
         print(f"[Brain] Warming up model '{self.model}'...")
         t0 = time.time()
         try:
+            # Use the actual system prompt so Ollama caches its KV state.
+            # This makes the first real command fast (~0.2s prompt eval
+            # instead of ~1.5s cold).
+            warm_state = {"battery_percent": "unknown", "is_powered": True,
+                          "is_standing": "unknown", "saved_locations": "none"}
+            messages = self._build_messages("ping", warm_state)
             r = requests.post(
                 f"{self.ollama_url}/api/chat",
                 json={
                     "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "Respond with valid JSON: {\"ok\": true}"},
-                        {"role": "user", "content": "ping"},
-                    ],
+                    "messages": messages,
                     "format": "json",
                     "stream": False,
                     "keep_alive": "30m",
-                    "options": {"num_predict": 10, "num_gpu": 99},
+                    "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 4096},
                 },
                 timeout=FIRST_REQUEST_TIMEOUT,
             )
             elapsed = time.time() - t0
             self._first_request = False
             if r.status_code == 200:
-                print(f"[Brain] Model warm in {elapsed:.1f}s")
+                print(f"[Brain] Model warm in {elapsed:.1f}s (prompt cached)")
             else:
                 print(f"[Brain] Warm-up got status {r.status_code}")
         except Exception as e:
@@ -225,13 +229,13 @@ class SpotBrain:
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
-                        "num_predict": 150,
+                        "num_predict": 100,
                         "num_gpu": 99,
+                        "num_ctx": 4096,
                     },
                 },
                 timeout=timeout,
             )
-            elapsed = time.time() - t0
             self._first_request = False
 
             if r.status_code != 200:
@@ -240,23 +244,21 @@ class SpotBrain:
 
             message = r.json().get("message", {})
             content = (message.get("content") or "").strip()
-
+            elapsed = time.time() - t0
             print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
 
-            # --- Parse JSON response ---
+            # --- Parse JSON ---
             action = None
             response = ""
 
             try:
                 data = json.loads(content)
             except json.JSONDecodeError:
-                print(f"[Brain] Failed to parse JSON (should not happen with format=json): {content[:200]}")
+                print(f"[Brain] Failed to parse JSON: {content[:200]}")
                 return {"action": None, "response": content, "raw_llm": content}
 
-            # Extract response text
             response = str(data.get("response", "")).strip()
 
-            # Extract action
             action_name = data.get("action")
             if action_name and isinstance(action_name, str) and action_name.lower() != "null":
                 params = data.get("params", {})
@@ -268,11 +270,10 @@ class SpotBrain:
             else:
                 print("[Brain] No action (conversation only)")
 
-            # Update conversation history (store response text only)
+            # Update conversation history
             self.history.append({"role": "user", "content": transcript})
             self.history.append({"role": "assistant", "content": content})
 
-            # Trim history to sliding window
             if len(self.history) > MAX_HISTORY:
                 self.history = self.history[-MAX_HISTORY:]
 

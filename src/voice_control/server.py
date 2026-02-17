@@ -82,10 +82,14 @@ class ASRServicer(pbg.ASRServicer):
             print("[Server] Warming up Riva ASR (first request)...")
             warmup_audio = np.zeros(SAMPLE_RATE, dtype=np.int16).tobytes()  # 1s silence
             try:
+                # Try offline first, fall back to streaming
                 self.asr_service.offline_recognize(warmup_audio, self.riva_config)
+                self._use_streaming = False
+                print("[Server] Using offline recognition mode")
             except Exception as e:
-                # Warmup may return empty results on silence, that's fine
-                print(f"[Server] Warmup note: {e}")
+                self._use_streaming = True
+                print(f"[Server] Offline mode unavailable ({e})")
+                print("[Server] Using streaming recognition mode")
 
             print("[Server] Riva ASR ready")
 
@@ -149,13 +153,34 @@ class ASRServicer(pbg.ASRServicer):
                     audio_channel_count=1,
                 )
 
-            response = self.asr_service.offline_recognize(pcm_bytes, config)
-
-            # Extract transcript from Riva response
             text = ""
-            for result in response.results:
-                if result.alternatives:
-                    text += result.alternatives[0].transcript
+            if self._use_streaming:
+                # Use streaming recognition (Conformer on Jetson only supports this)
+                streaming_config = riva.client.StreamingRecognitionConfig(
+                    config=config,
+                    interim_results=False,
+                )
+                # Send audio as a single chunk in streaming mode
+                def audio_generator():
+                    # Send config first, then audio in chunks
+                    chunk_size = SAMPLE_RATE * 2  # 1 second chunks (16-bit = 2 bytes/sample)
+                    for i in range(0, len(pcm_bytes), chunk_size):
+                        yield pcm_bytes[i:i + chunk_size]
+
+                responses = self.asr_service.streaming_response_generator(
+                    audio_chunks=audio_generator(),
+                    streaming_config=streaming_config,
+                )
+                for resp in responses:
+                    for result in resp.results:
+                        if result.is_final and result.alternatives:
+                            text += result.alternatives[0].transcript
+            else:
+                # Use offline recognition
+                response = self.asr_service.offline_recognize(pcm_bytes, config)
+                for result in response.results:
+                    if result.alternatives:
+                        text += result.alternatives[0].transcript
             text = text.strip()
 
             elapsed = time.time() - start_time

@@ -46,6 +46,12 @@ ls /dev/cu.usbmodem*
 # Connect (replace with your device number)
 sudo screen /dev/cu.usbmodem14217250298003 115200
 
+bash riva_start.sh
+python scripts/download_map_from_spot.py --output maps/map_name
+python scripts/setup_map.py --map-path maps/map_name
+
+python scripts/run_voice_control.py
+
  python client_mic.py --device 24 --energy-mult 2.0
  python src/voice_control/client_mic.py --device 24 --channel 0 --energy-mult 2.0 --debug-audio
 

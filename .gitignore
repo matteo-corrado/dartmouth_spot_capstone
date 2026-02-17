@@ -13,3 +13,11 @@ spot-env-christian/
 spot-sdk/
 test/
 spot-env
+
+# Door calibration images (regenerated per-environment)
+door_calibration/
+
+# NGC CLI artifacts
+ngc-cli/
+ngc-cli.md5
+ngccli_arm64.zip

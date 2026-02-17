@@ -78,14 +78,14 @@ def test_button_door(robot, command_client, params, dry_run=False):
     button_y = params["button_offset_y_m"]
     button_z = params["button_height_m"] - 0.5  # relative to body center
 
+    press_dist = params.get("press_distance_m", 0.15)
+
     steps = [
         ("Unstow arm (ready position)", "arm_ready"),
         ("Position arm near button", ("arm_pose", button_x, button_y, button_z)),
-        ("Press button (extend forward)", ("arm_pose", button_x + 0.15, button_y, button_z)),
-        ("Retract arm from button", ("arm_pose", button_x - 0.2, button_y, button_z)),
-        (f"Wait {params['wait_time_s']}s for door to open", ("wait", params["wait_time_s"])),
+        (f"Press button (extend +{press_dist:.2f}m)", ("arm_pose", button_x + press_dist, button_y, button_z)),
+        (f"Walk through with arm holding door ({params['walk_through_distance_m']}m)", ("walk", params["walk_through_distance_m"])),
         ("Stow arm", "arm_stow"),
-        (f"Walk through ({params['walk_through_distance_m']}m forward)", ("walk", params["walk_through_distance_m"])),
     ]
 
     for i, (desc, action) in enumerate(steps, 1):
@@ -235,6 +235,8 @@ def main():
                         help="Handle lateral offset in meters (default: 0.0)")
     parser.add_argument("--approach-distance", type=float, default=0.8,
                         help="Distance from door in meters (default: 0.8)")
+    parser.add_argument("--press-distance", type=float, default=0.15,
+                        help="How far arm extends to press button in meters (default: 0.15)")
     parser.add_argument("--walk-distance", type=float, default=2.0,
                         help="Walk-through distance in meters (default: 2.0)")
     parser.add_argument("--wait-time", type=float, default=5.0,
@@ -250,6 +252,7 @@ def main():
         "button_offset_y_m": args.button_offset_y,
         "handle_offset_y_m": args.handle_offset_y,
         "approach_distance_m": args.approach_distance,
+        "press_distance_m": args.press_distance,
         "walk_through_distance_m": args.walk_distance,
         "wait_time_s": args.wait_time,
     }

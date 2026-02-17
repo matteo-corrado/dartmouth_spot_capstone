@@ -40,38 +40,41 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
     power_client = robot.ensure_client(PowerClient.default_service_name)
     state_client = robot.ensure_client(RobotStateClient.default_service_name)
 
-    # Lease with keepalive - try acquire first, then take if needed
-    try:
-        lease = lease_client.acquire()
-    except ResourceAlreadyClaimedError:
-        # Lease is already claimed, forcefully take it
-        print("[Session] Lease already claimed, taking lease forcefully...")
-        lease = lease_client.take()
-    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=True, return_at_exit=True)
+    # Clear stale keepalive policies BEFORE lease acquisition
+    def _clear_keepalive_policies():
+        try:
+            keepalive_client = robot.ensure_client(KeepaliveClient.default_service_name)
+            status = keepalive_client.get_status()
+            if status.status:
+                print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
+                for policy in status.status:
+                    try:
+                        keepalive_client.remove_policy(policy.policy_id)
+                    except Exception:
+                        pass
+                time.sleep(2)
+                remaining = keepalive_client.get_status()
+                if remaining.status:
+                    print(f"[Session] Warning: {len(remaining.status)} policy(ies) still remain, retrying...")
+                    for policy in remaining.status:
+                        try:
+                            keepalive_client.remove_policy(policy.policy_id)
+                        except Exception:
+                            pass
+                    time.sleep(2)
+                print("[Session] ✓ Keepalive policies cleared")
+        except Exception as e:
+            print(f"[Session] Note: Could not clear keepalive policies: {e}")
+
+    _clear_keepalive_policies()
+
+    # Lease - force take to override any stale claims
+    print("[Session] Taking lease forcefully...")
+    lease = lease_client.take()
+    lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
 
     # Power on and stand (optional)
     if stand_on_enter:
-        # Clear stale keepalive policies that may block motor power-on
-        def _clear_keepalive_policies():
-            try:
-                keepalive_client = robot.ensure_client(KeepaliveClient.default_service_name)
-                status = keepalive_client.get_status()
-                if status.status:
-                    print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
-                    remove_all_policies(keepalive_client, attempts=3)
-                    # Wait for robot to process the removal
-                    time.sleep(2)
-                    # Verify policies are actually gone
-                    remaining = keepalive_client.get_status()
-                    if remaining.status:
-                        print(f"[Session] Warning: {len(remaining.status)} policy(ies) still remain, retrying...")
-                        remove_all_policies(keepalive_client, attempts=3)
-                        time.sleep(2)
-                    print("[Session] ✓ Keepalive policies cleared")
-            except Exception as e:
-                print(f"[Session] Note: Could not clear keepalive policies: {e}")
-
-        _clear_keepalive_policies()
 
         # Check if robot is already powered before trying to power on
         robot_state = state_client.get_robot_state()

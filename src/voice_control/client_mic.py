@@ -53,12 +53,14 @@ SILENCE_TIMEOUT = 0.5            # Seconds of silence to end utterance
 MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
 MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)  # ~267 frames
 SPEECH_ONSET_FRAMES = 3          # Consecutive VAD+energy frames to confirm speech onset (~90ms)
+NAV_ONSET_FRAMES = 5             # Higher onset threshold during navigation (150ms, reduces motor noise false triggers)
+PREROLL_FRAMES = 5               # Keep last N frames before onset (~150ms) to capture word beginnings
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
 ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than noise
-NOISE_EMA_ALPHA = 0.01           # EMA smoothing for adaptive noise floor (slow adaptation)
+NOISE_EMA_ALPHA = 0.03           # EMA smoothing for adaptive noise floor (faster adaptation)
 NOISE_FLOOR_MIN = 0.001          # Minimum noise floor (prevent threshold from dropping to zero)
 NOISE_FLOOR_MAX = 0.05           # Maximum noise floor (prevent threshold from going absurdly high)
-NAV_ENERGY_MULT = 3.0            # Extra energy multiplier during navigation (suppresses motor noise)
+NAV_ENERGY_MULT = 5.0            # Extra energy multiplier during navigation (suppresses motor noise)
 
 # ============================================================================
 # Audio Queue (filled by callback)
@@ -133,6 +135,13 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> float:
         noise_audio = np.concatenate(samples)[:samples_needed]
         noise_rms = np.sqrt(np.mean(noise_audio ** 2))
         print(f"[Noise floor RMS: {noise_rms:.5f}]")
+
+        # If noise is suspiciously high, robot motors may be running during calibration.
+        # Cap to a reasonable value so speech detection still works.
+        if noise_rms > 0.003:
+            print(f"[WARNING: High noise ({noise_rms:.5f}) — robot motors running? Capping to 0.001]")
+            noise_rms = 0.001
+
         return noise_rms
 
     except Exception as e:
@@ -378,6 +387,8 @@ def main():
     frame_count = 0
     consecutive_speech = 0       # Tracks consecutive VAD-positive frames for onset debounce
     pending_speech_frames = []   # Buffers frames during onset confirmation
+    from collections import deque
+    preroll_buffer = deque(maxlen=PREROLL_FRAMES)  # Ring buffer for pre-onset audio
 
     # Wake word state (ASR-based: no separate model needed)
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
@@ -430,10 +441,12 @@ def main():
                     if not is_speaking:
                         # Buffer frames while confirming onset
                         pending_speech_frames.append(frame)
-                        if consecutive_speech < SPEECH_ONSET_FRAMES:
+                        # Use higher onset threshold during navigation to reduce false triggers
+                        onset_threshold = NAV_ONSET_FRAMES if _is_robot_moving() else SPEECH_ONSET_FRAMES
+                        if consecutive_speech < onset_threshold:
                             continue  # Wait for more consecutive VAD frames
 
-                        # Onset confirmed — start recording with buffered frames
+                        # Onset confirmed — start recording with pre-roll + pending frames
                         if state == VoiceState.WAKE_WORD:
                             print("\n>>> Speech detected (wake word mode — safety only)...")
                         else:
@@ -442,6 +455,12 @@ def main():
                         speech_frame_count = 0
                         speech_buffer.clear()
                         speech_float_buffer.clear()
+                        # Include pre-roll frames (captures word beginnings before VAD trigger)
+                        for pf in preroll_buffer:
+                            speech_buffer.extend(pf)
+                            speech_float_buffer.append(pcm16_to_float32(pf))
+                            speech_frame_count += 1
+                        preroll_buffer.clear()
                         for pf in pending_speech_frames:
                             speech_buffer.extend(pf)
                             speech_float_buffer.append(pcm16_to_float32(pf))
@@ -480,6 +499,9 @@ def main():
                 else:
                     consecutive_speech = 0
                     pending_speech_frames.clear()
+                    # Fill pre-roll ring buffer when idle (captures audio before speech onset)
+                    if not is_speaking:
+                        preroll_buffer.append(frame)
 
                     if is_speaking:
                         # Add trailing frames for context
@@ -556,7 +578,7 @@ def _drain_audio_queue():
         print(f"[Drained {drained} stale audio chunks, kept {len(frames) - drained}]")
 
 
-MIN_SPEECH_DURATION = 0.15  # Reject utterances shorter than this (monosyllables like "sit" are ~0.2s)
+MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
@@ -674,7 +696,6 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             intent = action  # action already has {intent, params} structure
             cmd = intent["intent"]
             params = intent.get("params", {})
-            print(f"Action: {cmd}" + (f" {params}" if params else ""))
 
             # Special VLM flow for "describe" action
             if cmd == "describe":
@@ -704,13 +725,13 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                         tts.wait()
                         tts.speak(fallback)
             else:
-                # Normal action — speak response and execute simultaneously
-                if tts and response:
-                    tts.speak(response)  # non-blocking
+                # Execute action then speak response
                 if execute_on_spot(intent):
                     print(">>> SUCCESS")
                 else:
                     print(">>> FAILED")
+                if tts and response:
+                    tts.speak(response)
         else:
             # Conversation only — speak response
             if tts and response:

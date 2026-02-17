@@ -36,9 +36,17 @@ def upload_graph_and_snapshots(robot, upload_path: str) -> bool:
         return False
     
     print(f"[GraphNav] Uploading map from {upload_path}...")
-    
+
     graph_nav_client = robot.ensure_client(GraphNavClient.default_service_name)
-    
+
+    # Clear existing graph to prevent conflicts with stale map data
+    print("[GraphNav] Clearing existing map on robot...")
+    try:
+        graph_nav_client.clear_graph()
+        print("[GraphNav] Existing map cleared")
+    except Exception as e:
+        print(f"[GraphNav] Warning: Could not clear existing graph: {e}")
+
     # Read graph file
     try:
         with open(graph_file, 'rb') as f:

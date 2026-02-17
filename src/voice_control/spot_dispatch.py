@@ -16,8 +16,7 @@ if str(project_root) not in sys.path:
 from bosdyn.client.robot_command import RobotCommandBuilder
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
-from bosdyn.client.image import ImageClient, build_image_request
-from bosdyn.api.image_pb2 import ImageRequest as ImageRequestProto
+from bosdyn.client.image import ImageClient
 from src.session import spot_session
 from src.location_manager import list_locations as _list_saved_locations
 
@@ -200,16 +199,43 @@ def _cancel_nav():
 
 
 def _ensure_localized(graph_nav_client, session) -> bool:
-    """Check localization and attempt waypoint-based init if needed."""
+    """Check localization and attempt fiducial/waypoint init if needed."""
     localization = graph_nav_client.get_localization_state()
     if localization.localization.waypoint_id:
+        print(f"[Spot] Localized at waypoint: {localization.localization.waypoint_id}")
         return True
 
-    print("[Spot] Not localized. Attempting waypoint-based localization...")
+    print("[Spot] Not localized. Attempting to localize...")
+    return _force_relocalize(graph_nav_client, session)
+
+
+def _force_relocalize(graph_nav_client, session) -> bool:
+    """Force re-localization using fiducials first, then waypoint fallback."""
+    from bosdyn.api.graph_nav import nav_pb2, graph_nav_pb2
+    import math
+
+    # Try fiducial-based localization first (most accurate)
+    try:
+        print("[Spot] Trying fiducial-based localization...")
+        empty_loc = nav_pb2.Localization()
+        graph_nav_client.set_localization(
+            initial_guess_localization=empty_loc,
+            fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NEAREST
+        )
+        localization = graph_nav_client.get_localization_state()
+        if localization.localization.waypoint_id:
+            print(f"[Spot] Localized via fiducial at: {localization.localization.waypoint_id}")
+            return True
+        print("[Spot] Fiducial localization failed (no fiducials visible)")
+    except Exception as e:
+        print(f"[Spot] Fiducial localization error: {e}")
+
+    # Fallback: waypoint-based localization
+    if session is None:
+        return False
+
     try:
         from bosdyn.client.robot_state import RobotStateClient
-        from bosdyn.api.graph_nav import nav_pb2, graph_nav_pb2
-        import math
 
         robot_state_client = session["robot"].ensure_client(RobotStateClient.default_service_name)
         robot_state = robot_state_client.get_robot_state()
@@ -222,7 +248,7 @@ def _ensure_localized(graph_nav_client, session) -> bool:
             return False
 
         first_waypoint_id = graph.waypoints[0].id
-        print(f"[Spot] Attempting to localize to waypoint: {first_waypoint_id}")
+        print(f"[Spot] Trying waypoint-based localization to: {first_waypoint_id}")
 
         loc_guess = nav_pb2.Localization()
         loc_guess.waypoint_id = first_waypoint_id
@@ -230,21 +256,31 @@ def _ensure_localized(graph_nav_client, session) -> bool:
 
         graph_nav_client.set_localization(
             initial_guess_localization=loc_guess,
-            max_distance=0.2,
-            max_yaw=20.0 * math.pi / 180.0,
+            max_distance=5.0,   # Allow larger search radius
+            max_yaw=180.0 * math.pi / 180.0,  # Allow any orientation
             fiducial_init=graph_nav_pb2.SetLocalizationRequest.FIDUCIAL_INIT_NO_FIDUCIAL,
             ko_tform_body=current_odom_tform_body
         )
 
         localization = graph_nav_client.get_localization_state()
         if localization.localization.waypoint_id:
+            print(f"[Spot] Localized via waypoint at: {localization.localization.waypoint_id}")
             return True
 
-        print("[Spot] Localization failed. Robot may not be at a known waypoint.")
+        print("[Spot] Localization failed. Robot may not be near a known waypoint.")
         return False
     except Exception as e:
         print(f"[Spot] Localization error: {e}")
         return False
+
+
+def _is_named_location(name: str) -> bool:
+    """Return True if the location has a meaningful human-assigned name.
+
+    Filters out auto-generated names like 'waypoint_6' or 'localize_-_1'.
+    """
+    import re
+    return not re.match(r"^(waypoint_\d+|localize_)", name)
 
 
 def _save_home_waypoint(graph_nav_client):
@@ -260,8 +296,15 @@ def _save_home_waypoint(graph_nav_client):
 
 def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                                 stop_event, repeat=False):
-    """Navigate through a sequence of waypoints. Runs in a background thread."""
+    """Navigate through a sequence of waypoints. Runs in a background thread.
+
+    On STATUS_STUCK: retries up to MAX_STUCK_RETRIES with a new command ID.
+    If still stuck after retries, skips to the next waypoint (multi-waypoint)
+    or gives up (single waypoint).
+    """
     from bosdyn.api.graph_nav import graph_nav_pb2
+
+    MAX_STUCK_RETRIES = 2  # Retry with fresh command ID before skipping
 
     pass_num = 0
     try:
@@ -276,36 +319,80 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                     return
 
                 print(f"[Spot] Navigating to '{name}' ({i+1}/{len(waypoint_ids)})...")
+                stuck_retries = 0
                 nav_to_cmd_id = None
+                waypoint_reached = False
 
                 while not stop_event.is_set():
-                    nav_to_cmd_id = graph_nav_client.navigate_to(
-                        wp_id, 1.0, command_id=nav_to_cmd_id
-                    )
+                    try:
+                        nav_to_cmd_id = graph_nav_client.navigate_to(
+                            wp_id, 10.0, command_id=nav_to_cmd_id
+                        )
+                    except Exception as nav_ex:
+                        # navigate_to() raises RobotStuckError as exception
+                        if "Stuck" in type(nav_ex).__name__ or "Stuck" in str(nav_ex):
+                            stuck_retries += 1
+                            if stuck_retries <= MAX_STUCK_RETRIES:
+                                print(f"[Spot] Stuck navigating to '{name}', retrying ({stuck_retries}/{MAX_STUCK_RETRIES})...")
+                                nav_to_cmd_id = None  # Fresh command on retry
+                                time.sleep(2.0)
+                                continue
+                            else:
+                                print(f"[Spot] Still stuck after {MAX_STUCK_RETRIES} retries for '{name}'")
+                                break
+                        else:
+                            print(f"[Spot] Navigation error for '{name}': {nav_ex}")
+                            break
 
                     try:
                         feedback = graph_nav_client.navigation_feedback(nav_to_cmd_id)
                         if feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_REACHED_GOAL:
                             print(f"[Spot] Reached '{name}'")
+                            waypoint_reached = True
                             break
-                        elif feedback.status in [
-                            graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST,
-                            graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK,
-                            graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED,
-                        ]:
-                            status_names = {
-                                graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST: "LOST",
-                                graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK: "STUCK",
-                                graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED: "IMPAIRED",
-                            }
-                            print(f"[Spot] Navigation to '{name}': {status_names.get(feedback.status, 'ERROR')}")
+                        elif feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_STUCK:
+                            stuck_retries += 1
+                            if stuck_retries <= MAX_STUCK_RETRIES:
+                                print(f"[Spot] Stuck navigating to '{name}', retrying ({stuck_retries}/{MAX_STUCK_RETRIES})...")
+                                nav_to_cmd_id = None  # Fresh command on retry
+                                time.sleep(2.0)
+                                continue
+                            else:
+                                print(f"[Spot] Still stuck after {MAX_STUCK_RETRIES} retries for '{name}'")
+                                break
+                        elif feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST:
+                            print(f"[Spot] Robot lost during navigation to '{name}'")
+                            try:
+                                if _spot_session and _ensure_localized(graph_nav_client, _spot_session):
+                                    print(f"[Spot] Re-localized, retrying navigation to '{name}'")
+                                    nav_to_cmd_id = None
+                                    continue
+                            except Exception:
+                                pass
+                            break
+                        elif feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED:
+                            print(f"[Spot] Robot impaired during navigation to '{name}'")
                             return
+                        elif feedback.status in (
+                            graph_nav_pb2.NavigationFeedbackResponse.STATUS_COMMAND_TIMED_OUT,
+                            graph_nav_pb2.NavigationFeedbackResponse.STATUS_CONSTRAINT_FAULT,
+                        ):
+                            # Command expired or constraint fault — re-send with fresh command
+                            nav_to_cmd_id = None
+                            continue
                     except Exception:
                         pass
 
                     if stop_event.wait(0.5):
                         print("[Spot] Navigation cancelled")
                         return
+
+                if not waypoint_reached and len(waypoint_ids) > 1:
+                    print(f"[Spot] Skipping '{name}', moving to next waypoint...")
+                    continue
+                elif not waypoint_reached:
+                    print(f"[Spot] Could not reach '{name}'")
+                    return
 
             if not repeat:
                 print("[Spot] Tour complete — visited all locations!")
@@ -380,7 +467,7 @@ def dispatch_intent(intent):
                 return False
             
         elif name == "stand":
-            # Stand the robot up
+            # Stand the robot up (clear behavior faults if needed)
             print("[Spot] Standing up...")
             try:
                 cmd = RobotCommandBuilder.synchro_stand_command()
@@ -388,6 +475,25 @@ def dispatch_intent(intent):
                 print("[Spot] ✓ Stand command sent")
                 return True
             except Exception as e:
+                if "BehaviorFault" in str(e):
+                    print("[Spot] Behavior faults detected — clearing and retrying...")
+                    try:
+                        state_client = session["state"]
+                        robot_state = state_client.get_robot_state()
+                        for f in robot_state.behavior_fault_state.faults:
+                            try:
+                                cmd_client.clear_behavior_fault(behavior_fault_id=f.behavior_fault_id)
+                            except Exception:
+                                pass
+                        time.sleep(1)
+                        cmd_client.robot_command(RobotCommandBuilder.selfright_command())
+                        time.sleep(5)
+                        cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
+                        print("[Spot] ✓ Recovered and standing")
+                        return True
+                    except Exception as e2:
+                        print(f"[Spot] ✗ Recovery failed: {e2}")
+                        return False
                 print(f"[Spot] ✗ Stand failed: {e}")
                 return False
                 
@@ -543,9 +649,22 @@ def dispatch_intent(intent):
                 return False
 
         elif name == "selfright":
-            # Self-right: recover from fall
+            # Self-right: recover from fall (clear behavior faults first)
             print("[Spot] Attempting self-right (recovery from fall)...")
             try:
+                # Clear behavior faults first — required before any command after a fall
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+                faults = robot_state.behavior_fault_state.faults
+                if faults:
+                    print(f"[Spot] Clearing {len(faults)} behavior fault(s)...")
+                    for f in faults:
+                        try:
+                            cmd_client.clear_behavior_fault(behavior_fault_id=f.behavior_fault_id)
+                        except Exception:
+                            pass
+                    time.sleep(1)
+
                 cmd = RobotCommandBuilder.selfright_command()
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Self-right command sent")
@@ -629,6 +748,262 @@ def dispatch_intent(intent):
             except Exception as e:
                 print(f"[Spot] ✗ Emergency stop failed: {e}")
                 return False
+
+        elif name == "open_door":
+            # Open a door using BD's DoorService (AutoGrasp).
+            # Requires prior calibration: python scripts/calibrate_door.py
+            # Flow: pitch up -> capture image -> WalkToObject -> raycast ->
+            #       AutoGraspCommand -> DoorService handles grasp+open+walk-through
+            print("[Spot] Opening door...")
+
+            def _open_door_thread():
+                import json
+                import math
+                import numpy as np
+                from bosdyn.api import (manipulation_api_pb2, geometry_pb2,
+                                        basic_command_pb2)
+                from bosdyn.api.manipulation_api_pb2 import (
+                    WalkToObjectInImage, ManipulationApiRequest,
+                    ManipulationApiFeedbackRequest)
+                from bosdyn.api.spot import door_pb2
+                from bosdyn.client.manipulation_api_client import ManipulationApiClient
+                from bosdyn.client.door import DoorClient
+                from bosdyn.client.image import ImageClient
+                from bosdyn.client import frame_helpers
+                from bosdyn import geometry as bd_geometry
+
+                robot = session["robot"]
+
+                try:
+                    # Load calibration
+                    config_path = project_root / "door_config.json"
+                    if not config_path.exists():
+                        print("[Spot] No door calibration found.")
+                        print("[Spot] Run: python scripts/calibrate_door.py")
+                        return
+                    with open(config_path) as f:
+                        door_config = json.load(f)
+
+                    camera_source = door_config["camera_source"]
+                    handle_rx = door_config["handle_pixel_x_rotated"]
+                    handle_ry = door_config["handle_pixel_y_rotated"]
+                    hinge_side_str = door_config["hinge_side"]
+
+                    # 1. Pitch robot up to see the door
+                    print("[Spot] [1/5] Pitching up to view door...")
+                    pitch_cmd = RobotCommandBuilder.synchro_stand_command(
+                        footprint_R_body=bd_geometry.EulerZXY(
+                            pitch=-0.4, roll=0.0, yaw=0.0)
+                    )
+                    cmd_client.robot_command(pitch_cmd)
+                    time.sleep(2.0)
+
+                    # 2. Capture front fisheye image
+                    print("[Spot] [2/5] Capturing door image...")
+                    image_client = robot.ensure_client(
+                        ImageClient.default_service_name)
+                    image_responses = image_client.get_image_from_sources(
+                        [camera_source])
+                    if not image_responses:
+                        print(f"[Spot] No image from {camera_source}")
+                        return
+                    image_proto = image_responses[0]
+
+                    # Get image dimensions for pixel un-rotation
+                    img_h = image_proto.shot.image.rows
+                    img_w = image_proto.shot.image.cols
+                    # Rotated image dimensions (after 90 CW): W_rot=h, H_rot=w
+                    rotated_w = img_h
+
+                    # Un-rotate pixel from 90 CW display back to original
+                    # (same math as arm_door.py)
+                    th = -math.pi / 2
+                    xm = rotated_w / 2.0
+                    ym = img_w / 2.0
+                    x = handle_rx - xm
+                    y = handle_ry - ym
+                    orig_px = math.cos(th) * x - math.sin(th) * y + ym
+                    orig_py = math.sin(th) * x + math.cos(th) * y + xm
+
+                    # 3. WalkToObjectInImage: position robot and raycast
+                    # (skipped if robot is already close — falls back to
+                    #  body-frame search ray)
+                    print("[Spot] [3/5] Walking to door...")
+                    manip_client = robot.ensure_client(
+                        ManipulationApiClient.default_service_name)
+
+                    walk_cmd = WalkToObjectInImage()
+                    walk_cmd.pixel_xy.x = orig_px
+                    walk_cmd.pixel_xy.y = orig_py
+                    walk_cmd.frame_name_image_sensor = (
+                        image_proto.shot.frame_name_image_sensor)
+                    walk_cmd.transforms_snapshot_for_camera.CopyFrom(
+                        image_proto.shot.transforms_snapshot)
+                    walk_cmd.camera_model.CopyFrom(
+                        image_proto.source.pinhole)
+                    walk_cmd.offset_distance.value = 1.25
+
+                    walk_request = ManipulationApiRequest(
+                        walk_to_object_in_image=walk_cmd)
+                    walk_response = manip_client.manipulation_api_command(
+                        walk_request)
+
+                    # Poll for walk completion (with state logging)
+                    walk_cmd_id = walk_response.manipulation_cmd_id
+                    snapshot = None
+                    last_state = -1
+                    # Map state codes to names for logging
+                    state_names = {
+                        0: "UNKNOWN", 1: "DONE",
+                        2: "SEARCHING_FOR_GRASP",
+                        3: "MOVING_TO_GRASP",
+                        9: "FAILED_TO_RAYCAST",
+                        10: "WALKING_TO_OBJECT",
+                        12: "ATTEMPTING_RAYCASTING",
+                    }
+                    end_time = time.time() + 25.0
+                    while time.time() < end_time:
+                        fb = manip_client.manipulation_api_feedback_command(
+                            ManipulationApiFeedbackRequest(
+                                manipulation_cmd_id=walk_cmd_id))
+                        st = fb.current_state
+                        if st != last_state:
+                            sname = state_names.get(st, str(st))
+                            print(f"[Spot]   Walk state: {sname}")
+                            last_state = st
+                        if st == manipulation_api_pb2.MANIP_STATE_DONE:
+                            snapshot = (
+                                fb.transforms_snapshot_manipulation_data)
+                            break
+                        # Detect failure states
+                        if st in (7, 8, 9):  # FAILED / NO_SOLUTION / RAYCAST_FAIL
+                            print(f"[Spot]   Walk failed (state={st})")
+                            break
+                        time.sleep(0.5)
+
+                    # Reset body pitch
+                    cmd_client.robot_command(
+                        RobotCommandBuilder.synchro_stand_command())
+                    time.sleep(0.5)
+
+                    # 4. Build search ray and send AutoGrasp door command
+                    print("[Spot] [4/5] Sending AutoGrasp door command...")
+                    auto_cmd = door_pb2.DoorCommand.AutoGraspCommand()
+
+                    if snapshot is not None:
+                        # Use raycast-based search ray (vision frame)
+                        print("[Spot]   Using raycast search ray")
+                        vision_tform_raycast = frame_helpers.get_a_tform_b(
+                            snapshot, frame_helpers.VISION_FRAME_NAME,
+                            frame_helpers.RAYCAST_FRAME_NAME)
+                        vision_tform_sensor = frame_helpers.get_a_tform_b(
+                            snapshot, frame_helpers.VISION_FRAME_NAME,
+                            image_proto.shot.frame_name_image_sensor)
+
+                        raycast_pt = (
+                            vision_tform_raycast.get_translation())
+                        sensor_pt = (
+                            vision_tform_sensor.get_translation())
+
+                        ray_dir = raycast_pt - sensor_pt
+                        ray_dir_unit = ray_dir / np.linalg.norm(ray_dir)
+
+                        search_dist = 0.25
+                        search_vec = search_dist * ray_dir_unit
+                        ray_start = raycast_pt - search_vec
+                        ray_end = raycast_pt + search_vec
+
+                        auto_cmd.frame_name = (
+                            frame_helpers.VISION_FRAME_NAME)
+                        auto_cmd.search_ray_start_in_frame.CopyFrom(
+                            geometry_pb2.Vec3(
+                                x=ray_start[0], y=ray_start[1],
+                                z=ray_start[2]))
+                        auto_cmd.search_ray_end_in_frame.CopyFrom(
+                            geometry_pb2.Vec3(
+                                x=ray_end[0], y=ray_end[1],
+                                z=ray_end[2]))
+                    else:
+                        # Fallback: body-frame search ray (robot already
+                        # close to door). Ray points forward through the
+                        # expected push bar height.
+                        print("[Spot]   Walk failed/timed out — using "
+                              "body-frame search ray")
+                        auto_cmd.frame_name = "body"
+                        auto_cmd.search_ray_start_in_frame.CopyFrom(
+                            geometry_pb2.Vec3(x=0.55, y=0.0, z=0.0))
+                        auto_cmd.search_ray_end_in_frame.CopyFrom(
+                            geometry_pb2.Vec3(x=1.1, y=0.0, z=0.0))
+
+                    if hinge_side_str == "left":
+                        auto_cmd.hinge_side = (
+                            door_pb2.DoorCommand.HINGE_SIDE_LEFT)
+                    else:
+                        auto_cmd.hinge_side = (
+                            door_pb2.DoorCommand.HINGE_SIDE_RIGHT)
+                    auto_cmd.swing_direction = (
+                        door_pb2.DoorCommand.SWING_DIRECTION_PUSH)
+
+                    door_command = door_pb2.DoorCommand.Request(
+                        auto_grasp_command=auto_cmd)
+                    door_request = door_pb2.OpenDoorCommandRequest(
+                        door_command=door_command)
+
+                    door_client = robot.ensure_client(
+                        DoorClient.default_service_name)
+                    door_response = door_client.open_door(door_request)
+
+                    if (door_response.status !=
+                            door_pb2.OpenDoorCommandResponse.STATUS_OK):
+                        print(f"[Spot] Door command rejected: "
+                              f"{door_response.message}")
+                        return
+
+                    # 5. Poll for door completion
+                    print("[Spot] [5/5] Opening door...")
+                    fb_req = door_pb2.OpenDoorFeedbackRequest()
+                    fb_req.door_command_id = door_response.door_command_id
+
+                    end_time = time.time() + 60.0
+                    while time.time() < end_time:
+                        fb = door_client.open_door_feedback(fb_req)
+                        if (fb.status != basic_command_pb2
+                                .RobotCommandFeedbackStatus.STATUS_PROCESSING):
+                            print(f"[Spot] Door command stopped "
+                                  f"(status={fb.status})")
+                            break
+                        door_fb = fb.feedback.status
+                        if door_fb == (door_pb2.DoorCommand
+                                       .Feedback.STATUS_COMPLETED):
+                            print("[Spot] ✓ Door opened successfully!")
+                            return
+                        elif door_fb == (door_pb2.DoorCommand
+                                         .Feedback.STATUS_STALLED):
+                            print("[Spot] Door opening stalled")
+                            break
+                        elif door_fb == (door_pb2.DoorCommand
+                                         .Feedback.STATUS_NOT_DETECTED):
+                            print("[Spot] Door not detected")
+                            break
+                        time.sleep(0.5)
+
+                    print("[Spot] Door operation finished")
+
+                except Exception as e:
+                    print(f"[Spot] ✗ Door opening failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    # Reset body pitch in case it's still tilted
+                    try:
+                        cmd_client.robot_command(
+                            RobotCommandBuilder.synchro_stand_command())
+                    except Exception:
+                        pass
+
+            t = threading.Thread(target=_open_door_thread, daemon=True)
+            t.start()
+            return True
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)
@@ -758,17 +1133,22 @@ def dispatch_intent(intent):
                     if not saved:
                         print("[Spot] No saved locations. Save some first.")
                         return False
+                    # Filter to named locations only (skip waypoint_XX, localize_, etc.)
+                    named = {n: wid for n, wid in saved.items() if _is_named_location(n)}
+                    if not named:
+                        print("[Spot] No named locations found (only generic waypoints).")
+                        return False
                     # Order by graph recording order for natural traversal
                     graph_order = get_graph_waypoint_order(session["robot"])
-                    wp_to_name = {wid: name for name, wid in saved.items()}
+                    wp_to_name = {wid: name for name, wid in named.items()}
                     waypoint_ids = []
                     location_names = []
                     for wp_id in graph_order:
                         if wp_id in wp_to_name:
                             waypoint_ids.append(wp_id)
                             location_names.append(wp_to_name[wp_id])
-                    # Include any saved locations not in graph order
-                    for loc_name, wid in saved.items():
+                    # Include any named locations not in graph order
+                    for loc_name, wid in named.items():
                         if wid not in waypoint_ids:
                             waypoint_ids.append(wid)
                             location_names.append(loc_name)
@@ -802,9 +1182,9 @@ def dispatch_intent(intent):
                 return False
 
         elif name == "patrol":
-            # Continuously loop through locations until stopped
+            # Visit all named locations once (single pass by default)
             locations_param = params.get("locations", "all")
-            print("[Spot] Starting patrol (say 'stop' to end)...")
+            print("[Spot] Starting patrol...")
             try:
                 from bosdyn.client.graph_nav import GraphNavClient
                 from src.location_manager import load_location, list_locations
@@ -821,15 +1201,20 @@ def dispatch_intent(intent):
                     if not saved:
                         print("[Spot] No saved locations. Save some first.")
                         return False
+                    # Filter to named locations only
+                    named = {n: wid for n, wid in saved.items() if _is_named_location(n)}
+                    if not named:
+                        print("[Spot] No named locations found (only generic waypoints).")
+                        return False
                     graph_order = get_graph_waypoint_order(session["robot"])
-                    wp_to_name = {wid: name for name, wid in saved.items()}
+                    wp_to_name = {wid: name for name, wid in named.items()}
                     waypoint_ids = []
                     location_names = []
                     for wp_id in graph_order:
                         if wp_id in wp_to_name:
                             waypoint_ids.append(wp_id)
                             location_names.append(wp_to_name[wp_id])
-                    for loc_name, wid in saved.items():
+                    for loc_name, wid in named.items():
                         if wid not in waypoint_ids:
                             waypoint_ids.append(wid)
                             location_names.append(loc_name)
@@ -852,9 +1237,9 @@ def dispatch_intent(intent):
                     return False
 
                 _save_home_waypoint(graph_nav_client)
-                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=True)
+                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False)
 
-                print(f"[Spot] Patrol started: {', '.join(location_names)} (looping)")
+                print(f"[Spot] Patrol started: {', '.join(location_names)}")
                 return True
             except Exception as e:
                 print(f"[Spot] Patrol failed: {e}")

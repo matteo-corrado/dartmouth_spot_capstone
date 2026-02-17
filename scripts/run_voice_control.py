@@ -69,6 +69,24 @@ def main():
     
     if not args.no_server and not args.server_only:
         print("\n[1/2] Starting ASR server...")
+
+        # Kill any stale ASR server processes from previous runs
+        import os, signal
+        try:
+            result = subprocess.run(
+                ["pgrep", "-f", "voice_control/server.py"],
+                capture_output=True, text=True
+            )
+            for pid_str in result.stdout.strip().split('\n'):
+                if pid_str.strip():
+                    pid = int(pid_str.strip())
+                    print(f"   Killing stale ASR server (PID {pid})...")
+                    os.kill(pid, signal.SIGTERM)
+            if result.stdout.strip():
+                time.sleep(1)  # Let old processes die
+        except Exception:
+            pass
+
         # Run server in background but capture output to see errors
         import threading
         import queue as queue_module

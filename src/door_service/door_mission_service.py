@@ -54,14 +54,14 @@ DEFAULT_PARAMS = {
 # State machines
 # ---------------------------------------------------------------------------
 class ButtonState(Enum):
-    """State machine for push-button door opening."""
+    """State machine for push-button door opening.
+
+    Sequence: press button → walk through with arm holding door → stow arm after.
+    """
     IDLE = auto()
     UNSTOW_ARM = auto()
     POSITION_ARM = auto()
     PRESS_BUTTON = auto()
-    RETRACT_ARM = auto()
-    WAIT_FOR_DOOR = auto()
-    STOW_ARM_BEFORE_WALK = auto()
     WALK_THROUGH = auto()
     STOW_ARM = auto()
     DONE = auto()
@@ -307,9 +307,9 @@ class DoorOpeningServicer(remote_service_pb2_grpc.RemoteMissionServiceServicer):
             if time.time() - self._state_start_time < 2.5:
                 return remote_pb2.TickResponse.STATUS_RUNNING
 
-            logger.info("[Button] Pressing button...")
-            # Move arm forward to press
-            press_x = self._params["approach_distance_m"] + 0.15
+            logger.info("[Button] Pressing button — arm will hold door open...")
+            press_dist = self._params.get("press_distance_m", 0.15)
+            press_x = self._params["approach_distance_m"] + press_dist
             button_y = self._params["button_offset_y_m"]
             button_z = self._params["button_height_m"] - 0.5
 
@@ -320,61 +320,16 @@ class DoorOpeningServicer(remote_service_pb2_grpc.RemoteMissionServiceServicer):
                 seconds=1.0
             )
             self._command_id = self._command_client.robot_command(cmd)
-            self._button_state = ButtonState.RETRACT_ARM
-            self._state_start_time = time.time()
-            return remote_pb2.TickResponse.STATUS_RUNNING
-
-        elif state == ButtonState.RETRACT_ARM:
-            # Wait for press, then retract
-            if time.time() - self._state_start_time < 1.5:
-                return remote_pb2.TickResponse.STATUS_RUNNING
-
-            logger.info("[Button] Retracting arm...")
-            retract_x = self._params["approach_distance_m"] - 0.2
-            button_y = self._params["button_offset_y_m"]
-            button_z = self._params["button_height_m"] - 0.5
-
-            cmd = RobotCommandBuilder.arm_pose_command(
-                x=retract_x, y=button_y, z=button_z,
-                qw=1.0, qx=0.0, qy=0.0, qz=0.0,
-                frame_name=BODY_FRAME_NAME,
-                seconds=1.0
-            )
-            self._command_id = self._command_client.robot_command(cmd)
-            self._button_state = ButtonState.WAIT_FOR_DOOR
-            self._state_start_time = time.time()
-            return remote_pb2.TickResponse.STATUS_RUNNING
-
-        elif state == ButtonState.WAIT_FOR_DOOR:
-            # Wait for door to open
-            elapsed = time.time() - self._state_start_time
-            wait_time = self._params["wait_time_s"]
-            if elapsed < wait_time:
-                if int(elapsed) != int(elapsed - 0.5):
-                    logger.info(f"[Button] Waiting for door... {elapsed:.0f}/{wait_time:.0f}s")
-                return remote_pb2.TickResponse.STATUS_RUNNING
-
-            logger.info("[Button] Wait complete, stowing arm before walking...")
-            self._button_state = ButtonState.STOW_ARM_BEFORE_WALK
-            self._state_start_time = time.time()
-            return remote_pb2.TickResponse.STATUS_RUNNING
-
-        elif state == ButtonState.STOW_ARM_BEFORE_WALK:
-            # Stow arm before walking through
-            if time.time() - self._state_start_time < 0.5:
-                return remote_pb2.TickResponse.STATUS_RUNNING
-
-            self._stow_arm()
             self._button_state = ButtonState.WALK_THROUGH
             self._state_start_time = time.time()
             return remote_pb2.TickResponse.STATUS_RUNNING
 
         elif state == ButtonState.WALK_THROUGH:
-            # Wait for stow, then walk through
+            # Wait for press, then walk through with arm holding door
             if time.time() - self._state_start_time < 2.0:
                 return remote_pb2.TickResponse.STATUS_RUNNING
 
-            logger.info("[Button] Walking through doorway...")
+            logger.info("[Button] Walking through with arm holding door...")
             distance = self._params["walk_through_distance_m"]
             try:
                 from bosdyn.client.robot_state import RobotStateClient
@@ -392,13 +347,24 @@ class DoorOpeningServicer(remote_service_pb2_grpc.RemoteMissionServiceServicer):
             except Exception as e:
                 logger.error(f"[Button] Walk-through failed: {e}")
 
+            self._button_state = ButtonState.STOW_ARM
+            self._state_start_time = time.time()
+            return remote_pb2.TickResponse.STATUS_RUNNING
+
+        elif state == ButtonState.STOW_ARM:
+            # Wait for walk-through, then stow arm
+            if time.time() - self._state_start_time < 8.0:
+                return remote_pb2.TickResponse.STATUS_RUNNING
+
+            logger.info("[Button] Through door, stowing arm...")
+            self._stow_arm()
             self._button_state = ButtonState.DONE
             self._state_start_time = time.time()
             return remote_pb2.TickResponse.STATUS_RUNNING
 
         elif state == ButtonState.DONE:
-            # Give time to walk through
-            if time.time() - self._state_start_time < 8.0:
+            # Give time to stow
+            if time.time() - self._state_start_time < 2.5:
                 return remote_pb2.TickResponse.STATUS_RUNNING
             logger.info("[Button] Door operation complete!")
             self._button_state = ButtonState.IDLE
