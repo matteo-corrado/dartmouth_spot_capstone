@@ -24,7 +24,7 @@ from typing import Optional, Dict, Any, List
 # Configuration
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL = "qwen2.5:7b"
-VLM_MODEL = "qwen2.5-vl:7b"
+VLM_MODEL = "qwen2.5vl:7b"
 OLLAMA_URL = "http://localhost:11434"
 MAX_HISTORY = 20          # messages (10 user + 10 assistant exchanges)
 REQUEST_TIMEOUT = 30.0    # seconds per request
@@ -41,9 +41,13 @@ you are a four-legged robot, you can walk, navigate, and perform physical \
 actions. You have a sense of humor and personality. Keep responses concise \
 (1-2 sentences for actions, a bit more for conversation).
 
-You MUST respond with a JSON object. Every response must be valid JSON with exactly these fields IN THIS ORDER:
-{"action": "<action_name or null>", "params": {<parameters or empty>}, "response": "<what you say>"}
-IMPORTANT: Always output "action" first, then "params", then "response". This ordering is required.
+You MUST respond with a JSON object with exactly these fields:
+{"actions": [<list of actions>], "response": "<what you say>"}
+
+Each action in the list: {"action": "<name>", "params": {<parameters>}}
+For a single action, use a list with one item.
+For chained commands (do X then Y), list them in execution order.
+For conversation only (no physical action), use an empty list.
 
 AVAILABLE ACTIONS:
 - stop: Stop all movement. No params.
@@ -58,60 +62,77 @@ AVAILABLE ACTIONS:
 - body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.
 - set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.
 - go_to: Navigate to saved location. Params: {"location": "<name>"}. Use lowercase_with_underscores.
-- tour: Visit locations in sequence (one pass). Params: {"locations": ["loc1", "loc2"]} for specific stops, or {"locations": "all"} to visit all. Use for "loop the map", "visit everywhere", "go to A then B then C".
+- tour: Visit locations in sequence (one pass). Params: {"locations": ["loc1", "loc2"]} for specific stops, or {"locations": "all"} to visit all. Use for "loop the map", "visit everywhere".
 - patrol: Loop through locations continuously until stopped. Params: same as tour. Use for "patrol", "keep looping", "keep patrolling".
 - come_back: Return to position before last navigation. No params. Use for "come back", "go home", "return".
 - save_location: Save current position. Params: {"location": "<name>"}.
 - list_locations: List saved locations. No params.
-- open_door: Open a push-button door. Extends arm to press button, holds door open while walking through, then stows arm. No params needed (uses tuned defaults). Use for "open the door", "push the door", "open door".
-- describe: Take a photo and describe what you see. Use when user asks about surroundings, what's in front of you, etc. Params: {"camera": "front"|"left"|"right"|"back"}. Default "front".
+- open_door: Open a push-bar door. No params needed (uses tuned defaults). Use for "open the door", "push the door".
+- go_to_object: Walk toward a visible object using the camera. Params: {"description": "<what to find>"}. Use for "go to the red chair", "find the backpack", "walk to the table". Only for objects you can SEE — use go_to for saved map locations.
+- follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
+- describe: Take a photo and describe what you see. Params: {"camera": "front"|"left"|"right"|"back", "query": "<specific object to look for, if any>"}. Default camera "front". Omit query for general "what do you see" questions.
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
 
 RULES:
-- When the user asks you to do something physical, set "action" to the action name and include params.
-- When the user is just chatting, set "action" to null and "params" to {}.
+- When the user asks you to do something physical, put action(s) in the "actions" list.
+- When the user is just chatting, use an empty list: "actions": [].
+- For chained requests ("do X then Y"), list multiple actions in order — the robot executes them sequentially.
+- For multi-location trips ("go to A then B then C"), prefer a SINGLE tour action with a locations list over chaining multiple go_to actions.
 - ALWAYS include a "response" — a short spoken reply.
 - Location names must be lowercase with underscores.
-- If you cannot do something (browse web, send email), say so and set action to null.
+- IMPORTANT: Check "saved_locations" in the robot state. If the user says "go to X" and X matches a saved location name, ALWAYS use go_to (map navigation). Only use go_to_object for objects NOT in saved_locations (e.g. "go to the red chair" when "red_chair" is not a saved location).
+- IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?" are OBSERVATION questions — use describe (look with camera), NOT go_to_object. Only use go_to_object when the user explicitly says "go to X", "walk to X", "find X", or "approach X".
 
 EXAMPLES:
 User: "Stand up"
-{"action": "stand", "params": {}, "response": "Standing up!"}
+{"actions": [{"action": "stand", "params": {}}], "response": "Standing up!"}
 
 User: "Walk forward 2 meters"
-{"action": "walk", "params": {"direction": "forward", "distance": 2.0}, "response": "Walking forward 2 meters!"}
+{"actions": [{"action": "walk", "params": {"direction": "forward", "distance": 2.0}}], "response": "Walking forward 2 meters!"}
 
 User: "Turn around"
-{"action": "turn", "params": {"deg": 180, "dir": "left"}, "response": "Turning around!"}
+{"actions": [{"action": "turn", "params": {"deg": 180, "dir": "left"}}], "response": "Turning around!"}
 
 User: "How are you doing?"
-{"action": null, "params": {}, "response": "I'm doing great! Battery is looking good and I'm ready to help."}
+{"actions": [], "response": "I'm doing great! Battery is looking good and I'm ready to help."}
 
 User: "Go to the kitchen"
-{"action": "go_to", "params": {"location": "kitchen"}, "response": "On my way to the kitchen!"}
+{"actions": [{"action": "go_to", "params": {"location": "kitchen"}}], "response": "On my way to the kitchen!"}
 
 User: "What do you see?"
-{"action": "describe", "params": {"camera": "front"}, "response": "Let me take a look..."}
-
-User: "What's to your left?"
-{"action": "describe", "params": {"camera": "left"}, "response": "Let me check what's on my left..."}
-
-User: "Loop the map"
-{"action": "tour", "params": {"locations": "all"}, "response": "Starting a tour of all locations!"}
+{"actions": [{"action": "describe", "params": {"camera": "front"}}], "response": "Let me take a look..."}
 
 User: "Go to kitchen then hallway then lab"
-{"action": "tour", "params": {"locations": ["kitchen", "hallway", "lab"]}, "response": "On my way! I'll visit kitchen, hallway, and lab in order."}
+{"actions": [{"action": "tour", "params": {"locations": ["kitchen", "hallway", "lab"]}}], "response": "On my way! I'll visit kitchen, hallway, and lab in order."}
+
+User: "Go to the conference and come back"
+{"actions": [{"action": "go_to", "params": {"location": "conference"}}, {"action": "come_back", "params": {}}], "response": "Going to conference and coming right back!"}
+
+User: "Go to lab, then sit down"
+{"actions": [{"action": "go_to", "params": {"location": "lab"}}, {"action": "sit", "params": {}}], "response": "Heading to lab, then I'll sit down!"}
 
 User: "Patrol the map"
-{"action": "patrol", "params": {"locations": "all"}, "response": "Starting patrol! I'll keep looping until you tell me to stop."}
+{"actions": [{"action": "patrol", "params": {"locations": "all"}}], "response": "Starting patrol! I'll keep looping until you tell me to stop."}
 
 User: "Come back"
-{"action": "come_back", "params": {}, "response": "Heading back to where I started!"}
+{"actions": [{"action": "come_back", "params": {}}], "response": "Heading back to where I started!"}
 
 User: "Open the door"
-{"action": "open_door", "params": {}, "response": "Opening the door! Stand back."}"""
+{"actions": [{"action": "open_door", "params": {}}], "response": "Opening the door! Stand back."}
+
+User: "Do you see the blue chair?"
+{"actions": [{"action": "describe", "params": {"camera": "front", "query": "blue chair"}}], "response": "Let me check for the blue chair..."}
+
+User: "Go to the red chair"
+{"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}
+
+User: "Find my backpack"
+{"actions": [{"action": "go_to_object", "params": {"description": "backpack"}}], "response": "Searching for your backpack!"}
+
+User: "Follow me"
+{"actions": [{"action": "follow_me", "params": {}}], "response": "Following you! I'll stay close."}"""
 
 
 class SpotBrain:
@@ -128,6 +149,7 @@ class SpotBrain:
         self.history: List[Dict[str, Any]] = []
         self._available = None  # cached availability check
         self._first_request = True
+        self._vlm_warmed = False
 
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is pulled."""
@@ -183,6 +205,59 @@ class SpotBrain:
         except Exception as e:
             print(f"[Brain] Warm-up error: {e}")
 
+    def warm_up_vlm(self):
+        """Pre-load VLM into VRAM by sending a tiny image.
+
+        Called on-demand before first VLM query (not at startup) because
+        LLM and VLM share VRAM on Jetson — warming VLM would evict LLM.
+        """
+        if self._vlm_warmed:
+            return
+        print(f"[Brain] Warming up VLM '{VLM_MODEL}'...")
+        t0 = time.time()
+        try:
+            # 1x1 white JPEG (smallest valid image)
+            tiny_jpeg = base64.b64encode(
+                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01'
+                b'\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07'
+                b'\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13'
+                b'\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c'
+                b'(7),01444\x1f\'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00'
+                b'\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01'
+                b'\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01'
+                b'\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10'
+                b'\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00'
+                b'\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07"q'
+                b'\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n'
+                b'\x16\x17\x18\x19\x1a%&\'()*456789:CDEFGHIJSTUVWXYZcdefghij'
+                b'stuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95'
+                b'\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa'
+                b'\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6'
+                b'\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1'
+                b'\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5'
+                b'\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?'
+                b'\x00\xfb\xd2\x8a(\x03\xff\xd9'
+            ).decode()
+            r = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": VLM_MODEL,
+                    "messages": [{"role": "user", "content": "hi", "images": [tiny_jpeg]}],
+                    "stream": False,
+                    "keep_alive": "5m",
+                    "options": {"num_gpu": 99, "num_predict": 5},
+                },
+                timeout=FIRST_REQUEST_TIMEOUT,
+            )
+            elapsed = time.time() - t0
+            self._vlm_warmed = True
+            if r.status_code == 200:
+                print(f"[Brain] VLM warm in {elapsed:.1f}s")
+            else:
+                print(f"[Brain] VLM warm-up got status {r.status_code}")
+        except Exception as e:
+            print(f"[Brain] VLM warm-up error: {e}")
+
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build the message list for the Ollama chat API."""
         state_lines = "\n".join(f"- {k}: {v}" for k, v in state.items())
@@ -195,7 +270,7 @@ class SpotBrain:
         return messages
 
     def process(self, transcript: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Process a user utterance and return action + response.
+        """Process a user utterance and return actions + response.
 
         Args:
             transcript: What the user said (ASR output).
@@ -203,7 +278,7 @@ class SpotBrain:
 
         Returns:
             Dict with keys:
-                "action": {"intent": str, "params": dict} or None
+                "actions": list of {"intent": str, "params": dict}
                 "response": str  — what the robot says back
                 "raw_llm": str   — raw LLM output (for debugging)
         """
@@ -229,7 +304,7 @@ class SpotBrain:
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
-                        "num_predict": 100,
+                        "num_predict": 150,
                         "num_gpu": 99,
                         "num_ctx": 4096,
                     },
@@ -240,7 +315,7 @@ class SpotBrain:
 
             if r.status_code != 200:
                 print(f"[Brain] Ollama error {r.status_code}: {r.text[:200]}")
-                return {"action": None, "response": "", "raw_llm": ""}
+                return {"actions": [], "response": "", "raw_llm": ""}
 
             message = r.json().get("message", {})
             content = (message.get("content") or "").strip()
@@ -248,25 +323,43 @@ class SpotBrain:
             print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
 
             # --- Parse JSON ---
-            action = None
+            actions = []
             response = ""
 
             try:
                 data = json.loads(content)
             except json.JSONDecodeError:
                 print(f"[Brain] Failed to parse JSON: {content[:200]}")
-                return {"action": None, "response": content, "raw_llm": content}
+                return {"actions": [], "response": content, "raw_llm": content}
 
             response = str(data.get("response", "")).strip()
 
-            action_name = data.get("action")
-            if action_name and isinstance(action_name, str) and action_name.lower() != "null":
-                params = data.get("params", {})
-                if not isinstance(params, dict):
-                    params = {}
-                params = self._normalize_params(action_name, params)
-                action = {"intent": action_name, "params": params}
-                print(f"[Brain] Action: {action_name}({params})")
+            # Support new "actions" list format
+            raw_actions = data.get("actions")
+            if isinstance(raw_actions, list):
+                for item in raw_actions:
+                    if isinstance(item, dict):
+                        name = item.get("action")
+                        if name and isinstance(name, str):
+                            params = item.get("params", {})
+                            if not isinstance(params, dict):
+                                params = {}
+                            params = self._normalize_params(name, params)
+                            actions.append({"intent": name, "params": params})
+
+            # Backward compat: old single "action" field
+            if not actions:
+                action_name = data.get("action")
+                if action_name and isinstance(action_name, str) and action_name.lower() != "null":
+                    params = data.get("params", {})
+                    if not isinstance(params, dict):
+                        params = {}
+                    params = self._normalize_params(action_name, params)
+                    actions.append({"intent": action_name, "params": params})
+
+            if actions:
+                names = " -> ".join(a["intent"] for a in actions)
+                print(f"[Brain] Actions: {names}")
             else:
                 print("[Brain] No action (conversation only)")
 
@@ -278,21 +371,21 @@ class SpotBrain:
                 self.history = self.history[-MAX_HISTORY:]
 
             return {
-                "action": action,
+                "actions": actions,
                 "response": response,
                 "raw_llm": content,
             }
 
         except requests.Timeout:
             print(f"[Brain] Timeout after {timeout}s — model may be loading")
-            return {"action": None, "response": "", "raw_llm": ""}
+            return {"actions": [], "response": "", "raw_llm": ""}
         except requests.ConnectionError:
             print("[Brain] Cannot connect to Ollama. Is it running?")
             self._available = False
-            return {"action": None, "response": "", "raw_llm": ""}
+            return {"actions": [], "response": "", "raw_llm": ""}
         except Exception as e:
             print(f"[Brain] Error: {e}")
-            return {"action": None, "response": "", "raw_llm": ""}
+            return {"actions": [], "response": "", "raw_llm": ""}
 
     @staticmethod
     def _normalize_params(intent: str, params: dict) -> dict:
@@ -346,22 +439,36 @@ class SpotBrain:
 
         return params
 
-    def query_vlm(self, image_bytes: bytes, question: str) -> str:
+    def query_vlm(self, image_bytes: bytes, question: str, yolo_hint: str = "") -> str:
         """Send image + question to the VLM for visual description.
 
         Args:
             image_bytes: JPEG image data from Spot camera.
             question: The user's original question (e.g. "what do you see?").
+            yolo_hint: Optional YOLO detection result to guide VLM.
 
         Returns:
             VLM's text response describing the image.
         """
+        # On-demand VLM warm-up (first call only)
+        if not self._vlm_warmed:
+            self.warm_up_vlm()
+
         image_b64 = base64.b64encode(image_bytes).decode()
 
         vlm_prompt = (
             f"You are Spot, a Boston Dynamics robot at Dartmouth College. "
-            f"A user asked: \"{question}\". Describe what you see in 2-3 sentences. "
-            f"Be specific about objects, people, and surroundings."
+            f"This image is what you see right now through your own camera eyes. "
+            f"A user asked: \"{question}\". "
+        )
+        if yolo_hint:
+            vlm_prompt += f"{yolo_hint} "
+        vlm_prompt += (
+            "Respond naturally in first person as if you are looking around, "
+            "NOT as if you are analyzing a photograph. Never mention 'image', "
+            "'photo', 'picture', 'angle', or 'vantage point'. "
+            "Describe what you see in 2-3 sentences. "
+            "Be specific about objects, people, and surroundings."
         )
 
         try:
@@ -472,9 +579,9 @@ if __name__ == "__main__":
 
         if result["response"]:
             print(f"Spot: {result['response']}")
-        if result["action"]:
-            a = result["action"]
-            print(f"  -> Action: {a['intent']}({a.get('params', {})})")
+        if result["actions"]:
+            for i, a in enumerate(result["actions"]):
+                print(f"  -> Action {i+1}: {a['intent']}({a.get('params', {})})")
         else:
             print("  -> (no action)")
         print()

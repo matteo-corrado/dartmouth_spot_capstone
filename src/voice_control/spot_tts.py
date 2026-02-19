@@ -1,14 +1,12 @@
-"""Text-to-Speech for Spot using Kokoro TTS (ONNX).
+"""Text-to-Speech for Spot using sherpa-onnx Kokoro TTS.
 
-Kokoro is #1 on TTS Arena with near-human voice quality. Runs on CPU
-via ONNX runtime (no GPU competition with LLM/ASR). 82M params, ~88MB int8.
+Kokoro is a high-quality neural TTS model. sherpa-onnx bundles its own ONNX
+runtime with aarch64 wheels that work on Jetson (no pip onnxruntime crash).
+Runs on CPU — no GPU competition with LLM/ASR.
 
 Install:
-    pip install kokoro-onnx sounddevice
-    python scripts/setup_kokoro.py   # downloads model files (~88MB)
-
-On Jetson with CUDA acceleration (optional, CPU is fast enough):
-    Replace onnxruntime with NVIDIA's Jetson wheel for CUDAExecutionProvider.
+    pip install sherpa-onnx
+    python scripts/setup_kokoro.py   # downloads model pack (~340MB)
 """
 
 import threading
@@ -23,14 +21,16 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DEFAULT_VOICE = "af_heart"  # American female, warm/natural tone
-MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models" / "tts"
-MODEL_FILE = "kokoro-v1.0.onnx"
-VOICES_FILE = "voices-v1.0.bin"
+# Speaker IDs for kokoro-en-v0_19 (English, 11 speakers):
+#   0=af  1=af_bella  2=af_nicole  3=af_sarah  4=af_sky
+#   5=am_adam  6=am_michael  7=bf_emma  8=bf_isabella  9=bm_george  10=bm_lewis
+DEFAULT_SPEAKER_ID = 3       # af_sarah — warm/natural American female
+DEFAULT_SPEED = 1.1
+MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models" / "tts" / "kokoro-en-v0_19"
 
 
 class SpotTTS:
-    """Non-blocking text-to-speech via Kokoro TTS (ONNX).
+    """Non-blocking text-to-speech via sherpa-onnx Kokoro TTS.
 
     Usage:
         tts = SpotTTS()
@@ -38,21 +38,23 @@ class SpotTTS:
         tts.speak_sync("Hello!")   # blocking (waits for playback)
     """
 
-    def __init__(self, voice: str = DEFAULT_VOICE, output_device=None,
-                 on_mute=None, on_unmute=None):
-        """Initialize Kokoro TTS.
+    def __init__(self, speaker_id: int = DEFAULT_SPEAKER_ID, speed: float = DEFAULT_SPEED,
+                 output_device=None, on_mute=None, on_unmute=None):
+        """Initialize sherpa-onnx Kokoro TTS.
 
         Args:
-            voice: Kokoro voice name (e.g. "af_heart", "am_adam", "bf_emma").
+            speaker_id: Kokoro speaker ID (see table above).
+            speed: Speech speed (1.0 = normal, >1 = faster).
             output_device: sounddevice output device index (None = system default).
             on_mute: Callback invoked before playback starts (use to mute mic).
             on_unmute: Callback invoked after playback ends (use to unmute mic).
         """
-        self.voice_name = voice
+        self.speaker_id = speaker_id
+        self.speed = speed
         self.output_device = output_device
         self._on_mute = on_mute
         self._on_unmute = on_unmute
-        self._kokoro = None
+        self._tts = None
         self._thread = None
         self._playing = False
         self._lock = threading.Lock()
@@ -61,67 +63,55 @@ class SpotTTS:
         self._load_model()
 
     def _load_model(self):
-        """Load Kokoro ONNX model and voice pack."""
+        """Load sherpa-onnx Kokoro TTS model."""
+        if sd is None:
+            print("[TTS] sounddevice not installed — no audio playback")
+            print("[TTS] Install with: pip install sounddevice")
+            self._available = False
+            return
+
         try:
-            from kokoro_onnx import Kokoro
+            import sherpa_onnx
 
-            # Search for model files
-            search_dirs = [
-                MODEL_DIR,                                      # project: models/tts/
-                Path("~/.local/share/kokoro_models").expanduser(),  # user-local
-                Path.cwd(),                                     # current directory
-            ]
+            model_path = MODEL_DIR / "model.onnx"
+            voices_path = MODEL_DIR / "voices.bin"
+            tokens_path = MODEL_DIR / "tokens.txt"
+            data_dir = MODEL_DIR / "espeak-ng-data"
 
-            model_path = None
-            voices_path = None
-
-            for d in search_dirs:
-                m = d / MODEL_FILE
-                v = d / VOICES_FILE
-                if m.exists() and v.exists():
-                    model_path = m
-                    voices_path = v
-                    break
-
-            if not model_path or not voices_path:
-                print(f"[TTS] Kokoro model files not found.")
+            if not model_path.exists():
+                print(f"[TTS] Model not found: {model_path}")
                 print(f"[TTS] Run: python scripts/setup_kokoro.py")
-                print(f"[TTS] Searched: {[str(d) for d in search_dirs]}")
                 self._available = False
                 return
 
-            print(f"[TTS] Loading Kokoro model from: {model_path.parent}")
+            print(f"[TTS] Loading sherpa-onnx Kokoro from: {MODEL_DIR}")
 
-            # Try GPU (Jetson CUDA EP) first, fall back to CPU
-            try:
-                import onnxruntime as ort
-                providers = ort.get_available_providers()
-                if "CUDAExecutionProvider" in providers:
-                    session = ort.InferenceSession(
-                        str(model_path),
-                        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-                    )
-                    self._kokoro = Kokoro.from_session(session, str(voices_path))
-                    print("[TTS] Kokoro loaded (CUDA)")
-                else:
-                    self._kokoro = Kokoro(str(model_path), str(voices_path))
-                    print("[TTS] Kokoro loaded (CPU)")
-            except Exception:
-                self._kokoro = Kokoro(str(model_path), str(voices_path))
-                print("[TTS] Kokoro loaded (CPU)")
+            tts_config = sherpa_onnx.OfflineTtsConfig(
+                model=sherpa_onnx.OfflineTtsModelConfig(
+                    kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                        model=str(model_path),
+                        voices=str(voices_path),
+                        tokens=str(tokens_path),
+                        data_dir=str(data_dir),
+                    ),
+                    provider="cpu",
+                    num_threads=2,
+                ),
+                max_num_sentences=1,
+            )
 
-            # Verify voice exists
-            available_voices = self._kokoro.get_voices()
-            if self.voice_name not in available_voices:
-                print(f"[TTS] Voice '{self.voice_name}' not found. Available: {available_voices[:5]}...")
-                print(f"[TTS] Falling back to '{DEFAULT_VOICE}'")
-                self.voice_name = DEFAULT_VOICE
+            if not tts_config.validate():
+                print("[TTS] Config validation failed — check model files")
+                self._available = False
+                return
 
+            self._tts = sherpa_onnx.OfflineTts(tts_config)
             self._available = True
-            print(f"[TTS] Voice: {self.voice_name} ({len(available_voices)} voices available)")
+            print(f"[TTS] Ready — speaker_id={self.speaker_id}, speed={self.speed}, "
+                  f"sample_rate={self._tts.sample_rate}Hz")
 
         except ImportError:
-            print("[TTS] kokoro-onnx not installed. Install with: pip install kokoro-onnx")
+            print("[TTS] sherpa-onnx not installed. Install with: pip install sherpa-onnx")
             self._available = False
         except Exception as e:
             print(f"[TTS] Failed to load model: {e}")
@@ -172,17 +162,12 @@ class SpotTTS:
             if self._on_mute:
                 self._on_mute()
 
-            # Synthesize with Kokoro (returns float32 samples + sample rate)
-            samples, sample_rate = self._kokoro.create(
-                text,
-                voice=self.voice_name,
-                speed=1.0,
-                lang="en-us",
-            )
+            audio = self._tts.generate(text, sid=self.speaker_id, speed=self.speed)
 
-            # Play audio
-            sd.play(samples, samplerate=sample_rate, device=self.output_device)
-            sd.wait()
+            if audio.samples is not None and len(audio.samples) > 0:
+                sd.play(audio.samples, samplerate=audio.sample_rate,
+                        device=self.output_device)
+                sd.wait()
 
         except Exception as e:
             print(f"[TTS] Playback error: {e}")
@@ -203,11 +188,11 @@ class SpotTTS:
 _tts_instance = None
 
 
-def get_tts(voice: str = DEFAULT_VOICE, output_device=None) -> SpotTTS:
+def get_tts(speaker_id: int = DEFAULT_SPEAKER_ID, output_device=None) -> SpotTTS:
     """Get or create the singleton SpotTTS instance."""
     global _tts_instance
     if _tts_instance is None:
-        _tts_instance = SpotTTS(voice=voice, output_device=output_device)
+        _tts_instance = SpotTTS(speaker_id=speaker_id, output_device=output_device)
     return _tts_instance
 
 
@@ -216,18 +201,41 @@ def get_tts(voice: str = DEFAULT_VOICE, output_device=None) -> SpotTTS:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
+    import argparse as _ap
 
-    voice = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_VOICE
-    text = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Hello! I am Spot, a Boston Dynamics robot at Dartmouth College."
+    p = _ap.ArgumentParser(description="Spot TTS test")
+    p.add_argument("--sid", type=int, default=DEFAULT_SPEAKER_ID, help="Speaker ID (0-10)")
+    p.add_argument("--speed", type=float, default=DEFAULT_SPEED, help="Speech speed")
+    p.add_argument("--wav", type=str, default=None, help="Save to WAV file instead of playing")
+    p.add_argument("text", nargs="*", default=["Hello! I am Spot, a Boston Dynamics robot at Dartmouth College."])
+    a = p.parse_args()
+    text = " ".join(a.text)
 
-    print(f"Voice: {voice}")
+    print(f"Speaker ID: {a.sid}, Speed: {a.speed}")
     print(f"Text: {text}")
 
-    tts = SpotTTS(voice=voice)
-    if tts.is_available():
-        # List a few available voices
-        print(f"Available voices: {tts._kokoro.get_voices()[:10]}...")
-        tts.speak_sync(text)
-        print("Done!")
+    if a.wav:
+        # Direct WAV export (no sounddevice needed)
+        import sherpa_onnx, soundfile as _sf
+        tts_config = sherpa_onnx.OfflineTtsConfig(
+            model=sherpa_onnx.OfflineTtsModelConfig(
+                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
+                    model=str(MODEL_DIR / "model.onnx"),
+                    voices=str(MODEL_DIR / "voices.bin"),
+                    tokens=str(MODEL_DIR / "tokens.txt"),
+                    data_dir=str(MODEL_DIR / "espeak-ng-data"),
+                ), num_threads=2,
+            ), max_num_sentences=1,
+        )
+        tts_engine = sherpa_onnx.OfflineTts(tts_config)
+        audio = tts_engine.generate(text, sid=a.sid, speed=a.speed)
+        _sf.write(a.wav, audio.samples, samplerate=audio.sample_rate, subtype="PCM_16")
+        dur = len(audio.samples) / audio.sample_rate
+        print(f"Saved {dur:.1f}s to {a.wav}")
     else:
-        print("TTS not available.")
+        tts = SpotTTS(speaker_id=a.sid, speed=a.speed)
+        if tts.is_available():
+            tts.speak_sync(text)
+            print("Done!")
+        else:
+            print("TTS not available.")

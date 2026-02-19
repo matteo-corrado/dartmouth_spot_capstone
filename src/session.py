@@ -47,21 +47,8 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
             status = keepalive_client.get_status()
             if status.status:
                 print(f"[Session] Clearing {len(status.status)} stale keepalive policy(ies)...")
-                for policy in status.status:
-                    try:
-                        keepalive_client.remove_policy(policy.policy_id)
-                    except Exception:
-                        pass
+                remove_all_policies(keepalive_client)
                 time.sleep(2)
-                remaining = keepalive_client.get_status()
-                if remaining.status:
-                    print(f"[Session] Warning: {len(remaining.status)} policy(ies) still remain, retrying...")
-                    for policy in remaining.status:
-                        try:
-                            keepalive_client.remove_policy(policy.policy_id)
-                        except Exception:
-                            pass
-                    time.sleep(2)
                 print("[Session] ✓ Keepalive policies cleared")
         except Exception as e:
             print(f"[Session] Note: Could not clear keepalive policies: {e}")

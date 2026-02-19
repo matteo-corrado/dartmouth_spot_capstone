@@ -16,8 +16,18 @@ spot-env
 
 # Door calibration images (regenerated per-environment)
 door_calibration/
+door_config.json
 
 # NGC CLI artifacts
 ngc-cli/
 ngc-cli.md5
 ngccli_arm64.zip
+
+# Model weights (downloaded by setup scripts or ultralytics)
+models/tts/
+models/kws/
+yolov8n.pt
+yolov8s-worldv2.pt
+
+# Robot-specific maps (environment-dependent)
+maps/

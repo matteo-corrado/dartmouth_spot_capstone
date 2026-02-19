@@ -31,6 +31,7 @@ from asr_pb2_grpc import ASRStub
 from intent import parse_intent
 from llm_brain import SpotBrain, DEFAULT_MODEL
 from spot_tts import SpotTTS
+from audio_feedback import beep
 
 class VoiceState(Enum):
     WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
@@ -49,9 +50,11 @@ FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 VAD_LEVEL = 1                    # webrtcvad aggressiveness (0-3); 1 = catches softer speech at close range
-SILENCE_TIMEOUT = 0.5            # Seconds of silence to end utterance
-MAX_UTTERANCE_SECONDS = 8        # Force-send after this duration
-MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)  # ~267 frames
+SILENCE_TIMEOUT_SHORT = 0.8      # Silence timeout for short utterances (< 2s)
+SILENCE_TIMEOUT_LONG = 1.5       # Silence timeout for longer utterances (> 2s, e.g. chained commands)
+SILENCE_CROSSOVER = 2.0          # Switch from short to long timeout after this much speech (seconds)
+MAX_UTTERANCE_SECONDS = 20       # Force-send after this duration (up from 8 — allows long chains)
+MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
 SPEECH_ONSET_FRAMES = 3          # Consecutive VAD+energy frames to confirm speech onset (~90ms)
 NAV_ONSET_FRAMES = 5             # Higher onset threshold during navigation (150ms, reduces motor noise false triggers)
 PREROLL_FRAMES = 5               # Keep last N frames before onset (~150ms) to capture word beginnings
@@ -124,8 +127,15 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> float:
         samples.append(mono.copy())
 
     try:
-        with sd.InputStream(device=device, channels=2, samplerate=SAMPLE_RATE,
-                           callback=callback, blocksize=FRAME_SAMPLES):
+        # Try stereo first (XVF3800), fall back to mono if device doesn't support it
+        try:
+            stream_ctx = sd.InputStream(device=device, channels=2, samplerate=SAMPLE_RATE,
+                                        callback=callback, blocksize=FRAME_SAMPLES)
+        except Exception:
+            print(f"[Stereo not supported on device {device}, falling back to mono]")
+            stream_ctx = sd.InputStream(device=device, channels=1, samplerate=SAMPLE_RATE,
+                                        callback=callback, blocksize=FRAME_SAMPLES)
+        with stream_ctx:
             start = time.time()
             while sum(len(s) for s in samples) < samples_needed:
                 time.sleep(0.05)
@@ -237,6 +247,22 @@ def _is_robot_moving() -> bool:
         return False
 
 
+def _is_follow_mode() -> bool:
+    """Check if robot is in follow-person mode (user is nearby speaking)."""
+    try:
+        from src.voice_control.spot_dispatch import is_follow_mode
+        return is_follow_mode()
+    except Exception:
+        return False
+
+
+def _wait_for_nav_complete(timeout: float = 120.0):
+    """Block until current navigation finishes (for command chaining)."""
+    start = time.time()
+    while _is_robot_moving() and (time.time() - start) < timeout:
+        time.sleep(0.5)
+
+
 # Safety commands that bypass the LLM for zero-latency execution
 SAFETY_PATTERNS = [
     (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
@@ -256,9 +282,7 @@ def check_safety_command(text: str):
     return None
 
 
-# Wake phrase pattern — matches Whisper transcriptions of "Hey Spot"
-# Whisper base commonly produces: "Hey spot", "Hey, spot", "A spot", "A-spot",
-# "Stay spot", "Say spot", etc.
+# Wake phrase pattern — fallback for ASR-based detection if dedicated detector unavailable
 WAKE_PHRASE_PATTERN = re.compile(
     r"(?:hey|a|stay|say|heh)\s*[,\-]?\s*spot\b",
     re.IGNORECASE
@@ -343,22 +367,43 @@ def main():
     # Initialize VAD
     vad = webrtcvad.Vad(VAD_LEVEL)
 
-    # Wake word mode (ASR-based: Whisper detects "Hey Spot" in transcript)
+    # Wake word detector (sherpa-onnx keyword spotter)
+    wake_detector = None
     use_wake_word = not args.no_wake_word
     if use_wake_word:
-        print("[WakeWord] ASR-based detection (say 'Hey Spot' to activate)")
+        try:
+            from wake_word import WakeWordDetector
+            wake_detector = WakeWordDetector()
+            if wake_detector.is_available():
+                print("[WakeWord] sherpa-onnx keyword spotter ready")
+            else:
+                print("[WakeWord] Detector not available — falling back to ASR-based")
+                wake_detector = None
+        except Exception as e:
+            print(f"[WakeWord] Import failed: {e} — falling back to ASR-based")
+            wake_detector = None
     else:
         print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
-    # Open audio stream
+    # Open audio stream (try stereo for XVF3800, fall back to mono)
     try:
-        stream = sd.InputStream(
-            device=args.device,
-            channels=2,
-            samplerate=SAMPLE_RATE,
-            callback=audio_callback,
-            blocksize=FRAME_SAMPLES
-        )
+        try:
+            stream = sd.InputStream(
+                device=args.device,
+                channels=2,
+                samplerate=SAMPLE_RATE,
+                callback=audio_callback,
+                blocksize=FRAME_SAMPLES
+            )
+        except Exception:
+            print(f"[Stereo not supported on device {args.device}, falling back to mono]")
+            stream = sd.InputStream(
+                device=args.device,
+                channels=1,
+                samplerate=SAMPLE_RATE,
+                callback=audio_callback,
+                blocksize=FRAME_SAMPLES
+            )
         stream.start()
     except Exception as e:
         print(f"Audio error: {e}")
@@ -366,7 +411,12 @@ def main():
         return
 
     mode = f"LLM Brain ({DEFAULT_MODEL})" if brain else "Regex-only (legacy)"
-    ww_status = "ON (ASR-based)" if use_wake_word else "OFF"
+    if not use_wake_word:
+        ww_status = "OFF"
+    elif wake_detector:
+        ww_status = "ON (sherpa-onnx keyword spotter)"
+    else:
+        ww_status = "ON (ASR-based fallback)"
     print("\n" + "=" * 60)
     print(f"LISTENING — Mode: {mode}")
     print(f"  Wake word: {ww_status}")
@@ -390,7 +440,7 @@ def main():
     from collections import deque
     preroll_buffer = deque(maxlen=PREROLL_FRAMES)  # Ring buffer for pre-onset audio
 
-    # Wake word state (ASR-based: no separate model needed)
+    # Wake word state
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
     listening_start_time = time.time()
 
@@ -406,14 +456,32 @@ def main():
                 window = window[BYTES_PER_FRAME:]
                 frame_count += 1
 
+                # ============================================================
+                # Wake word detection (dedicated detector, runs on every frame)
+                # ============================================================
+                if state == VoiceState.WAKE_WORD and wake_detector:
+                    if wake_detector.process_frame(frame):
+                        print(">>> Wake word detected!")
+                        beep.wake_detected()
+                        state = VoiceState.LISTENING
+                        listening_start_time = time.time()
+                        # Don't drain audio — remaining speech ("stand up" in
+                        # "Hey Spot stand up") stays in buffer for VAD to pick up
+                    # Still process VAD for safety commands below
+                    # (stop/freeze/estop work even in WAKE_WORD state)
+
                 # Calculate frame energy
                 frame_rms = compute_rms(frame)
 
                 # Energy gating: only check VAD if energy is above threshold
                 # During navigation, raise threshold to suppress motor noise
+                # Follow mode uses lower multiplier — user is nearby speaking
                 effective_threshold = energy_threshold
                 if _is_robot_moving():
-                    effective_threshold *= NAV_ENERGY_MULT
+                    if _is_follow_mode():
+                        effective_threshold *= 2.0  # Light — user is close
+                    else:
+                        effective_threshold *= NAV_ENERGY_MULT
 
                 if frame_rms > effective_threshold:
                     try:
@@ -424,12 +492,14 @@ def main():
                     is_speech = False
 
                 # ============================================================
-                # LISTENING timeout: return to WAKE_WORD after 10s
+                # LISTENING timeout: return to WAKE_WORD after idle period
                 # ============================================================
                 if state == VoiceState.LISTENING and not is_speaking:
                     if time.time() - listening_start_time > LISTENING_TIMEOUT:
                         print("[Listening timeout — say 'Hey Spot' to activate]")
                         state = VoiceState.WAKE_WORD
+                        if wake_detector:
+                            wake_detector.reset()
                         continue
 
                 # ============================================================
@@ -484,13 +554,15 @@ def main():
                             print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                             safety_only = (state == VoiceState.WAKE_WORD)
                             result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                       brain, safety_only=safety_only, tts=tts)
+                                                       brain, safety_only=safety_only, tts=tts,
+                                                       has_wake_detector=bool(wake_detector))
                             is_speaking = False
                             speech_buffer.clear()
                             speech_float_buffer.clear()
                             _drain_audio_queue()
                             if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                 print(">>> Now listening for commands...")
+                                beep.wake_detected()
                                 state = VoiceState.LISTENING
                                 listening_start_time = time.time()
                             elif use_wake_word and state == VoiceState.LISTENING:
@@ -514,17 +586,22 @@ def main():
                                 speech_float_buffer.append(pcm16_to_float32(frame))
 
                             # Check silence timeout
-                            if elapsed_silence > SILENCE_TIMEOUT:
+                            speech_duration = len(speech_float_buffer) * FRAME_MS / 1000.0
+                            effective_silence = (SILENCE_TIMEOUT_SHORT if speech_duration < SILENCE_CROSSOVER
+                                                 else SILENCE_TIMEOUT_LONG)
+                            if elapsed_silence > effective_silence:
                                 print(f"\n>>> Processing...")
                                 safety_only = (state == VoiceState.WAKE_WORD)
                                 result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                           brain, safety_only=safety_only, tts=tts)
+                                                           brain, safety_only=safety_only, tts=tts,
+                                                           has_wake_detector=bool(wake_detector))
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
                                 _drain_audio_queue()
                                 if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                     print(">>> Now listening for commands...")
+                                    beep.wake_detected()
                                     state = VoiceState.LISTENING
                                     listening_start_time = time.time()
                                 elif use_wake_word and state == VoiceState.LISTENING:
@@ -547,8 +624,12 @@ def main():
     except KeyboardInterrupt:
         print("\n\nShutting down...")
     finally:
-        stream.stop()
-        stream.close()
+        try:
+            stream.stop()
+            time.sleep(0.1)  # let PortAudio drain buffers before close
+            stream.close()
+        except Exception:
+            pass
         cleanup_spot()
 
 
@@ -582,21 +663,24 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
-                      brain=None, safety_only=False, tts=None):
+                      brain=None, safety_only=False, tts=None,
+                      has_wake_detector=False):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
         safety_only: If True, only execute safety commands (stop/freeze/estop).
                      Non-safety speech is discarded. Used when wake word not detected.
         tts: SpotTTS instance for spoken responses (None = no speech output).
+        has_wake_detector: If True, dedicated wake word detector is active —
+                          skip ASR-based wake phrase detection (detector handles it).
 
     Returns:
-        "wake_detected" if a wake phrase was found, None otherwise.
+        "wake_detected" if a wake phrase was found (ASR fallback only), None otherwise.
 
     Flow:
         Audio → Whisper ASR → transcript
-        transcript → wake phrase check (if safety_only)
         transcript → safety check (instant regex for stop/estop/freeze)
+        transcript → wake phrase check (ASR fallback, only if no dedicated detector)
         transcript → LLM brain (state + history → action + response)
         OR (legacy) → regex parser → intent → dispatch
     """
@@ -645,16 +729,25 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     if safety:
         print(f"[SAFETY] {safety['intent']} — executing immediately")
         if execute_on_spot(safety):
+            beep.command_ok()
             print(">>> SAFETY COMMAND EXECUTED")
         else:
+            beep.error()
             print(">>> SAFETY COMMAND FAILED")
         return None
 
     # ------------------------------------------------------------------
-    # 1b. Wake phrase detection (when in WAKE_WORD state / safety_only)
+    # 1b. Wake phrase detection (ASR fallback — only when no dedicated detector)
     # ------------------------------------------------------------------
     wake_activated = False
     if safety_only:
+        if has_wake_detector:
+            # Dedicated detector handles wake word at frame level.
+            # If we're here with safety_only=True, it means VAD triggered
+            # but it wasn't a safety command — just discard.
+            print(f"[Ignored \"{clean}\" — waiting for 'Hey Spot' (detector)]")
+            return None
+        # ASR-based fallback: check transcript for wake phrase
         wake_match = WAKE_PHRASE_PATTERN.search(clean)
         if wake_match:
             # Strip wake phrase from transcript
@@ -677,6 +770,23 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             return None
 
     # ------------------------------------------------------------------
+    # 1c. Strip wake phrase from transcript (dedicated detector mode)
+    #     Handles "Hey Spot stand up" → "stand up" when said in one breath
+    # ------------------------------------------------------------------
+    if has_wake_detector and not safety_only:
+        wake_match = WAKE_PHRASE_PATTERN.search(clean)
+        if wake_match:
+            remainder = clean[wake_match.end():].strip()
+            remainder = re.sub(r'^[,\s]+', '', remainder)
+            if remainder and len(remainder) >= 2:
+                print(f"[Wake strip] \"{clean}\" → \"{remainder}\"")
+                clean = remainder
+            else:
+                # Just the wake phrase with no command — ignore
+                print(f"[Wake phrase only — no command after stripping]")
+                return None
+
+    # ------------------------------------------------------------------
     # 2. LLM Brain mode (primary)
     # ------------------------------------------------------------------
     if brain is not None:
@@ -685,53 +795,99 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
 
         result = brain.process(clean, state)
         response = result.get("response", "")
-        action = result.get("action")
+        actions = result.get("actions", [])
+
+        # Backward compat: old single "action" field
+        if not actions and result.get("action"):
+            actions = [result["action"]]
 
         # Show what the robot "says"
         if response:
             print(f"\nSPOT: \"{response}\"")
 
-        # Execute action if the brain decided on one
-        if action:
-            intent = action  # action already has {intent, params} structure
-            cmd = intent["intent"]
-            params = intent.get("params", {})
+        if actions:
+            beep.command_ok()
 
-            # Special VLM flow for "describe" action
-            if cmd == "describe":
-                if tts and response:
-                    tts.speak(response)  # "Let me take a look..."
-                camera = params.get("camera", "front")
-                try:
-                    from src.voice_control.spot_dispatch import capture_frame
-                    image_bytes = capture_frame(camera)
-                    if image_bytes:
-                        vlm_response = brain.query_vlm(image_bytes, clean)
-                        print(f"\nSPOT (VLM): \"{vlm_response}\"")
-                        if tts:
-                            tts.wait()  # wait for initial response to finish
-                            tts.speak(vlm_response)
-                    else:
-                        fallback = "Sorry, I couldn't capture an image right now."
+            # Speak response first, then execute actions
+            if tts and response:
+                tts.speak(response)
+
+            for i, intent in enumerate(actions):
+                cmd = intent["intent"]
+                params = intent.get("params", {})
+
+                if len(actions) > 1:
+                    print(f"[Chain] Executing {i+1}/{len(actions)}: {cmd}")
+                    if i > 0:
+                        beep.chain_next()
+
+                # Special VLM flow for "describe" action
+                if cmd == "describe":
+                    camera = params.get("camera", "front")
+                    query = params.get("query", "")
+                    try:
+                        from src.voice_control.spot_dispatch import capture_frame
+                        image_bytes = capture_frame(camera)
+                        if image_bytes:
+                            # If asking about a specific object, run YOLO first
+                            yolo_hint = ""
+                            if query:
+                                try:
+                                    from src.voice_control.visual_nav import detect_in_image
+                                    det = detect_in_image(image_bytes, query)
+                                    if det["found"]:
+                                        yolo_hint = (
+                                            f"IMPORTANT: Object detection confirms a '{query}' "
+                                            f"IS visible in this image ({det['position']}, "
+                                            f"confidence {det['confidence']:.0%}). "
+                                            f"Describe it and its surroundings."
+                                        )
+                                        print(f"[YOLO] Found '{query}' — {det['position']}, "
+                                              f"conf={det['confidence']:.2f}")
+                                    else:
+                                        yolo_hint = (
+                                            f"NOTE: Object detection did NOT find '{query}' "
+                                            f"in this image. If you also don't see it, say so."
+                                        )
+                                        print(f"[YOLO] '{query}' not detected")
+                                except ImportError:
+                                    pass
+                            vlm_response = brain.query_vlm(image_bytes, clean, yolo_hint=yolo_hint)
+                            print(f"\nSPOT (VLM): \"{vlm_response}\"")
+                            if tts:
+                                tts.wait()
+                                tts.speak(vlm_response)
+                        else:
+                            beep.error()
+                            fallback = "Sorry, I couldn't capture an image right now."
+                            print(f"\nSPOT: \"{fallback}\"")
+                            if tts:
+                                tts.wait()
+                                tts.speak(fallback)
+                    except Exception as e:
+                        beep.error()
+                        print(f"[VLM] Error: {e}")
+                        fallback = "Sorry, my vision system isn't working right now."
                         print(f"\nSPOT: \"{fallback}\"")
                         if tts:
                             tts.wait()
                             tts.speak(fallback)
-                except Exception as e:
-                    print(f"[VLM] Error: {e}")
-                    fallback = "Sorry, my vision system isn't working right now."
-                    print(f"\nSPOT: \"{fallback}\"")
-                    if tts:
-                        tts.wait()
-                        tts.speak(fallback)
-            else:
-                # Execute action then speak response
-                if execute_on_spot(intent):
-                    print(">>> SUCCESS")
                 else:
-                    print(">>> FAILED")
-                if tts and response:
-                    tts.speak(response)
+                    if execute_on_spot(intent):
+                        print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
+                    else:
+                        beep.error()
+                        print(f">>> FAILED" if len(actions) == 1 else f">>> {cmd} FAILED — stopping chain")
+                        break
+
+                    # Wait for movement/posture to complete before next action in chain
+                    if len(actions) > 1 and i < len(actions) - 1:
+                        if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
+                            _wait_for_nav_complete()
+                        elif cmd in ("walk", "strafe", "turn"):
+                            time.sleep(3.0)  # timed movement commands
+                        elif cmd in ("sit", "stand", "selfright", "body_height"):
+                            time.sleep(4.0)  # postural changes need time to complete
         else:
             # Conversation only — speak response
             if tts and response:

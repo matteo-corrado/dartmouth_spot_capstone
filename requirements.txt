@@ -16,5 +16,8 @@ webrtcvad>=2.0.10
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
 
-# TTS — Kokoro (runs on CPU, no GPU competition with LLM/ASR)
-kokoro-onnx>=0.5.0
+# TTS — sherpa-onnx Kokoro (bundles own ONNX runtime, aarch64 wheels for Jetson)
+sherpa-onnx>=1.12.0
+
+# Visual navigation — YOLO object detection + person following
+ultralytics>=8.1.0

@@ -1,112 +1,102 @@
 #!/usr/bin/env python3
-"""Download Kokoro TTS model files for Spot voice control.
+"""Download sherpa-onnx Kokoro TTS model pack for Spot voice control.
 
-Downloads the ONNX model and voice pack to models/tts/.
-Run once after setting up the Jetson.
+Downloads and extracts the kokoro-en-v0_19 model pack (~340MB) which includes:
+    model.onnx, voices.bin, tokens.txt, espeak-ng-data/
+
+Uses streaming download+extract to avoid doubling disk usage (important on
+Jetson eMMC with limited space).
 
 Usage:
-    python scripts/setup_kokoro.py              # default (full precision, 310MB)
-    python scripts/setup_kokoro.py --fp16       # half precision (169MB)
-    python scripts/setup_kokoro.py --int8       # quantized (88MB, smallest)
+    python scripts/setup_kokoro.py
 """
-import argparse
 import sys
-import urllib.request
+import subprocess
+import shutil
 from pathlib import Path
 
-BASE_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
+MODEL_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2"
+MODEL_DIR_NAME = "kokoro-en-v0_19"
 
-MODELS = {
-    "full": ("kokoro-v1.0.onnx", "310MB, highest quality"),
-    "fp16": ("kokoro-v1.0.fp16.onnx", "169MB, good quality/size tradeoff"),
-    "int8": ("kokoro-v1.0.int8.onnx", "88MB, smallest"),
-}
-VOICES_FILE = "voices-v1.0.bin"
+# Target: project_root/models/tts/kokoro-en-v0_19/
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TTS_DIR = PROJECT_ROOT / "models" / "tts"
+MODEL_DIR = TTS_DIR / MODEL_DIR_NAME
 
-# Target name that spot_tts.py expects
-TARGET_MODEL_NAME = "kokoro-v1.0.onnx"
-
-
-def download_file(url: str, dest: Path):
-    """Download file with progress indicator."""
-    print(f"  Downloading: {url}")
-    print(f"  To: {dest}")
-
-    def progress_hook(block_num, block_size, total_size):
-        downloaded = block_num * block_size
-        if total_size > 0:
-            pct = min(100, downloaded * 100 // total_size)
-            mb = downloaded / (1024 * 1024)
-            total_mb = total_size / (1024 * 1024)
-            print(f"\r  [{pct:3d}%] {mb:.1f}/{total_mb:.1f} MB", end="", flush=True)
-
-    urllib.request.urlretrieve(url, str(dest), reporthook=progress_hook)
-    print()  # newline after progress
+REQUIRED_FILES = ["model.onnx", "voices.bin", "tokens.txt"]
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download Kokoro TTS model files")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--full", action="store_true", default=True,
-                       help="Full precision model (310MB, default)")
-    group.add_argument("--fp16", action="store_true",
-                       help="FP16 quantized (169MB)")
-    group.add_argument("--int8", action="store_true",
-                       help="INT8 quantized (88MB, smallest)")
-    args = parser.parse_args()
-
-    if args.int8:
-        variant = "int8"
-    elif args.fp16:
-        variant = "fp16"
-    else:
-        variant = "full"
-
-    model_filename, description = MODELS[variant]
-
-    # Target directory: project_root/models/tts/
-    project_root = Path(__file__).resolve().parents[1]
-    model_dir = project_root / "models" / "tts"
-    model_dir.mkdir(parents=True, exist_ok=True)
-
     print("=" * 50)
-    print("Kokoro TTS Model Setup")
+    print("Kokoro TTS Model Setup (sherpa-onnx)")
     print("=" * 50)
-    print(f"\n  Variant: {variant} ({description})")
-    print(f"  Target:  {model_dir}\n")
+    print(f"\n  Model: {MODEL_DIR_NAME} (English, 11 speakers)")
+    print(f"  Target: {MODEL_DIR}\n")
 
-    # Download model
-    model_dest = model_dir / TARGET_MODEL_NAME
-    if model_dest.exists():
-        print(f"  Model already exists: {model_dest}")
-        print(f"  Delete it to re-download.")
-    else:
-        url = f"{BASE_URL}/{model_filename}"
-        download_file(url, model_dest)
-        print(f"  Model saved as: {model_dest}")
+    # Check if already downloaded
+    if MODEL_DIR.exists() and all((MODEL_DIR / f).exists() for f in REQUIRED_FILES):
+        model_mb = (MODEL_DIR / "model.onnx").stat().st_size / (1024 * 1024)
+        print(f"  Model already exists ({model_mb:.0f}MB). Delete to re-download:")
+        print(f"    rm -rf {MODEL_DIR}")
+        return 0
 
-    # Download voices
-    voices_dest = model_dir / VOICES_FILE
-    if voices_dest.exists():
-        print(f"  Voices already exist: {voices_dest}")
-    else:
-        url = f"{BASE_URL}/{VOICES_FILE}"
-        download_file(url, voices_dest)
-        print(f"  Voices saved: {voices_dest}")
+    # Check disk space
+    import shutil as _sh
+    total, used, free = _sh.disk_usage("/")
+    free_mb = free / (1024 * 1024)
+    print(f"  Disk free: {free_mb:.0f}MB")
+    if free_mb < 500:
+        print(f"  WARNING: Low disk space! Need ~400MB. Free up space first.")
+        response = input("  Continue anyway? [y/N] ").strip().lower()
+        if response != "y":
+            return 1
+
+    # Check wget is available
+    if not shutil.which("wget"):
+        print("  ERROR: wget not found. Install with: sudo apt install wget")
+        return 1
+
+    TTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Stream download + extract (avoids saving .tar.bz2 to disk)
+    print(f"  Downloading and extracting (~340MB)...")
+    print(f"  URL: {MODEL_URL}\n")
+
+    result = subprocess.run(
+        f'wget -q --show-progress -O- "{MODEL_URL}" | tar xj -C "{TTS_DIR}"',
+        shell=True,
+    )
+
+    if result.returncode != 0:
+        print(f"\n  ERROR: Download/extract failed (exit code {result.returncode})")
+        print(f"  Try manual download:")
+        print(f"    wget {MODEL_URL}")
+        print(f"    tar xf {MODEL_DIR_NAME}.tar.bz2 -C {TTS_DIR}")
+        return 1
 
     # Verify
-    print(f"\nVerifying...")
-    if model_dest.exists() and voices_dest.exists():
-        model_mb = model_dest.stat().st_size / (1024 * 1024)
-        voices_mb = voices_dest.stat().st_size / (1024 * 1024)
-        print(f"  Model:  {model_mb:.1f} MB")
-        print(f"  Voices: {voices_mb:.1f} MB")
-        print(f"\nReady! Test with:")
-        print(f"  python src/voice_control/spot_tts.py")
+    print(f"\n  Verifying...")
+    missing = [f for f in REQUIRED_FILES if not (MODEL_DIR / f).exists()]
+    if missing:
+        print(f"  ERROR: Missing files after extract: {missing}")
+        return 1
+
+    model_mb = (MODEL_DIR / "model.onnx").stat().st_size / (1024 * 1024)
+    voices_mb = (MODEL_DIR / "voices.bin").stat().st_size / (1024 * 1024)
+    print(f"  model.onnx:  {model_mb:.0f}MB")
+    print(f"  voices.bin:  {voices_mb:.1f}MB")
+    print(f"  tokens.txt:  OK")
+
+    espeak_dir = MODEL_DIR / "espeak-ng-data"
+    if espeak_dir.exists():
+        print(f"  espeak-ng-data/: OK")
     else:
-        print("  ERROR: Files missing after download!")
-        sys.exit(1)
+        print(f"  WARNING: espeak-ng-data/ not found (phonemizer may not work)")
+
+    print(f"\n  Ready! Test with:")
+    print(f"    python src/voice_control/spot_tts.py")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

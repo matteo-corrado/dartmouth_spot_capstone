@@ -56,6 +56,10 @@ COMMANDS = [
     (r"\b(?:normal\s+speed|regular\s+speed|default\s+speed)\b", "set_speed", {"speed": "normal"}),
     (r"\b(?:fast\s+(?:mode)?|walk\s+fast|go\s+fast|speed\s+up)\b", "set_speed", {"speed": "fast"}),
 
+    # === VISUAL NAVIGATION ===
+    (r"\b(?:find|look for|search for|locate)\s+(?:the\s+|a\s+|my\s+)?(?P<desc>.+?)(?:\s*\.|$)", "go_to_object", {"description": "$desc"}),
+    (r"\b(?:follow me|come with me|tag along)\b",  "follow_me", {}),
+
     # === NAVIGATION ===
     (r"\b(?:go to|navigate to|drive to|walk to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
     (r"\b(?:loop|tour)\s+(?:the\s+)?map\b",        "tour", {"locations": "all"}),

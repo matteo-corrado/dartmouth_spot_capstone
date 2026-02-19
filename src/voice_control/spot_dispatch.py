@@ -37,12 +37,18 @@ _session_context = None
 # Navigation thread management
 _nav_thread = None
 _nav_stop_event = None
+_nav_mode = None  # "follow", "graphnav", "visual_nav", or None
 _home_waypoint = None
 
 
 def is_navigating() -> bool:
     """Check if the robot is currently navigating (motor noise expected)."""
     return _nav_thread is not None and _nav_thread.is_alive()
+
+
+def is_follow_mode() -> bool:
+    """Check if robot is in follow-person mode (lighter motor noise)."""
+    return _nav_mode == "follow" and is_navigating()
 
 
 def get_robot_state_dict() -> dict:
@@ -189,13 +195,14 @@ def close_spot_session():
 
 def _cancel_nav():
     """Cancel any in-progress navigation thread."""
-    global _nav_thread, _nav_stop_event
+    global _nav_thread, _nav_stop_event, _nav_mode
     if _nav_stop_event:
         _nav_stop_event.set()
     if _nav_thread and _nav_thread.is_alive():
         _nav_thread.join(timeout=2.0)
     _nav_thread = None
     _nav_stop_event = None
+    _nav_mode = None
 
 
 def _ensure_localized(graph_nav_client, session) -> bool:
@@ -427,12 +434,14 @@ def dispatch_intent(intent):
     Returns:
         bool: True if command executed successfully, False otherwise
     """
+    global _nav_thread, _nav_stop_event
+
     if not intent:
         return False
-    
+
     name = intent["intent"]
     params = intent.get("params", {})
-    
+
     try:
         session = ensure_spot_session()
         cmd_client = session["cmd"]
@@ -586,7 +595,7 @@ def dispatch_intent(intent):
                     goal_x_rt_body=x,
                     goal_y_rt_body=0.0,
                     goal_heading_rt_body=0.0,
-                    frame_tree_snapshot=frame_tree
+                    frame_tree_snapshot=frame_tree,
                 )
                 cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
                 print(f"[Spot] ✓ Walk {direction} command sent")
@@ -616,7 +625,7 @@ def dispatch_intent(intent):
                     goal_x_rt_body=0.0,
                     goal_y_rt_body=y,
                     goal_heading_rt_body=0.0,
-                    frame_tree_snapshot=frame_tree
+                    frame_tree_snapshot=frame_tree,
                 )
                 cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
                 print(f"[Spot] ✓ Strafe {direction} command sent")
@@ -925,15 +934,16 @@ def dispatch_intent(intent):
                                 z=ray_end[2]))
                     else:
                         # Fallback: body-frame search ray (robot already
-                        # close to door). Ray points forward through the
-                        # expected push bar height.
+                        # close to door). Ray angles upward from body
+                        # center to push bar height (~0.9-1.0m from floor;
+                        # body origin is ~0.5m off ground, so z≈0.4-0.5).
                         print("[Spot]   Walk failed/timed out — using "
                               "body-frame search ray")
                         auto_cmd.frame_name = "body"
                         auto_cmd.search_ray_start_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(x=0.55, y=0.0, z=0.0))
+                            geometry_pb2.Vec3(x=0.4, y=0.0, z=0.0))
                         auto_cmd.search_ray_end_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(x=1.1, y=0.0, z=0.0))
+                            geometry_pb2.Vec3(x=0.8, y=0.0, z=0.5))
 
                     if hinge_side_str == "left":
                         auto_cmd.hinge_side = (
@@ -1003,6 +1013,65 @@ def dispatch_intent(intent):
 
             t = threading.Thread(target=_open_door_thread, daemon=True)
             t.start()
+            return True
+
+        elif name == "go_to_object":
+            # Visual navigation — walk toward a visible object using YOLO-World
+            description = params.get("description", "")
+            if not description:
+                print("[Spot] No object description provided")
+                return False
+
+            # Check if description matches a saved location — use GraphNav instead
+            saved = _list_saved_locations()
+            desc_normalized = description.strip().lower().replace(" ", "_")
+            if desc_normalized in saved:
+                print(f"[Spot] '{description}' is a saved location — using map navigation")
+                return dispatch_intent({"intent": "go_to", "params": {"location": desc_normalized}})
+
+            print(f"[Spot] Looking for '{description}'...")
+
+            def _visual_nav_thread():
+                try:
+                    from src.voice_control.visual_nav import navigate_to_object
+                    result = navigate_to_object(description, session, _nav_stop_event)
+                    if result:
+                        print(f"[Spot] ✓ Arrived near '{description}'")
+                    else:
+                        print(f"[Spot] ✗ Could not reach '{description}'")
+                except ImportError:
+                    print("[Spot] ✗ ultralytics not installed. Run: pip install ultralytics")
+                except Exception as e:
+                    print(f"[Spot] ✗ Visual nav failed: {e}")
+
+            _cancel_nav()
+            _nav_stop_event = threading.Event()
+            _nav_thread = threading.Thread(target=_visual_nav_thread, daemon=True)
+            _nav_thread.start()
+            return True
+
+        elif name == "follow_me":
+            # Follow the nearest person using YOLO person detection
+            print("[Spot] Starting follow mode...")
+
+            def _follow_thread():
+                try:
+                    from src.voice_control.visual_nav import follow_person
+                    result = follow_person(session, _nav_stop_event)
+                    if result:
+                        print("[Spot] ✓ Follow mode ended cleanly")
+                    else:
+                        print("[Spot] Lost the person — follow mode ended")
+                except ImportError:
+                    print("[Spot] ✗ ultralytics not installed. Run: pip install ultralytics")
+                except Exception as e:
+                    print(f"[Spot] ✗ Follow failed: {e}")
+
+            _cancel_nav()
+            _nav_stop_event = threading.Event()
+            _nav_mode = "follow"
+            _nav_thread = threading.Thread(target=_follow_thread, daemon=True)
+            _nav_thread.start()
             return True
 
         elif name == "set_speed":
