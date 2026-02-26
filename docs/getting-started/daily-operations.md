@@ -55,7 +55,7 @@ Before giving Spot commands, verify:
 GraphNav maps are cleared when Spot reboots. Re-upload after each Spot power cycle:
 
 ```bash
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph
+python scripts/setup_map.py --map-path maps/lab_map2
 ```
 
 For localization, either:

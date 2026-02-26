@@ -108,7 +108,7 @@ sudo systemctl start ollama    # skip if 'systemctl enable ollama' was run
 python scripts/estop_run.py
 
 # 3. Upload map + localize (if not already loaded)
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph --waypoint-init
+python scripts/setup_map.py --map-path maps/lab_map2 --waypoint-init
 
 # 4. Start voice control
 python scripts/run_voice_control.py

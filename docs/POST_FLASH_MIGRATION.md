@@ -303,19 +303,19 @@ This lists all waypoints and lets you assign human-readable names (e.g.,
 ### 7.6 Upload map to Spot's GraphNav
 
 ```bash
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph
+python scripts/setup_map.py --map-path maps/lab_map2
 ```
 
 For waypoint-based localization (robot must be at a known waypoint):
 
 ```bash
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph --waypoint-init
+python scripts/setup_map.py --map-path maps/lab_map2 --waypoint-init
 ```
 
 For fiducial-based localization (robot must see an AprilTag from the map):
 
 ```bash
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph
+python scripts/setup_map.py --map-path maps/lab_map2
 ```
 
 ---
@@ -521,7 +521,7 @@ sudo systemctl start ollama            # Ollama LLM
 python scripts/estop_run.py
 
 # 3. Upload map + localize (if not already loaded)
-python scripts/setup_map.py --map-path maps/lab_map2/downloaded_graph --waypoint-init
+python scripts/setup_map.py --map-path maps/lab_map2 --waypoint-init
 
 # 4. Start voice control
 python scripts/run_voice_control.py
