@@ -56,7 +56,7 @@ def connect():
 
     load_dotenv(project_root / ".env")
     spot_ip = os.getenv("BOSDYN_ROBOT_IP", "192.168.80.3")
-    spot_user = os.getenv("BOSDYN_CLIENT_USERNAME", "SpotDBEC")
+    spot_user = os.getenv("BOSDYN_CLIENT_USERNAME", "")
     spot_pass = os.getenv("BOSDYN_CLIENT_PASSWORD")
     if not spot_pass:
         print("ERROR: Set BOSDYN_CLIENT_PASSWORD in .env")

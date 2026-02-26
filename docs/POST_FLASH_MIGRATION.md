@@ -76,9 +76,9 @@ nano .env
 Paste saved credentials (must contain these):
 
 ```
-BOSDYN_CLIENT_USERNAME=SpotDBEC
+BOSDYN_CLIENT_USERNAME=<your-username>
 BOSDYN_CLIENT_PASSWORD=<your-password>
-BOSDYN_ROBOT_IP=192.168.80.3
+BOSDYN_ROBOT_IP=<your-robot-ip>
 ```
 
 ### 2.3 Create Python virtualenv
