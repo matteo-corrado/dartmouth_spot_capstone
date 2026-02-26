@@ -1,0 +1,2658 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Voice-controlled Boston Dynamics Spot on Jetson AGX Orin 64GB">
+      
+      
+      
+      
+        <link rel="prev" href="../overview/">
+      
+      
+        <link rel="next" href="../voice-pipeline/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.3">
+    
+    
+      
+        <title>Spot SDK Primer - Dartmouth Spot Capstone</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="green" data-md-color-accent="light-green">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#boston-dynamics-sdk-primer" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Dartmouth Spot Capstone" class="md-header__button md-logo" aria-label="Dartmouth Spot Capstone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Dartmouth Spot Capstone
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Spot SDK Primer
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="green" data-md-color-accent="light-green"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/matteo-corrado/dartmouth_spot_capstone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Dartmouth Spot Capstone" class="md-nav__button md-logo" aria-label="Dartmouth Spot Capstone" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Dartmouth Spot Capstone
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/matteo-corrado/dartmouth_spot_capstone" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/hardware/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hardware
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/software/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Software Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/tailscale/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Remote Access (Tailscale)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Model Downloads
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/daily-operations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Daily Operations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spot SDK Primer
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Spot SDK Primer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sdk-package-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SDK Package Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connecting-to-spot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connecting to Spot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#service-clients" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service Clients
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Service Clients">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#key-clients-used-in-this-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Clients Used in This Project
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#leases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Leases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lease-keepalive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lease Keepalive
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time Sync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#e-stop-emergency-stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E-Stop (Emergency Stop)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sending-movement-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sending Movement Commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sending Movement Commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#velocity-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Velocity Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#body-height" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Body Height
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-robot-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading Robot State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capturing-images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capturing Images
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Capturing Images">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#camera-source-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera Source Names
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#graphnav-autonomous-navigation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GraphNav (Autonomous Navigation)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GraphNav (Autonomous Navigation)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navigation-feedback-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Navigation Feedback Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keepalive-policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keepalive Policies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-errors-and-what-they-mean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Errors and What They Mean
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../voice-pipeline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice Pipeline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../services/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Services
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Module Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Module Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_1" id="__nav_4_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice Pipeline
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Voice Pipeline
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/client-mic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    client_mic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/llm-brain/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    llm_brain
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/spot-dispatch/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    spot_dispatch
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/intent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    intent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_2" id="__nav_4_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audio
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Audio
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/wake-word/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    wake_word
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/spot-tts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    spot_tts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/audio-feedback/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    audio_feedback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_3" id="__nav_4_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Robot
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Robot
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/session/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    session
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/graph-nav/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    graph_nav_utils
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/location-manager/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    location_manager
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4_4" id="__nav_4_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vision
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Vision
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../modules/visual-nav/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    visual_nav
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../commands/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../scripts/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/mapping/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Mapping
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/adding-commands/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Adding Commands
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/web-panel/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web Panel
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/door-opening/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Door Opening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../guides/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/dartmouth-setup/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dartmouth Setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../POST_FLASH_MIGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Post-Flash Migration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../project/status/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#sdk-package-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SDK Package Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connecting-to-spot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Connecting to Spot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#service-clients" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Service Clients
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Service Clients">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#key-clients-used-in-this-project" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Key Clients Used in This Project
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#leases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Leases
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Leases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lease-keepalive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lease Keepalive
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#time-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Time Sync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#e-stop-emergency-stop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        E-Stop (Emergency Stop)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sending-movement-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sending Movement Commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Sending Movement Commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#velocity-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Velocity Commands
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#body-height" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Body Height
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reading-robot-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading Robot State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capturing-images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capturing Images
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Capturing Images">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#camera-source-names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Camera Source Names
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#graphnav-autonomous-navigation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GraphNav (Autonomous Navigation)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="GraphNav (Autonomous Navigation)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#navigation-feedback-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Navigation Feedback Loop
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#keepalive-policies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keepalive Policies
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#common-errors-and-what-they-mean" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Common Errors and What They Mean
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#further-reading" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Further Reading
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="boston-dynamics-sdk-primer">Boston Dynamics SDK Primer<a class="headerlink" href="#boston-dynamics-sdk-primer" title="Permanent link">&para;</a></h1>
+<p>This page explains the core concepts of the Boston Dynamics (BD) Python SDK that underpin the entire voice control system. If you have never worked with the Spot SDK before, read this before diving into the module reference.</p>
+<h2 id="sdk-package-structure">SDK Package Structure<a class="headerlink" href="#sdk-package-structure" title="Permanent link">&para;</a></h2>
+<p>The project uses BD SDK v5.0.1.1. The main packages are:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>bosdyn-client          # Core SDK — robot connection, commands, leases
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>bosdyn-mission         # Mission/Autowalk API (used by door service)
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>bosdyn-choreography-client  # Choreography API (available but not used)
+</code></pre></div>
+<p>All SDK code starts with <code>from bosdyn.client import ...</code>.</p>
+<h2 id="connecting-to-spot">Connecting to Spot<a class="headerlink" href="#connecting-to-spot" title="Permanent link">&para;</a></h2>
+<p>Every interaction with Spot follows the same pattern:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client</span><span class="w"> </span><span class="kn">import</span> <span class="n">create_standard_sdk</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="c1"># 1. Create an SDK instance (one per application)</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">sdk</span> <span class="o">=</span> <span class="n">create_standard_sdk</span><span class="p">(</span><span class="s2">&quot;my_app_name&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="c1"># 2. Create a robot object (does not connect yet)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">robot</span> <span class="o">=</span> <span class="n">sdk</span><span class="o">.</span><span class="n">create_robot</span><span class="p">(</span><span class="s2">&quot;192.168.80.3&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="c1"># 3. Authenticate (uses credentials from the admin console)</span>
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="n">robot</span><span class="o">.</span><span class="n">authenticate</span><span class="p">(</span><span class="s2">&quot;username&quot;</span><span class="p">,</span> <span class="s2">&quot;password&quot;</span><span class="p">)</span>
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="c1"># 4. Sync clocks (required before any commands)</span>
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="n">robot</span><span class="o">.</span><span class="n">time_sync</span><span class="o">.</span><span class="n">wait_for_sync</span><span class="p">()</span>
+</code></pre></div>
+<p>The <code>robot</code> object is your handle to the physical robot. From it, you create <strong>service clients</strong> to interact with specific subsystems.</p>
+<h2 id="service-clients">Service Clients<a class="headerlink" href="#service-clients" title="Permanent link">&para;</a></h2>
+<p>Each Spot subsystem exposes a gRPC service. You get a client for each one:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.robot_command</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotCommandClient</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.robot_state</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotStateClient</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.lease</span><span class="w"> </span><span class="kn">import</span> <span class="n">LeaseClient</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.power</span><span class="w"> </span><span class="kn">import</span> <span class="n">PowerClient</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.image</span><span class="w"> </span><span class="kn">import</span> <span class="n">ImageClient</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.graph_nav</span><span class="w"> </span><span class="kn">import</span> <span class="n">GraphNavClient</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">cmd_client</span>   <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">RobotCommandClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">state_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">RobotStateClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">lease_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">LeaseClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="c1"># ... etc</span>
+</code></pre></div>
+<p><code>ensure_client()</code> creates the client once and caches it — safe to call multiple times.</p>
+<h3 id="key-clients-used-in-this-project">Key Clients Used in This Project<a class="headerlink" href="#key-clients-used-in-this-project" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Client</th>
+<th>Purpose</th>
+<th>Used in</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>RobotCommandClient</code></td>
+<td>Send movement commands (walk, turn, stand, sit)</td>
+<td><code>spot_dispatch.py</code></td>
+</tr>
+<tr>
+<td><code>RobotStateClient</code></td>
+<td>Read battery, pose, motor state, faults</td>
+<td><code>spot_dispatch.py</code></td>
+</tr>
+<tr>
+<td><code>LeaseClient</code></td>
+<td>Acquire control of the robot</td>
+<td><code>session.py</code></td>
+</tr>
+<tr>
+<td><code>PowerClient</code></td>
+<td>Power motors on/off</td>
+<td><code>session.py</code></td>
+</tr>
+<tr>
+<td><code>ImageClient</code></td>
+<td>Capture camera images</td>
+<td><code>spot_dispatch.py</code></td>
+</tr>
+<tr>
+<td><code>GraphNavClient</code></td>
+<td>Autonomous navigation to waypoints</td>
+<td><code>spot_dispatch.py</code></td>
+</tr>
+<tr>
+<td><code>EstopClient</code></td>
+<td>Software emergency stop</td>
+<td><code>estop_run.py</code>, <code>web_panel.py</code></td>
+</tr>
+</tbody>
+</table>
+<h2 id="leases">Leases<a class="headerlink" href="#leases" title="Permanent link">&para;</a></h2>
+<p>Only one client can control Spot at a time. <strong>Leases</strong> enforce this.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">lease_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">LeaseClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># Acquire the lease (will fail if another client holds it)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">lease</span> <span class="o">=</span> <span class="n">lease_client</span><span class="o">.</span><span class="n">acquire</span><span class="p">()</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1"># Or forcefully take it (overrides the tablet or other clients)</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">lease</span> <span class="o">=</span> <span class="n">lease_client</span><span class="o">.</span><span class="n">take</span><span class="p">()</span>
+</code></pre></div>
+<p>The project uses <code>lease_client.take()</code> to always override any existing claim (e.g., from the tablet). This is deliberate — the voice pipeline should always be able to take control.</p>
+<h3 id="lease-keepalive">Lease Keepalive<a class="headerlink" href="#lease-keepalive" title="Permanent link">&para;</a></h3>
+<p>Leases expire if not refreshed. <code>LeaseKeepAlive</code> handles this automatically:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.lease</span><span class="w"> </span><span class="kn">import</span> <span class="n">LeaseKeepAlive</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">keepalive</span> <span class="o">=</span> <span class="n">LeaseKeepAlive</span><span class="p">(</span><span class="n">lease_client</span><span class="p">,</span> <span class="n">must_acquire</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">return_at_exit</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># Refreshes the lease in the background</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="c1"># return_at_exit=True releases the lease when the keepalive is shut down</span>
+</code></pre></div>
+<div class="admonition warning">
+<p class="admonition-title">Lease contention</p>
+<p>If someone picks up the Spot tablet and takes control, the tablet acquires the lease and the Jetson loses it. The voice pipeline will re-take the lease on the next command (since <code>spot_dispatch.py</code> maintains a persistent session), but any in-progress navigation will be interrupted.</p>
+</div>
+<h2 id="time-sync">Time Sync<a class="headerlink" href="#time-sync" title="Permanent link">&para;</a></h2>
+<p>Spot requires all command timestamps to be in the robot's clock. The SDK handles this transparently, but you must sync clocks before sending commands:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">robot</span><span class="o">.</span><span class="n">time_sync</span><span class="o">.</span><span class="n">wait_for_sync</span><span class="p">()</span>
+</code></pre></div>
+<p>This is done once during session setup. If time sync fails (e.g., network latency spike), you'll see <code>TimeSyncError</code> — just retry.</p>
+<h2 id="e-stop-emergency-stop">E-Stop (Emergency Stop)<a class="headerlink" href="#e-stop-emergency-stop" title="Permanent link">&para;</a></h2>
+<p>Spot will not move unless at least one E-Stop endpoint is active. This is a safety requirement — if all E-Stop endpoints disconnect, the robot stops immediately.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.estop</span><span class="w"> </span><span class="kn">import</span> <span class="n">EstopClient</span><span class="p">,</span> <span class="n">EstopEndpoint</span><span class="p">,</span> <span class="n">EstopKeepAlive</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">estop_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">EstopClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">endpoint</span> <span class="o">=</span> <span class="n">EstopEndpoint</span><span class="p">(</span><span class="n">estop_client</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;my_estop&quot;</span><span class="p">,</span> <span class="n">estop_timeout</span><span class="o">=</span><span class="mf">3.0</span><span class="p">)</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">endpoint</span><span class="o">.</span><span class="n">force_simple_setup</span><span class="p">()</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="c1"># Start keepalive (sends heartbeats every ~1s)</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="n">keepalive</span> <span class="o">=</span> <span class="n">EstopKeepAlive</span><span class="p">(</span><span class="n">endpoint</span><span class="p">)</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="n">keepalive</span><span class="o">.</span><span class="n">allow</span><span class="p">()</span>  <span class="c1"># Tell the robot it&#39;s OK to move</span>
+</code></pre></div>
+<p>If the keepalive stops sending heartbeats (process crash, network loss), the robot E-Stops within <code>estop_timeout</code> seconds (3s in this project).</p>
+<p><strong>In this project</strong>, E-Stop is managed by either:</p>
+<ul>
+<li><code>scripts/estop_run.py</code> — terminal-based, Ctrl+C to stop</li>
+<li><code>scripts/web_panel.py</code> — browser-based, claim/stop/release buttons</li>
+</ul>
+<p>The voice control pipeline (<code>run_voice_control.py</code>) does <strong>not</strong> run its own E-Stop — it assumes one is already running.</p>
+<h2 id="sending-movement-commands">Sending Movement Commands<a class="headerlink" href="#sending-movement-commands" title="Permanent link">&para;</a></h2>
+<p>All movement goes through <code>RobotCommandBuilder</code> and <code>RobotCommandClient</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.robot_command</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotCommandBuilder</span><span class="p">,</span> <span class="n">blocking_stand</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># Stand up</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="n">blocking_stand</span><span class="p">(</span><span class="n">cmd_client</span><span class="p">,</span> <span class="n">timeout_sec</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="c1"># Sit down</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.robot_command</span><span class="w"> </span><span class="kn">import</span> <span class="n">blocking_sit</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="n">blocking_sit</span><span class="p">(</span><span class="n">cmd_client</span><span class="p">,</span> <span class="n">timeout_sec</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="c1"># Walk forward 1 meter</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.robot_command</span><span class="w"> </span><span class="kn">import</span> <span class="n">RobotCommandBuilder</span>
+<a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="n">cmd</span> <span class="o">=</span> <span class="n">RobotCommandBuilder</span><span class="o">.</span><span class="n">synchro_velocity_command</span><span class="p">(</span><span class="n">v_x</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">v_y</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">v_rot</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>
+<a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="n">cmd_client</span><span class="o">.</span><span class="n">robot_command</span><span class="p">(</span><span class="n">command</span><span class="o">=</span><span class="n">cmd</span><span class="p">,</span> <span class="n">end_time_secs</span><span class="o">=</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">+</span> <span class="mf">2.0</span><span class="p">)</span>
+<a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>
+<a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="c1"># Turn 90 degrees</span>
+<a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a><span class="kn">import</span><span class="w"> </span><span class="nn">math</span>
+<a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="n">cmd</span> <span class="o">=</span> <span class="n">RobotCommandBuilder</span><span class="o">.</span><span class="n">synchro_velocity_command</span><span class="p">(</span><span class="n">v_x</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">v_y</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">v_rot</span><span class="o">=</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="mi">60</span><span class="p">))</span>
+<a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a><span class="n">cmd_client</span><span class="o">.</span><span class="n">robot_command</span><span class="p">(</span><span class="n">command</span><span class="o">=</span><span class="n">cmd</span><span class="p">,</span> <span class="n">end_time_secs</span><span class="o">=</span><span class="n">time</span><span class="o">.</span><span class="n">time</span><span class="p">()</span> <span class="o">+</span> <span class="mf">1.5</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="velocity-commands">Velocity Commands<a class="headerlink" href="#velocity-commands" title="Permanent link">&para;</a></h3>
+<p><code>synchro_velocity_command(v_x, v_y, v_rot)</code> is the workhorse:</p>
+<table>
+<thead>
+<tr>
+<th>Parameter</th>
+<th>Unit</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>v_x</code></td>
+<td>m/s</td>
+<td>Forward (+) / backward (-)</td>
+</tr>
+<tr>
+<td><code>v_y</code></td>
+<td>m/s</td>
+<td>Left (+) / right (-) strafe</td>
+</tr>
+<tr>
+<td><code>v_rot</code></td>
+<td>rad/s</td>
+<td>Counter-clockwise (+) / clockwise (-) rotation</td>
+</tr>
+</tbody>
+</table>
+<p>Commands require an <code>end_time_secs</code> — the robot stops after this time if no new command is sent. This is a safety feature.</p>
+<h3 id="body-height">Body Height<a class="headerlink" href="#body-height" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.geometry</span><span class="w"> </span><span class="kn">import</span> <span class="n">EulerZXY</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">cmd</span> <span class="o">=</span> <span class="n">RobotCommandBuilder</span><span class="o">.</span><span class="n">synchro_stand_command</span><span class="p">(</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">body_height</span><span class="o">=</span><span class="mf">0.1</span>  <span class="c1"># meters above default stance (-0.2 to +0.2 range)</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="p">)</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="n">cmd_client</span><span class="o">.</span><span class="n">robot_command</span><span class="p">(</span><span class="n">command</span><span class="o">=</span><span class="n">cmd</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="reading-robot-state">Reading Robot State<a class="headerlink" href="#reading-robot-state" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">state</span> <span class="o">=</span> <span class="n">state_client</span><span class="o">.</span><span class="n">get_robot_state</span><span class="p">()</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># Battery</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="n">battery</span> <span class="o">=</span> <span class="n">state</span><span class="o">.</span><span class="n">battery_states</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="n">charge</span> <span class="o">=</span> <span class="n">battery</span><span class="o">.</span><span class="n">charge_percentage</span><span class="o">.</span><span class="n">value</span>  <span class="c1"># 0-100</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="n">runtime</span> <span class="o">=</span> <span class="n">battery</span><span class="o">.</span><span class="n">estimated_runtime</span><span class="o">.</span><span class="n">seconds</span>  <span class="c1"># seconds remaining</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a><span class="c1"># Motor power</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="n">is_powered</span> <span class="o">=</span> <span class="p">(</span><span class="n">state</span><span class="o">.</span><span class="n">power_state</span><span class="o">.</span><span class="n">motor_power_state</span> <span class="o">==</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a>              <span class="n">state</span><span class="o">.</span><span class="n">power_state</span><span class="o">.</span><span class="n">STATE_ON</span><span class="p">)</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a><span class="c1"># Faults</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a><span class="k">for</span> <span class="n">fault</span> <span class="ow">in</span> <span class="n">state</span><span class="o">.</span><span class="n">system_fault_state</span><span class="o">.</span><span class="n">faults</span><span class="p">:</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">fault</span><span class="o">.</span><span class="n">name</span><span class="p">,</span> <span class="n">fault</span><span class="o">.</span><span class="n">severity</span><span class="p">)</span>
+</code></pre></div>
+<h2 id="capturing-images">Capturing Images<a class="headerlink" href="#capturing-images" title="Permanent link">&para;</a></h2>
+<p>Spot has 5 fisheye cameras plus depth sensors:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.image</span><span class="w"> </span><span class="kn">import</span> <span class="n">ImageClient</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.api</span><span class="w"> </span><span class="kn">import</span> <span class="n">image_pb2</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">image_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">ImageClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="c1"># Request a JPEG from the front-left camera</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="n">responses</span> <span class="o">=</span> <span class="n">image_client</span><span class="o">.</span><span class="n">get_image_from_sources</span><span class="p">([</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>    <span class="n">image_pb2</span><span class="o">.</span><span class="n">ImageRequest</span><span class="p">(</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>        <span class="n">image_source_name</span><span class="o">=</span><span class="s2">&quot;frontleft_fisheye_image&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>        <span class="n">image_format</span><span class="o">=</span><span class="n">image_pb2</span><span class="o">.</span><span class="n">Image</span><span class="o">.</span><span class="n">FORMAT_JPEG</span><span class="p">,</span>  <span class="c1"># 1</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>        <span class="n">quality_percent</span><span class="o">=</span><span class="mi">75</span><span class="p">,</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>    <span class="p">)</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a><span class="p">])</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a><span class="n">jpeg_bytes</span> <span class="o">=</span> <span class="n">responses</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">shot</span><span class="o">.</span><span class="n">image</span><span class="o">.</span><span class="n">data</span>
+</code></pre></div>
+<h3 id="camera-source-names">Camera Source Names<a class="headerlink" href="#camera-source-names" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Position</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>frontleft_fisheye_image</code></td>
+<td>Front-left (primary for VLM)</td>
+</tr>
+<tr>
+<td><code>frontright_fisheye_image</code></td>
+<td>Front-right</td>
+</tr>
+<tr>
+<td><code>left_fisheye_image</code></td>
+<td>Left side</td>
+</tr>
+<tr>
+<td><code>right_fisheye_image</code></td>
+<td>Right side</td>
+</tr>
+<tr>
+<td><code>back_fisheye_image</code></td>
+<td>Rear</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Fisheye orientation</p>
+<p>Fisheye cameras are mounted sideways on Spot. Images must be rotated 90 degrees clockwise for correct display. When mapping pixel coordinates back to the original frame (e.g., for depth lookup), un-rotate: <code>orig_x = rot_y</code>, <code>orig_y = H_orig - 1 - rot_x</code>.</p>
+</div>
+<h2 id="graphnav-autonomous-navigation">GraphNav (Autonomous Navigation)<a class="headerlink" href="#graphnav-autonomous-navigation" title="Permanent link">&para;</a></h2>
+<p>GraphNav lets Spot navigate recorded maps autonomously:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.graph_nav</span><span class="w"> </span><span class="kn">import</span> <span class="n">GraphNavClient</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">graph_nav</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">GraphNavClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="c1"># Navigate to a waypoint by ID</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="n">nav_response</span> <span class="o">=</span> <span class="n">graph_nav</span><span class="o">.</span><span class="n">navigate_to</span><span class="p">(</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="n">waypoint_id</span><span class="o">=</span><span class="s2">&quot;waypoint_abc123...&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">cmd_duration</span><span class="o">=</span><span class="mf">30.0</span><span class="p">,</span>  <span class="c1"># timeout</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="p">)</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="c1"># Check status</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.api.graph_nav</span><span class="w"> </span><span class="kn">import</span> <span class="n">nav_pb2</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="n">status</span> <span class="o">=</span> <span class="n">nav_response</span><span class="o">.</span><span class="n">status</span>
+<a id="__codelineno-11-14" name="__codelineno-11-14" href="#__codelineno-11-14"></a><span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="n">nav_pb2</span><span class="o">.</span><span class="n">NavigateToResponse</span><span class="o">.</span><span class="n">STATUS_OK</span><span class="p">:</span>
+<a id="__codelineno-11-15" name="__codelineno-11-15" href="#__codelineno-11-15"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Navigation started&quot;</span><span class="p">)</span>
+<a id="__codelineno-11-16" name="__codelineno-11-16" href="#__codelineno-11-16"></a><span class="k">elif</span> <span class="n">status</span> <span class="o">==</span> <span class="n">nav_pb2</span><span class="o">.</span><span class="n">NavigateToResponse</span><span class="o">.</span><span class="n">STATUS_NO_PATH</span><span class="p">:</span>
+<a id="__codelineno-11-17" name="__codelineno-11-17" href="#__codelineno-11-17"></a>    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;No path found&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h3 id="navigation-feedback-loop">Navigation Feedback Loop<a class="headerlink" href="#navigation-feedback-loop" title="Permanent link">&para;</a></h3>
+<p>Navigation is asynchronous. You poll for completion:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="k">while</span> <span class="kc">True</span><span class="p">:</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>    <span class="n">feedback</span> <span class="o">=</span> <span class="n">graph_nav</span><span class="o">.</span><span class="n">navigation_feedback</span><span class="p">()</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>    <span class="n">status</span> <span class="o">=</span> <span class="n">feedback</span><span class="o">.</span><span class="n">status</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="k">if</span> <span class="n">status</span> <span class="o">==</span> <span class="n">nav_pb2</span><span class="o">.</span><span class="n">NavigationFeedbackResponse</span><span class="o">.</span><span class="n">STATUS_REACHED_GOAL</span><span class="p">:</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Arrived!&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>        <span class="k">break</span>
+<a id="__codelineno-12-8" name="__codelineno-12-8" href="#__codelineno-12-8"></a>    <span class="k">elif</span> <span class="n">status</span> <span class="o">==</span> <span class="n">nav_pb2</span><span class="o">.</span><span class="n">NavigationFeedbackResponse</span><span class="o">.</span><span class="n">STATUS_STUCK</span><span class="p">:</span>
+<a id="__codelineno-12-9" name="__codelineno-12-9" href="#__codelineno-12-9"></a>        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Stuck — retrying with backtrack&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-10" name="__codelineno-12-10" href="#__codelineno-12-10"></a>        <span class="k">break</span>
+<a id="__codelineno-12-11" name="__codelineno-12-11" href="#__codelineno-12-11"></a>    <span class="k">elif</span> <span class="n">status</span> <span class="o">==</span> <span class="n">nav_pb2</span><span class="o">.</span><span class="n">NavigationFeedbackResponse</span><span class="o">.</span><span class="n">STATUS_ROBOT_LOST</span><span class="p">:</span>
+<a id="__codelineno-12-12" name="__codelineno-12-12" href="#__codelineno-12-12"></a>        <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Lost — need to re-localize&quot;</span><span class="p">)</span>
+<a id="__codelineno-12-13" name="__codelineno-12-13" href="#__codelineno-12-13"></a>        <span class="k">break</span>
+<a id="__codelineno-12-14" name="__codelineno-12-14" href="#__codelineno-12-14"></a>
+<a id="__codelineno-12-15" name="__codelineno-12-15" href="#__codelineno-12-15"></a>    <span class="n">time</span><span class="o">.</span><span class="n">sleep</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)</span>
+</code></pre></div>
+<p>This pattern is exactly what <code>spot_dispatch.py</code> implements in <code>_navigate_waypoint_sequence()</code>, with re-localization and backtrack-on-stuck recovery.</p>
+<h2 id="keepalive-policies">Keepalive Policies<a class="headerlink" href="#keepalive-policies" title="Permanent link">&para;</a></h2>
+<p>BD SDK 5.0+ introduces keepalive policies that automatically stop the robot if a client disconnects unexpectedly. These can become "stale" if a previous session crashed without cleaning up.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">bosdyn.client.keepalive</span><span class="w"> </span><span class="kn">import</span> <span class="n">KeepaliveClient</span><span class="p">,</span> <span class="n">remove_all_policies</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="n">keepalive_client</span> <span class="o">=</span> <span class="n">robot</span><span class="o">.</span><span class="n">ensure_client</span><span class="p">(</span><span class="n">KeepaliveClient</span><span class="o">.</span><span class="n">default_service_name</span><span class="p">)</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="n">remove_all_policies</span><span class="p">(</span><span class="n">keepalive_client</span><span class="p">)</span>
+</code></pre></div>
+<p>The project clears stale policies on every session start (<code>session.py</code>) to avoid <code>KeepaliveMotorsOff</code> errors.</p>
+<h2 id="common-errors-and-what-they-mean">Common Errors and What They Mean<a class="headerlink" href="#common-errors-and-what-they-mean" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Error</th>
+<th>Cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ResourceAlreadyClaimedError</code></td>
+<td>Another client holds the lease</td>
+<td>Use <code>lease_client.take()</code> instead of <code>acquire()</code></td>
+</tr>
+<tr>
+<td><code>KeepaliveMotorsOffError</code></td>
+<td>Stale keepalive policy blocking power-on</td>
+<td>Clear policies with <code>remove_all_policies()</code></td>
+</tr>
+<tr>
+<td><code>EstoppedError</code></td>
+<td>Robot is E-Stopped</td>
+<td>Release E-Stop from tablet or web panel</td>
+</tr>
+<tr>
+<td><code>TimeSyncError</code></td>
+<td>Clock sync failed</td>
+<td>Retry <code>robot.time_sync.wait_for_sync()</code></td>
+</tr>
+<tr>
+<td><code>NotLocalizedError</code></td>
+<td>GraphNav doesn't know robot's position</td>
+<td>Re-localize with fiducial or known waypoint</td>
+</tr>
+<tr>
+<td><code>RetryableRpcError</code></td>
+<td>Transient network issue</td>
+<td>Retry the request</td>
+</tr>
+</tbody>
+</table>
+<h2 id="further-reading">Further Reading<a class="headerlink" href="#further-reading" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://dev.bostondynamics.com/">Boston Dynamics SDK Documentation</a></li>
+<li><a href="https://github.com/boston-dynamics/spot-sdk">Python SDK Examples on GitHub</a></li>
+<li><a href="https://dev.bostondynamics.com/protos/bosdyn/api/proto_reference">API Reference (protobuf)</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.expand", "search.highlight", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
