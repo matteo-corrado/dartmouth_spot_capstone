@@ -1,0 +1,74 @@
+site_name: Dartmouth Spot Capstone
+site_description: Voice-controlled Boston Dynamics Spot on Jetson AGX Orin 64GB
+repo_url: https://github.com/matteo-corrado/dartmouth_spot_capstone
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.expand
+    - search.highlight
+    - content.code.copy
+  palette:
+    - scheme: default
+      primary: green
+      accent: light green
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Hardware: getting-started/hardware.md
+    - Software Setup: getting-started/software.md
+    - Remote Access (Tailscale): getting-started/tailscale.md
+    - Model Downloads: getting-started/models.md
+    - Quick Start: getting-started/quickstart.md
+    - Daily Operations: getting-started/daily-operations.md
+  - Architecture:
+    - System Overview: architecture/overview.md
+    - Spot SDK Primer: architecture/sdk-primer.md
+    - Voice Pipeline: architecture/voice-pipeline.md
+    - Services: architecture/services.md
+  - Module Reference:
+    - Voice Pipeline:
+      - client_mic: modules/client-mic.md
+      - llm_brain: modules/llm-brain.md
+      - spot_dispatch: modules/spot-dispatch.md
+      - intent: modules/intent.md
+    - Audio:
+      - wake_word: modules/wake-word.md
+      - spot_tts: modules/spot-tts.md
+      - audio_feedback: modules/audio-feedback.md
+    - Robot:
+      - session: modules/session.md
+      - graph_nav_utils: modules/graph-nav.md
+      - location_manager: modules/location-manager.md
+    - Vision:
+      - visual_nav: modules/visual-nav.md
+  - Voice Commands: commands/reference.md
+  - Scripts: scripts/reference.md
+  - Guides:
+    - Mapping: guides/mapping.md
+    - Adding Commands: guides/adding-commands.md
+    - Web Panel: guides/web-panel.md
+    - Door Opening: guides/door-opening.md
+    - Troubleshooting: guides/troubleshooting.md
+  - Project:
+    - Dartmouth Setup: project/dartmouth-setup.md
+    - Post-Flash Migration: POST_FLASH_MIGRATION.md
+    - Feature Status: project/status.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+  - tables
+  - attr_list
