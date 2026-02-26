@@ -385,6 +385,14 @@ def main():
     else:
         print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
+    # Pre-load YOLO models in background (non-blocking, CPU only)
+    try:
+        from visual_nav import preload_models
+        preload_models()
+        print("[YOLO] Pre-loading models in background...")
+    except ImportError:
+        pass
+
     # Open audio stream (try stereo for XVF3800, fall back to mono)
     try:
         try:
@@ -687,6 +695,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     if not speech_float_buffer:
         return None
 
+    t_utterance_start = time.time()
+
     # Combine audio
     audio_float = np.concatenate(speech_float_buffer)
     duration = len(audio_float) / SAMPLE_RATE
@@ -700,7 +710,10 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     pcm_bytes = float32_to_pcm16(audio_float)
     print(f"[Sending {duration:.1f}s to ASR...]")
 
+    t_asr_start = time.time()
     transcript = send_to_asr(stub, pcm_bytes)
+    t_asr_end = time.time()
+    print(f"[Timing] ASR: {t_asr_end - t_asr_start:.2f}s")
 
     if not transcript:
         print("[No speech recognized]")
@@ -793,7 +806,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         # Collect current robot state for context
         state = get_spot_state()
 
+        t_llm_start = time.time()
         result = brain.process(clean, state)
+        t_llm_end = time.time()
+        print(f"[Timing] LLM: {t_llm_end - t_llm_start:.2f}s")
+
         response = result.get("response", "")
         actions = result.get("actions", [])
 
@@ -893,6 +910,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if tts and response:
                 tts.speak(response)
             print("(No physical action — conversation only)")
+        print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
         return "wake_detected" if wake_activated else None
 
     # ------------------------------------------------------------------
@@ -912,6 +930,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     else:
         print("(Not recognized — try: stand, sit, stop, turn left/right, go to [location])")
 
+    print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
     return "wake_detected" if wake_activated else None
 
 

@@ -313,6 +313,11 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
 
     MAX_STUCK_RETRIES = 2  # Retry with fresh command ID before skipping
 
+    # Enable backtracking on stuck — robot returns to start waypoint and retries
+    route_params = graph_nav_pb2.RouteGenParams(
+        backtrack_to_start_waypoint=True
+    )
+
     pass_num = 0
     try:
         while True:
@@ -333,7 +338,9 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                 while not stop_event.is_set():
                     try:
                         nav_to_cmd_id = graph_nav_client.navigate_to(
-                            wp_id, 10.0, command_id=nav_to_cmd_id
+                            wp_id, 10.0,
+                            route_params=route_params,
+                            command_id=nav_to_cmd_id
                         )
                     except Exception as nav_ex:
                         # navigate_to() raises RobotStuckError as exception

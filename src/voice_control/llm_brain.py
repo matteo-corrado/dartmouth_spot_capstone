@@ -26,7 +26,7 @@ from typing import Optional, Dict, Any, List
 DEFAULT_MODEL = "qwen2.5:7b"
 VLM_MODEL = "qwen2.5vl:7b"
 OLLAMA_URL = "http://localhost:11434"
-MAX_HISTORY = 20          # messages (10 user + 10 assistant exchanges)
+MAX_HISTORY = 12          # messages (6 user + 6 assistant exchanges)
 REQUEST_TIMEOUT = 30.0    # seconds per request
 FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
 VLM_TIMEOUT = 60.0       # seconds — VLM inference is slower
@@ -86,23 +86,8 @@ RULES:
 - IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?" are OBSERVATION questions — use describe (look with camera), NOT go_to_object. Only use go_to_object when the user explicitly says "go to X", "walk to X", "find X", or "approach X".
 
 EXAMPLES:
-User: "Stand up"
-{"actions": [{"action": "stand", "params": {}}], "response": "Standing up!"}
-
-User: "Walk forward 2 meters"
-{"actions": [{"action": "walk", "params": {"direction": "forward", "distance": 2.0}}], "response": "Walking forward 2 meters!"}
-
-User: "Turn around"
-{"actions": [{"action": "turn", "params": {"deg": 180, "dir": "left"}}], "response": "Turning around!"}
-
 User: "How are you doing?"
 {"actions": [], "response": "I'm doing great! Battery is looking good and I'm ready to help."}
-
-User: "Go to the kitchen"
-{"actions": [{"action": "go_to", "params": {"location": "kitchen"}}], "response": "On my way to the kitchen!"}
-
-User: "What do you see?"
-{"actions": [{"action": "describe", "params": {"camera": "front"}}], "response": "Let me take a look..."}
 
 User: "Go to kitchen then hallway then lab"
 {"actions": [{"action": "tour", "params": {"locations": ["kitchen", "hallway", "lab"]}}], "response": "On my way! I'll visit kitchen, hallway, and lab in order."}
@@ -110,29 +95,11 @@ User: "Go to kitchen then hallway then lab"
 User: "Go to the conference and come back"
 {"actions": [{"action": "go_to", "params": {"location": "conference"}}, {"action": "come_back", "params": {}}], "response": "Going to conference and coming right back!"}
 
-User: "Go to lab, then sit down"
-{"actions": [{"action": "go_to", "params": {"location": "lab"}}, {"action": "sit", "params": {}}], "response": "Heading to lab, then I'll sit down!"}
-
-User: "Patrol the map"
-{"actions": [{"action": "patrol", "params": {"locations": "all"}}], "response": "Starting patrol! I'll keep looping until you tell me to stop."}
-
-User: "Come back"
-{"actions": [{"action": "come_back", "params": {}}], "response": "Heading back to where I started!"}
-
-User: "Open the door"
-{"actions": [{"action": "open_door", "params": {}}], "response": "Opening the door! Stand back."}
-
 User: "Do you see the blue chair?"
 {"actions": [{"action": "describe", "params": {"camera": "front", "query": "blue chair"}}], "response": "Let me check for the blue chair..."}
 
 User: "Go to the red chair"
-{"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}
-
-User: "Find my backpack"
-{"actions": [{"action": "go_to_object", "params": {"description": "backpack"}}], "response": "Searching for your backpack!"}
-
-User: "Follow me"
-{"actions": [{"action": "follow_me", "params": {}}], "response": "Following you! I'll stay close."}"""
+{"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}"""
 
 
 class SpotBrain:

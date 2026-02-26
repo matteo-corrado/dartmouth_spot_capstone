@@ -102,6 +102,26 @@ def _get_person_model():
     return _person_model
 
 
+def preload_models():
+    """Pre-load YOLO models in a background thread to avoid first-use latency.
+
+    Called during startup. Both models run on CPU so they don't compete
+    with the LLM for VRAM. Safe to call multiple times (lazy loaders
+    short-circuit if already loaded).
+    """
+    import threading
+
+    def _load():
+        try:
+            _get_person_model()
+            _get_world_model()
+        except Exception as e:
+            print(f"[VisualNav] Pre-load failed (will retry on first use): {e}")
+
+    t = threading.Thread(target=_load, daemon=True)
+    t.start()
+
+
 # ---------------------------------------------------------------------------
 # Image capture + detection helpers
 # ---------------------------------------------------------------------------
