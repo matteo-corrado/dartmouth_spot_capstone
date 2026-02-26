@@ -1,0 +1,16 @@
+[Unit]
+Description=Spot Web Control Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spotdog
+WorkingDirectory=/home/spotdog/spot/dartmouth_spot_capstone
+ExecStart=/home/spotdog/spot/dartmouth_spot_capstone/spot-env/bin/python scripts/web_panel.py
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/spotdog/spot/dartmouth_spot_capstone/spot-env/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target
