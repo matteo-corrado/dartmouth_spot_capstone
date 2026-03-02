@@ -50,7 +50,7 @@ class VoiceState(Enum):
     RECORDING = auto()   # Speech detected, accumulating audio
 
 
-LISTENING_TIMEOUT = 300.0  # 5 minutes before requiring wake word again
+LISTENING_TIMEOUT = 15.0  # seconds before requiring wake word again
 
 # ============================================================================
 # Configuration
@@ -528,6 +528,14 @@ def main():
                     consecutive_speech += 1
 
                     if not is_speaking:
+                        # In WAKE_WORD mode with dedicated detector, don't record —
+                        # keyword spotter handles wake detection at frame level.
+                        # Skips ASR entirely, eliminating crowd noise latency.
+                        if state == VoiceState.WAKE_WORD and wake_detector:
+                            consecutive_speech = 0
+                            pending_speech_frames.clear()
+                            continue
+
                         # Buffer frames while confirming onset
                         pending_speech_frames.append(frame)
                         # Use higher onset threshold during navigation to reduce false triggers
