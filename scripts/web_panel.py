@@ -20,10 +20,19 @@ import time
 import socket
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from functools import partial
+import io
+import socketserver
+from urllib.parse import urlparse, parse_qs
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+# Threading server to handle concurrent connections (MJPEG stream + polling)
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+    daemon_threads = True
+
 
 # ---------------------------------------------------------------------------
 # Spot E-Stop manager
@@ -163,11 +172,15 @@ class EStopManager:
 # ---------------------------------------------------------------------------
 # Voice pipeline manager
 # ---------------------------------------------------------------------------
+VOICE_LOG_PATH = "/tmp/spot-voice.log"
+
+
 class VoicePipelineManager:
     """Manages the voice control subprocess."""
 
     def __init__(self):
         self._proc = None
+        self._log_file = None
         self._lock = threading.Lock()
 
     @property
@@ -183,12 +196,16 @@ class VoicePipelineManager:
                 return True, "Voice pipeline already running"
 
         try:
+            self._log_file = open(VOICE_LOG_PATH, "w")
             script = str(PROJECT_ROOT / "scripts" / "run_voice_control.py")
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
             self._proc = subprocess.Popen(
                 [sys.executable, script],
                 cwd=str(PROJECT_ROOT),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=self._log_file,
+                stderr=subprocess.STDOUT,
+                env=env,
                 preexec_fn=os.setsid if hasattr(os, 'setsid') else None
             )
             return True, f"Voice pipeline started (PID {self._proc.pid})"
@@ -205,12 +222,92 @@ class VoicePipelineManager:
             import os
             os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
             self._proc.wait(timeout=5)
+            if self._log_file:
+                self._log_file.close()
+                self._log_file = None
             return True, "Voice pipeline stopped"
         except subprocess.TimeoutExpired:
             os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
+            if self._log_file:
+                self._log_file.close()
+                self._log_file = None
             return True, "Voice pipeline force-killed"
         except Exception as e:
             return False, f"Failed to stop: {e}"
+
+    def get_logs(self, max_lines=200):
+        """Read recent voice pipeline log lines."""
+        try:
+            with open(VOICE_LOG_PATH, "r") as f:
+                lines = f.readlines()
+            return [l.rstrip() for l in lines[-max_lines:]]
+        except FileNotFoundError:
+            return []
+
+
+# ---------------------------------------------------------------------------
+# Camera streamer (read-only SDK connection)
+# ---------------------------------------------------------------------------
+class CameraStreamer:
+    """Captures images from Spot's cameras for web streaming."""
+
+    CAMERA_SOURCES = {
+        "front": "frontleft_fisheye_image",
+        "front_right": "frontright_fisheye_image",
+        "left": "left_fisheye_image",
+        "right": "right_fisheye_image",
+        "back": "back_fisheye_image",
+    }
+
+    def __init__(self):
+        self._image_client = None
+        self._lock = threading.Lock()
+
+    def _ensure_connection(self):
+        """Lazy SDK connection on first use."""
+        if self._image_client is not None:
+            return True
+        try:
+            from bosdyn.client import create_standard_sdk
+            from bosdyn.client.image import ImageClient
+            from src.config import (
+                BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
+            )
+
+            sdk = create_standard_sdk("dartmouth_spot_web_camera")
+            robot = sdk.create_robot(BOSDYN_ROBOT_IP)
+            robot.authenticate(BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD)
+            robot.time_sync.wait_for_sync()
+            self._image_client = robot.ensure_client(
+                ImageClient.default_service_name
+            )
+            print("[Camera] Connected to Spot (read-only)")
+            return True
+        except Exception as e:
+            print(f"[Camera] Connection failed: {e}")
+            return False
+
+    def capture_jpeg(self, camera="front"):
+        """Capture a JPEG frame, rotated 90 CW for upright display."""
+        source = self.CAMERA_SOURCES.get(camera, self.CAMERA_SOURCES["front"])
+        with self._lock:
+            if not self._ensure_connection():
+                return None
+            try:
+                resps = self._image_client.get_image_from_sources([source])
+                if not resps:
+                    return None
+                data = resps[0].shot.image.data
+                from PIL import Image
+                img = Image.open(io.BytesIO(data))
+                img = img.transpose(Image.Transpose.ROTATE_270)  # 90 CW
+                buf = io.BytesIO()
+                img.save(buf, format="JPEG", quality=70)
+                return buf.getvalue()
+            except Exception as e:
+                print(f"[Camera] Capture failed ({camera}): {e}")
+                self._image_client = None  # force reconnect next time
+                return None
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +387,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
   .btn-row { display: flex; gap: 8px; }
   .btn-row .btn { flex: 1; }
 
+  .progress-bar {
+    width: 100%; height: 6px; background: #16213e;
+    border-radius: 3px; overflow: hidden; margin-bottom: 8px;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, #00838f, #00c853);
+    border-radius: 3px; transition: width 0.5s ease; width: 0%;
+  }
+  .progress-label {
+    font-size: 0.85em; color: #aaa; text-align: center; margin-bottom: 8px;
+  }
+  .voice-log {
+    background: #0d1117; border: 1px solid #333;
+    border-radius: 8px; padding: 10px;
+    font-family: 'SF Mono', Monaco, monospace;
+    font-size: 0.7em; max-height: 150px;
+    overflow-y: auto; color: #8b949e;
+    white-space: pre-wrap; word-break: break-all;
+  }
+
+  .cam-controls { display: flex; gap: 8px; margin-bottom: 10px; }
+  .cam-select {
+    flex: 1; padding: 12px; background: #16213e; color: #eee;
+    border: 1px solid #333; border-radius: 8px; font-size: 1em;
+    -webkit-appearance: none; appearance: none;
+  }
+  .btn-cam { flex-shrink: 0; width: auto; padding: 12px 20px; font-size: 1em; font-weight: 700; }
+  .cam-container {
+    width: 100%; border-radius: 12px; overflow: hidden;
+    background: #0d1117; border: 1px solid #333;
+  }
+  .cam-feed { width: 100%; display: none; }
+  .cam-placeholder {
+    padding: 60px 0; text-align: center; color: #555; font-size: 1.1em;
+  }
+
   .log {
     background: #0d1117; border: 1px solid #333;
     border-radius: 8px; padding: 10px;
@@ -331,6 +464,31 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<div class="section" id="voice-progress" style="display:none">
+  <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+  <div class="progress-label" id="progress-label">Initializing...</div>
+  <div class="voice-log" id="voice-log"></div>
+</div>
+
+<div class="section">
+  <div class="section-title">Camera Feed</div>
+  <div class="cam-controls">
+    <select id="cam-select" class="cam-select">
+      <option value="front">Front</option>
+      <option value="front_right">Front Right</option>
+      <option value="left">Left</option>
+      <option value="right">Right</option>
+      <option value="back">Back</option>
+    </select>
+    <button class="btn btn-start btn-cam" onclick="startCam()">Start</button>
+    <button class="btn btn-stop btn-cam" id="btn-cam-stop" onclick="stopCam()" disabled>Stop</button>
+  </div>
+  <div class="cam-container">
+    <img id="cam-feed" class="cam-feed" alt="Camera feed">
+    <div id="cam-placeholder" class="cam-placeholder">Camera Off</div>
+  </div>
+</div>
+
 <div class="section">
   <div class="section-title">Log</div>
   <div class="log" id="log"></div>
@@ -354,6 +512,49 @@ function setDot(id, color) {
   el.className = 'dot dot-' + color;
 }
 
+let prevVoice = null;
+let logInterval = null;
+
+const STAGES = [
+  { p: 'Checking Riva', l: 'Checking Riva ASR...', pct: 10 },
+  { p: 'Riva is already running', l: 'Riva ASR ready', pct: 20 },
+  { p: 'Checking Ollama', l: 'Checking Ollama...', pct: 25 },
+  { p: 'Ollama is already running', l: 'Ollama ready', pct: 35 },
+  { p: 'Starting ASR bridge', l: 'Starting ASR bridge...', pct: 45 },
+  { p: 'Server is running', l: 'ASR bridge ready', pct: 55 },
+  { p: 'Initializing LLM', l: 'Loading LLM...', pct: 60 },
+  { p: 'Brain] Ready', l: 'LLM ready', pct: 75 },
+  { p: 'Initializing TTS', l: 'Loading TTS...', pct: 80 },
+  { p: 'TTS] Ready', l: 'TTS ready', pct: 90 },
+  { p: 'LISTENING', l: 'Ready!', pct: 100 },
+];
+
+async function pollLogs() {
+  try {
+    const r = await fetch('/voice/logs');
+    if (!r.ok) return;
+    const data = await r.json();
+    if (!data.lines.length) return;
+
+    const el = document.getElementById('voice-log');
+    el.textContent = data.lines.join('\n');
+    el.scrollTop = el.scrollHeight;
+
+    const text = data.lines.join('\n');
+    let pct = 5, label = 'Initializing...';
+    for (const s of STAGES) {
+      if (text.includes(s.p)) { pct = s.pct; label = s.l; }
+    }
+    document.getElementById('progress-fill').style.width = pct + '%';
+    document.getElementById('progress-label').textContent = label;
+
+    if (pct >= 100 && logInterval) {
+      clearInterval(logInterval);
+      logInterval = setInterval(pollLogs, 5000);
+    }
+  } catch(e) {}
+}
+
 function updateStatus(data) {
   function set(id, val) {
     document.getElementById('s-' + id).textContent = val;
@@ -365,6 +566,24 @@ function updateStatus(data) {
   set('ollama', data.ollama);
   set('estop', data.estop);
   set('voice', data.voice);
+
+  if (data.voice === 'running' && prevVoice !== 'running') {
+    document.getElementById('voice-progress').style.display = 'block';
+    document.getElementById('progress-fill').style.width = '0%';
+    document.getElementById('progress-label').textContent = 'Initializing...';
+    document.getElementById('voice-log').textContent = '';
+    if (logInterval) clearInterval(logInterval);
+    logInterval = setInterval(pollLogs, 1000);
+    pollLogs();
+  } else if (data.voice !== 'running' && prevVoice === 'running') {
+    if (logInterval) { clearInterval(logInterval); logInterval = null; }
+    document.getElementById('progress-label').textContent = 'Pipeline stopped';
+    document.getElementById('progress-fill').style.width = '0%';
+    setTimeout(function() {
+      document.getElementById('voice-progress').style.display = 'none';
+    }, 5000);
+  }
+  prevVoice = data.voice;
 }
 
 async function pollStatus() {
@@ -389,6 +608,36 @@ async function action(path) {
 // Poll every 2 seconds
 pollStatus();
 setInterval(pollStatus, 2000);
+
+// Camera feed
+let camActive = false;
+
+function startCam() {
+  const source = document.getElementById('cam-select').value;
+  const img = document.getElementById('cam-feed');
+  const ph = document.getElementById('cam-placeholder');
+  img.src = '/camera/stream?source=' + source;
+  img.style.display = 'block';
+  ph.style.display = 'none';
+  document.getElementById('btn-cam-stop').disabled = false;
+  camActive = true;
+  log('Camera started: ' + source, 'log-ok');
+}
+
+function stopCam() {
+  const img = document.getElementById('cam-feed');
+  const ph = document.getElementById('cam-placeholder');
+  img.src = '';
+  img.style.display = 'none';
+  ph.style.display = 'block';
+  document.getElementById('btn-cam-stop').disabled = true;
+  camActive = false;
+  log('Camera stopped', 'log-warn');
+}
+
+document.getElementById('cam-select').addEventListener('change', function() {
+  if (camActive) startCam();
+});
 </script>
 </body>
 </html>
@@ -402,9 +651,10 @@ import os
 class SpotHandler(BaseHTTPRequestHandler):
     """Handle GET/POST requests for the control panel."""
 
-    def __init__(self, estop_mgr, voice_mgr, no_spot, *args, **kwargs):
+    def __init__(self, estop_mgr, voice_mgr, camera_streamer, no_spot, *args, **kwargs):
         self.estop_mgr = estop_mgr
         self.voice_mgr = voice_mgr
+        self.camera_streamer = camera_streamer
         self.no_spot = no_spot
         super().__init__(*args, **kwargs)
 
@@ -429,15 +679,78 @@ class SpotHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/":
+        parsed = urlparse(self.path)
+        path = parsed.path
+        params = parse_qs(parsed.query)
+
+        if path == "/":
             self._html(HTML_PAGE)
-        elif self.path == "/status":
+        elif path == "/status":
             svc = get_service_status()
             svc["estop"] = self.estop_mgr.status
             svc["voice"] = self.voice_mgr.status
             self._json(svc)
+        elif path == "/voice/logs":
+            lines = self.voice_mgr.get_logs()
+            self._json({"lines": lines})
+        elif path == "/camera/stream":
+            if self.no_spot or self.camera_streamer is None:
+                self._json({"ok": False, "message": "Camera unavailable"}, 503)
+                return
+            source = params.get("source", ["front"])[0]
+            self._stream_camera(source)
+        elif path == "/camera/snapshot":
+            if self.no_spot or self.camera_streamer is None:
+                self._json({"ok": False, "message": "Camera unavailable"}, 503)
+                return
+            source = params.get("source", ["front"])[0]
+            self._snapshot_camera(source)
         else:
             self.send_error(404)
+
+    def _stream_camera(self, source):
+        """MJPEG multipart stream."""
+        self.send_response(200)
+        self.send_header("Content-Type",
+                         "multipart/x-mixed-replace; boundary=frame")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.end_headers()
+
+        failures = 0
+        try:
+            while True:
+                jpeg = self.camera_streamer.capture_jpeg(source)
+                if jpeg is None:
+                    failures += 1
+                    if failures > 10:
+                        break
+                    time.sleep(1)
+                    continue
+                failures = 0
+                self.wfile.write(b"--frame\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(
+                    f"Content-Length: {len(jpeg)}\r\n\r\n".encode()
+                )
+                self.wfile.write(jpeg)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+                time.sleep(0.3)  # ~3 FPS
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _snapshot_camera(self, source):
+        """Single JPEG frame."""
+        jpeg = self.camera_streamer.capture_jpeg(source)
+        if jpeg is None:
+            self._json({"ok": False, "message": "Camera capture failed"}, 503)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(jpeg)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(jpeg)
 
     def do_POST(self):
         if self.no_spot and self.path.startswith("/estop"):
@@ -475,9 +788,10 @@ def main():
 
     estop_mgr = EStopManager()
     voice_mgr = VoicePipelineManager()
+    camera_streamer = None if args.no_spot else CameraStreamer()
 
-    handler = partial(SpotHandler, estop_mgr, voice_mgr, args.no_spot)
-    server = HTTPServer(("0.0.0.0", args.port), handler)
+    handler = partial(SpotHandler, estop_mgr, voice_mgr, camera_streamer, args.no_spot)
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), handler)
 
     # Get local IPs for display
     ips = []
