@@ -19,12 +19,23 @@ if str(project_root) not in sys.path:
 import re
 import time
 import queue
+import signal
 import argparse
 from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
 import webrtcvad
 import grpc
+
+
+# Convert SIGTERM to KeyboardInterrupt so the main loop's finally block
+# runs the graceful shutdown (sit robot down, power off).  This matters
+# when the web panel stops the pipeline — it sends SIGINT first, but
+# falls back to SIGTERM if the process hasn't exited.
+def _sigterm_handler(signum, frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
 
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub

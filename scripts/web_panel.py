@@ -212,25 +212,44 @@ class VoicePipelineManager:
         except Exception as e:
             return False, f"Failed to start: {e}"
 
+    def _close_log(self):
+        if self._log_file:
+            self._log_file.close()
+            self._log_file = None
+
     def stop(self):
         with self._lock:
             if not self._proc or self._proc.poll() is not None:
                 return True, "Voice pipeline not running"
 
         try:
-            # Kill the entire process group
             import os
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGTERM)
-            self._proc.wait(timeout=5)
-            if self._log_file:
-                self._log_file.close()
-                self._log_file = None
-            return True, "Voice pipeline stopped"
-        except subprocess.TimeoutExpired:
-            os.killpg(os.getpgid(self._proc.pid), signal.SIGKILL)
-            if self._log_file:
-                self._log_file.close()
-                self._log_file = None
+            pgid = os.getpgid(self._proc.pid)
+
+            # Send SIGINT first — triggers KeyboardInterrupt in Python,
+            # which lets client_mic.py run its graceful shutdown
+            # (sit the robot down, power off cleanly).
+            os.killpg(pgid, signal.SIGINT)
+            try:
+                self._proc.wait(timeout=20)  # sit + power off can take ~15s
+                self._close_log()
+                return True, "Voice pipeline stopped (robot sat down)"
+            except subprocess.TimeoutExpired:
+                pass
+
+            # SIGTERM as fallback
+            os.killpg(pgid, signal.SIGTERM)
+            try:
+                self._proc.wait(timeout=5)
+                self._close_log()
+                return True, "Voice pipeline stopped"
+            except subprocess.TimeoutExpired:
+                pass
+
+            # Last resort
+            os.killpg(pgid, signal.SIGKILL)
+            self._proc.wait(timeout=3)
+            self._close_log()
             return True, "Voice pipeline force-killed"
         except Exception as e:
             return False, f"Failed to stop: {e}"
@@ -338,141 +357,309 @@ HTML_PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
-<title>Spot Control</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Spot</title>
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #09090b;
+    --card: #18181b;
+    --card-border: rgba(255,255,255,0.06);
+    --card-hover: #1f1f23;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --text-dim: #52525b;
+    --accent: #3b82f6;
+    --accent-glow: rgba(59,130,246,0.15);
+    --green: #22c55e;
+    --green-dim: rgba(34,197,94,0.12);
+    --red: #ef4444;
+    --red-dim: rgba(239,68,68,0.12);
+    --red-glow: rgba(239,68,68,0.25);
+    --orange: #f97316;
+    --orange-dim: rgba(249,115,22,0.12);
+    --yellow: #eab308;
+    --yellow-dim: rgba(234,179,8,0.12);
+    --radius: 14px;
+    --radius-sm: 10px;
+    --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --mono: 'JetBrains Mono', 'SF Mono', Monaco, monospace;
+  }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-tap-highlight-color: transparent; }
+
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: #1a1a2e; color: #eee;
-    min-height: 100vh; padding: 16px;
-  }
-  h1 { text-align: center; font-size: 1.4em; margin-bottom: 12px; color: #e0e0e0; }
-
-  .status-bar {
-    display: flex; flex-wrap: wrap; gap: 8px;
-    justify-content: center; margin-bottom: 16px;
-  }
-  .status-item {
-    font-size: 0.85em; padding: 4px 10px;
-    border-radius: 12px; background: #16213e;
-  }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
-  .dot-green { background: #00c853; }
-  .dot-red { background: #ff1744; }
-  .dot-yellow { background: #ffd600; }
-
-  .section { margin-bottom: 18px; }
-  .section-title {
-    font-size: 0.9em; color: #888; text-transform: uppercase;
-    letter-spacing: 1px; margin-bottom: 8px; text-align: center;
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 0 16px 32px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
+  /* ---- Header ---- */
+  .header {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; padding: 20px 0 16px;
+  }
+  .header svg { width: 28px; height: 28px; }
+  .header h1 {
+    font-size: 1.25em; font-weight: 700;
+    letter-spacing: -0.03em; color: var(--text);
+  }
+
+  /* ---- Status pills ---- */
+  .status-row {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 8px; margin-bottom: 20px;
+  }
+  .pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 14px;
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    font-size: 0.8em; font-weight: 500;
+    color: var(--text-muted);
+    transition: border-color 0.3s;
+  }
+  .pill .label { flex: 1; }
+  .pill .val {
+    font-family: var(--mono); font-size: 0.85em;
+    font-weight: 500; text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .pill .indicator {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex-shrink: 0; transition: background 0.3s, box-shadow 0.3s;
+  }
+  .ind-green { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .ind-red { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.4); }
+  .ind-yellow { background: var(--yellow); box-shadow: 0 0 6px rgba(234,179,8,0.4); }
+
+  /* ---- Cards ---- */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 14px;
+  }
+  .card-label {
+    font-size: 0.7em; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-dim); margin-bottom: 14px;
+  }
+
+  /* ---- E-Stop ---- */
+  .estop-btn {
+    width: 100%; padding: 22px;
+    background: var(--red);
+    border: none; border-radius: var(--radius-sm);
+    font-family: var(--font);
+    font-size: 1.3em; font-weight: 700;
+    letter-spacing: 0.06em;
+    color: #fff; cursor: pointer;
+    transition: transform 0.1s, box-shadow 0.2s;
+    box-shadow: 0 0 30px var(--red-glow), inset 0 1px 0 rgba(255,255,255,0.1);
+    text-transform: uppercase;
+  }
+  .estop-btn:active { transform: scale(0.97); }
+
+  .estop-secondary {
+    display: flex; gap: 8px; margin-top: 10px;
+  }
+
+  /* ---- Shared button styles ---- */
   .btn {
-    display: block; width: 100%; padding: 18px;
-    border: none; border-radius: 12px;
-    font-size: 1.2em; font-weight: 700;
-    cursor: pointer; transition: opacity 0.2s;
-    color: #fff; text-align: center;
+    flex: 1; padding: 13px 0;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font);
+    font-size: 0.85em; font-weight: 600;
+    color: var(--text); cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    background: transparent;
+    text-align: center;
   }
-  .btn:active { opacity: 0.7; }
-  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
 
-  .btn-estop { background: #d32f2f; font-size: 1.6em; padding: 28px; margin-bottom: 10px; }
-  .btn-claim { background: #1565c0; }
-  .btn-release { background: #2e7d32; }
-  .btn-start { background: #00838f; }
-  .btn-stop { background: #e65100; }
+  .btn-accent {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .btn-accent:active { background: #2563eb; }
 
-  .btn-row { display: flex; gap: 8px; }
-  .btn-row .btn { flex: 1; }
+  .btn-outline-green { border-color: rgba(34,197,94,0.3); color: var(--green); }
+  .btn-outline-green:active { background: var(--green-dim); }
 
+  .btn-outline-red { border-color: rgba(239,68,68,0.3); color: var(--red); }
+  .btn-outline-red:active { background: var(--red-dim); }
+
+  .btn-outline-orange { border-color: rgba(249,115,22,0.3); color: var(--orange); }
+  .btn-outline-orange:active { background: var(--orange-dim); }
+
+  /* ---- Voice pipeline ---- */
+  .pipeline-row { display: flex; gap: 8px; }
+
+  /* ---- Voice progress ---- */
   .progress-bar {
-    width: 100%; height: 6px; background: #16213e;
-    border-radius: 3px; overflow: hidden; margin-bottom: 8px;
+    width: 100%; height: 4px; background: var(--bg);
+    border-radius: 2px; overflow: hidden; margin-bottom: 10px;
   }
   .progress-fill {
-    height: 100%; background: linear-gradient(90deg, #00838f, #00c853);
-    border-radius: 3px; transition: width 0.5s ease; width: 0%;
+    height: 100%; background: linear-gradient(90deg, var(--accent), var(--green));
+    border-radius: 2px; transition: width 0.5s ease; width: 0%;
   }
   .progress-label {
-    font-size: 0.85em; color: #aaa; text-align: center; margin-bottom: 8px;
+    font-size: 0.8em; font-weight: 500; color: var(--text-muted);
+    text-align: center; margin-bottom: 10px;
   }
   .voice-log {
-    background: #0d1117; border: 1px solid #333;
-    border-radius: 8px; padding: 10px;
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 0.7em; max-height: 150px;
-    overflow-y: auto; color: #8b949e;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 0.68em; line-height: 1.6;
+    max-height: 150px;
+    overflow-y: auto; color: var(--text-dim);
     white-space: pre-wrap; word-break: break-all;
+    -webkit-overflow-scrolling: touch;
   }
 
-  .cam-controls { display: flex; gap: 8px; margin-bottom: 10px; }
+  /* ---- Camera ---- */
+  .cam-bar { display: flex; gap: 8px; margin-bottom: 12px; }
   .cam-select {
-    flex: 1; padding: 12px; background: #16213e; color: #eee;
-    border: 1px solid #333; border-radius: 8px; font-size: 1em;
+    flex: 1; padding: 12px 14px;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font);
+    font-size: 0.85em; font-weight: 500;
+    color: var(--text);
     -webkit-appearance: none; appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 32px;
   }
-  .btn-cam { flex-shrink: 0; width: auto; padding: 12px 20px; font-size: 1em; font-weight: 700; }
-  .cam-container {
-    width: 100%; border-radius: 12px; overflow: hidden;
-    background: #0d1117; border: 1px solid #333;
+  .cam-frame {
+    width: 100%;
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    aspect-ratio: 4/3;
+    display: flex; align-items: center; justify-content: center;
   }
-  .cam-feed { width: 100%; display: none; }
+  .cam-feed { width: 100%; height: 100%; object-fit: cover; display: none; }
   .cam-placeholder {
-    padding: 60px 0; text-align: center; color: #555; font-size: 1.1em;
+    color: var(--text-dim); font-size: 0.85em; font-weight: 500;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .cam-placeholder svg { opacity: 0.3; }
+
+  /* ---- Log ---- */
+  .log-container {
+    background: var(--bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    max-height: 140px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .log-entry {
+    font-family: var(--mono);
+    font-size: 0.72em; line-height: 1.7;
+    color: var(--text-dim);
+  }
+  .log-entry .ts { color: var(--text-dim); margin-right: 6px; }
+  .log-ok .msg { color: var(--green); }
+  .log-err .msg { color: var(--red); }
+  .log-warn .msg { color: var(--yellow); }
+  .log-empty {
+    font-family: var(--mono); font-size: 0.72em;
+    color: var(--text-dim); opacity: 0.5; text-align: center;
+    padding: 8px 0;
   }
 
-  .log {
-    background: #0d1117; border: 1px solid #333;
-    border-radius: 8px; padding: 10px;
-    font-family: 'SF Mono', Monaco, monospace;
-    font-size: 0.8em; max-height: 150px;
-    overflow-y: auto; color: #8b949e;
+  /* ---- Subtle loading state for buttons ---- */
+  .btn-loading { position: relative; color: transparent !important; }
+  .btn-loading::after {
+    content: ''; position: absolute;
+    width: 16px; height: 16px;
+    top: 50%; left: 50%;
+    margin: -8px 0 0 -8px;
+    border: 2px solid rgba(255,255,255,0.2);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
   }
-  .log-entry { margin-bottom: 2px; }
-  .log-ok { color: #3fb950; }
-  .log-err { color: #f85149; }
-  .log-warn { color: #d29922; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- Safe area for notched phones ---- */
+  @supports (padding-top: env(safe-area-inset-top)) {
+    body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  }
 </style>
 </head>
 <body>
 
-<h1>Spot Control Panel</h1>
-
-<div class="status-bar">
-  <span class="status-item"><span class="dot" id="dot-riva"></span>Riva: <span id="s-riva">--</span></span>
-  <span class="status-item"><span class="dot" id="dot-ollama"></span>Ollama: <span id="s-ollama">--</span></span>
-  <span class="status-item"><span class="dot" id="dot-estop"></span>E-Stop: <span id="s-estop">--</span></span>
-  <span class="status-item"><span class="dot" id="dot-voice"></span>Voice: <span id="s-voice">--</span></span>
+<!-- Header -->
+<div class="header">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <path d="M12 6v6l4 2"/>
+  </svg>
+  <h1>Spot Control</h1>
 </div>
 
-<div class="section">
-  <div class="section-title">Emergency Stop</div>
-  <button class="btn btn-estop" id="btn-estop" onclick="action('/estop/stop')">E-STOP</button>
-  <div class="btn-row">
-    <button class="btn btn-claim" onclick="action('/estop/claim')">Claim</button>
-    <button class="btn btn-release" onclick="action('/estop/release')">Release</button>
+<!-- Status pills -->
+<div class="status-row">
+  <div class="pill"><span class="indicator" id="dot-riva"></span><span class="label">Riva</span><span class="val" id="s-riva">--</span></div>
+  <div class="pill"><span class="indicator" id="dot-ollama"></span><span class="label">Ollama</span><span class="val" id="s-ollama">--</span></div>
+  <div class="pill"><span class="indicator" id="dot-estop"></span><span class="label">E-Stop</span><span class="val" id="s-estop">--</span></div>
+  <div class="pill"><span class="indicator" id="dot-voice"></span><span class="label">Voice</span><span class="val" id="s-voice">--</span></div>
+</div>
+
+<!-- E-Stop -->
+<div class="card">
+  <div class="card-label">Emergency Stop</div>
+  <button class="estop-btn" id="btn-estop" onclick="action('/estop/stop', this)">E-STOP</button>
+  <div class="estop-secondary">
+    <button class="btn btn-accent" onclick="action('/estop/claim', this)">Claim</button>
+    <button class="btn btn-outline-green" onclick="action('/estop/release', this)">Release</button>
   </div>
 </div>
 
-<div class="section">
-  <div class="section-title">Voice Pipeline</div>
-  <div class="btn-row">
-    <button class="btn btn-start" onclick="action('/voice/start')">Start</button>
-    <button class="btn btn-stop" onclick="action('/voice/stop')">Stop</button>
+<!-- Voice Pipeline -->
+<div class="card">
+  <div class="card-label">Voice Pipeline</div>
+  <div class="pipeline-row">
+    <button class="btn btn-accent" onclick="action('/voice/start', this)">Start</button>
+    <button class="btn btn-outline-orange" onclick="action('/voice/stop', this)">Stop</button>
+  </div>
+  <div id="voice-progress" style="display:none; margin-top:14px;">
+    <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+    <div class="progress-label" id="progress-label">Initializing...</div>
+    <div class="voice-log" id="voice-log"></div>
   </div>
 </div>
 
-<div class="section" id="voice-progress" style="display:none">
-  <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
-  <div class="progress-label" id="progress-label">Initializing...</div>
-  <div class="voice-log" id="voice-log"></div>
-</div>
-
-<div class="section">
-  <div class="section-title">Camera Feed</div>
-  <div class="cam-controls">
+<!-- Camera -->
+<div class="card">
+  <div class="card-label">Camera</div>
+  <div class="cam-bar">
     <select id="cam-select" class="cam-select">
       <option value="front">Front</option>
       <option value="front_right">Front Right</option>
@@ -480,36 +667,43 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <option value="right">Right</option>
       <option value="back">Back</option>
     </select>
-    <button class="btn btn-start btn-cam" onclick="startCam()">Start</button>
-    <button class="btn btn-stop btn-cam" id="btn-cam-stop" onclick="stopCam()" disabled>Stop</button>
+    <button class="btn btn-accent" style="flex:0 0 auto; padding:12px 20px;" onclick="startCam()">Stream</button>
+    <button class="btn btn-outline-red" id="btn-cam-stop" style="flex:0 0 auto; padding:12px 20px;" onclick="stopCam()" disabled>Stop</button>
   </div>
-  <div class="cam-container">
+  <div class="cam-frame">
     <img id="cam-feed" class="cam-feed" alt="Camera feed">
-    <div id="cam-placeholder" class="cam-placeholder">Camera Off</div>
+    <div id="cam-placeholder" class="cam-placeholder">
+      <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+      No feed
+    </div>
   </div>
 </div>
 
-<div class="section">
-  <div class="section-title">Log</div>
-  <div class="log" id="log"></div>
+<!-- Log -->
+<div class="card">
+  <div class="card-label">Activity</div>
+  <div class="log-container" id="log">
+    <div class="log-empty">Waiting for events...</div>
+  </div>
 </div>
 
 <script>
 const logEl = document.getElementById('log');
+let logStarted = false;
 
 function log(msg, cls) {
+  if (!logStarted) { logEl.innerHTML = ''; logStarted = true; }
   const d = document.createElement('div');
   d.className = 'log-entry ' + (cls || '');
-  const t = new Date().toLocaleTimeString();
-  d.textContent = t + ' ' + msg;
+  const t = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  d.innerHTML = '<span class="ts">' + t + '</span><span class="msg">' + msg.replace(/</g,'&lt;') + '</span>';
   logEl.prepend(d);
-  // Keep log size manageable
   while (logEl.children.length > 50) logEl.lastChild.remove();
 }
 
-function setDot(id, color) {
+function setIndicator(id, color) {
   const el = document.getElementById(id);
-  el.className = 'dot dot-' + color;
+  if (el) el.className = 'indicator ind-' + color;
 }
 
 let prevVoice = null;
@@ -557,10 +751,11 @@ async function pollLogs() {
 
 function updateStatus(data) {
   function set(id, val) {
-    document.getElementById('s-' + id).textContent = val;
+    const el = document.getElementById('s-' + id);
+    if (el) el.textContent = val;
     const color = val === 'running' || val === 'active' ? 'green' :
                   val === 'stopped' ? 'red' : 'yellow';
-    setDot('dot-' + id, color);
+    setIndicator('dot-' + id, color);
   }
   set('riva', data.riva);
   set('ollama', data.ollama);
@@ -593,23 +788,30 @@ async function pollStatus() {
   } catch(e) {}
 }
 
-async function action(path) {
+async function action(path, btnEl) {
+  if (btnEl && !btnEl.classList.contains('estop-btn')) {
+    btnEl.classList.add('btn-loading');
+    btnEl.disabled = true;
+  }
   try {
-    log('>> ' + path, 'log-warn');
+    log(path, 'log-warn');
     const r = await fetch(path, {method: 'POST'});
     const data = await r.json();
     log(data.message, data.ok ? 'log-ok' : 'log-err');
     pollStatus();
   } catch(e) {
     log('Request failed: ' + e, 'log-err');
+  } finally {
+    if (btnEl && !btnEl.classList.contains('estop-btn')) {
+      btnEl.classList.remove('btn-loading');
+      btnEl.disabled = false;
+    }
   }
 }
 
-// Poll every 2 seconds
 pollStatus();
 setInterval(pollStatus, 2000);
 
-// Camera feed
 let camActive = false;
 
 function startCam() {
@@ -621,7 +823,7 @@ function startCam() {
   ph.style.display = 'none';
   document.getElementById('btn-cam-stop').disabled = false;
   camActive = true;
-  log('Camera started: ' + source, 'log-ok');
+  log('Camera: ' + source, 'log-ok');
 }
 
 function stopCam() {
@@ -632,7 +834,7 @@ function stopCam() {
   ph.style.display = 'block';
   document.getElementById('btn-cam-stop').disabled = true;
   camActive = false;
-  log('Camera stopped', 'log-warn');
+  log('Camera off', 'log-warn');
 }
 
 document.getElementById('cam-select').addEventListener('change', function() {

@@ -29,5 +29,8 @@ models/kws/
 yolov8n.pt
 yolov8s-worldv2.pt
 
+# MkDocs build output
+site/
+
 # Robot-specific maps (environment-dependent)
 maps/
