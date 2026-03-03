@@ -1,20 +1,19 @@
 # Boston Dynamics SDK (pinned to match robot 5.0.1.1)
 bosdyn-client==5.0.1.1
 bosdyn-mission==5.0.1.1
-bosdyn-choreography-client==5.0.1.1
-bosdyn-orbit==5.0.1.1
 
 # Utilities
 python-dotenv==1.0.1
 numpy>=1.19.0,<2.0.0
 requests==2.26.0
 
+# Dartmouth cloud inference (LLM, VLM, auth)
+langchain-dartmouth>=0.3.0
+langchain-core>=0.3.0
+
 # Voice Control dependencies
-nvidia-riva-client>=2.17.0
 sounddevice>=0.4.6
 webrtcvad>=2.0.10
-grpcio>=1.60.0
-grpcio-tools>=1.60.0
 
 # TTS — sherpa-onnx Kokoro (bundles own ONNX runtime, aarch64 wheels for Jetson)
 sherpa-onnx>=1.12.0

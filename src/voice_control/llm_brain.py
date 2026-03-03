@@ -1,35 +1,34 @@
-"""LLM Brain for Spot — conversational robot control via Ollama structured JSON.
+"""LLM Brain for Spot — conversational robot control via Dartmouth cloud APIs.
 
-Uses Ollama's format="json" to guarantee valid JSON output from the model.
-The model decides which action to perform (if any) AND produces a spoken
-response, all in a single JSON object. No tool calling protocol needed —
-small models are much more reliable at filling in JSON fields.
+Uses ChatDartmouth (langchain-dartmouth) for LLM command parsing and VLM scene
+description.  The LLM (on-prem meta.llama-3-1-8b-instruct, free/unlimited)
+receives the action catalog in the system prompt and returns a JSON object
+containing action(s) + spoken response.  The VLM (cloud
+openai.gpt-4.1-mini-2025-04-14) handles multimodal "describe" queries.
 
-Architecture inspired by Boston Dynamics' "Robots That Can Chat" demo, adapted
-for local inference on Jetson AGX Orin via Ollama.
-
-Models (recommended):
-    ollama pull qwen2.5:7b       # Good balance of speed + reasoning
-    ollama pull qwen2.5:14b      # Best quality, slower (~1-3s on Jetson)
-    ollama pull qwen2.5:3b       # Fastest, less conversational
+Replaces the former Ollama-based inference (qwen2.5:7b / qwen2.5vl:7b).
 """
 
 import json
 import time
 import base64
-import requests
 from typing import Optional, Dict, Any, List
+
+from langchain_dartmouth.llms import ChatDartmouth
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+import sys, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from config import (
+    LLM_MODEL, VLM_MODEL, LLM_TEMPERATURE, LLM_MAX_TOKENS, VLM_MAX_TOKENS,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL = "qwen2.5:7b"
-VLM_MODEL = "qwen2.5vl:7b"
-OLLAMA_URL = "http://localhost:11434"
+DEFAULT_MODEL = LLM_MODEL
 MAX_HISTORY = 12          # messages (6 user + 6 assistant exchanges)
 REQUEST_TIMEOUT = 30.0    # seconds per request
-FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
-VLM_TIMEOUT = 60.0       # seconds — VLM inference is slower
 
 # ---------------------------------------------------------------------------
 # System prompt — includes action catalog and JSON output schema
@@ -103,136 +102,65 @@ User: "Go to the red chair"
 
 
 class SpotBrain:
-    """Conversational LLM brain for Spot robot using Ollama structured JSON.
+    """Conversational LLM brain for Spot robot using Dartmouth cloud APIs.
 
-    The model receives the action catalog in the system prompt and responds
-    with a JSON object containing action + response. Ollama enforces valid
-    JSON at the grammar level, so parsing is reliable.
+    The LLM receives the action catalog in the system prompt and responds with
+    a JSON object containing action + response.  ChatDartmouth handles auth and
+    transport; we parse the returned text as JSON.
     """
 
-    def __init__(self, model: str = DEFAULT_MODEL, ollama_url: str = OLLAMA_URL):
+    def __init__(self, model: str = DEFAULT_MODEL):
         self.model = model
-        self.ollama_url = ollama_url
-        self.history: List[Dict[str, Any]] = []
-        self._available = None  # cached availability check
-        self._first_request = True
-        self._vlm_warmed = False
+        self.history: List = []  # LangChain message objects
+        self._llm: ChatDartmouth | None = None
+        self._vlm: ChatDartmouth | None = None
+
+    # -- lazy LLM / VLM construction (created on first use) ----------------
+
+    def _get_llm(self) -> ChatDartmouth:
+        if self._llm is None:
+            self._llm = ChatDartmouth(
+                model_name=self.model,
+                temperature=LLM_TEMPERATURE,
+                max_tokens=LLM_MAX_TOKENS,
+            )
+        return self._llm
+
+    def _get_vlm(self) -> ChatDartmouth:
+        if self._vlm is None:
+            self._vlm = ChatDartmouth(
+                model_name=VLM_MODEL,
+                max_tokens=VLM_MAX_TOKENS,
+            )
+        return self._vlm
 
     def is_available(self) -> bool:
-        """Check if Ollama is running and the model is pulled."""
-        if self._available is not None:
-            return self._available
+        """Quick connectivity check for the Dartmouth Chat API."""
         try:
-            r = requests.get(f"{self.ollama_url}/api/tags", timeout=3)
-            if r.status_code != 200:
-                self._available = False
-                return False
-            models = [m["name"] for m in r.json().get("models", [])]
-            found = self.model in models or f"{self.model}:latest" in models
-            if not found:
-                print(f"[Brain] Model '{self.model}' not found. Available: {models}")
-                print(f"[Brain] Run: ollama pull {self.model}")
-            self._available = found
-            return found
-        except Exception:
-            self._available = False
+            llm = self._get_llm()
+            # A lightweight invoke to confirm the model responds
+            llm.invoke([HumanMessage(content="ping")])
+            return True
+        except Exception as e:
+            print(f"[Brain] Dartmouth API not reachable: {e}")
             return False
 
     def warm_up(self):
-        """Send a trivial prompt to pre-load model into VRAM."""
-        if not self.is_available():
-            return
-        print(f"[Brain] Warming up model '{self.model}'...")
-        t0 = time.time()
-        try:
-            # Use the actual system prompt so Ollama caches its KV state.
-            # This makes the first real command fast (~0.2s prompt eval
-            # instead of ~1.5s cold).
-            warm_state = {"battery_percent": "unknown", "is_powered": True,
-                          "is_standing": "unknown", "saved_locations": "none"}
-            messages = self._build_messages("ping", warm_state)
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": "30m",
-                    "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 4096},
-                },
-                timeout=FIRST_REQUEST_TIMEOUT,
-            )
-            elapsed = time.time() - t0
-            self._first_request = False
-            if r.status_code == 200:
-                print(f"[Brain] Model warm in {elapsed:.1f}s (prompt cached)")
-            else:
-                print(f"[Brain] Warm-up got status {r.status_code}")
-        except Exception as e:
-            print(f"[Brain] Warm-up error: {e}")
+        """No-op — cloud models do not need local VRAM warm-up."""
+        pass
 
     def warm_up_vlm(self):
-        """Pre-load VLM into VRAM by sending a tiny image.
+        """No-op — cloud models do not need local VRAM warm-up."""
+        pass
 
-        Called on-demand before first VLM query (not at startup) because
-        LLM and VLM share VRAM on Jetson — warming VLM would evict LLM.
-        """
-        if self._vlm_warmed:
-            return
-        print(f"[Brain] Warming up VLM '{VLM_MODEL}'...")
-        t0 = time.time()
-        try:
-            # 1x1 white JPEG (smallest valid image)
-            tiny_jpeg = base64.b64encode(
-                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01'
-                b'\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07'
-                b'\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13'
-                b'\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c'
-                b'(7),01444\x1f\'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00'
-                b'\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01'
-                b'\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01'
-                b'\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10'
-                b'\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00'
-                b'\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07"q'
-                b'\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n'
-                b'\x16\x17\x18\x19\x1a%&\'()*456789:CDEFGHIJSTUVWXYZcdefghij'
-                b'stuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95'
-                b'\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa'
-                b'\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6'
-                b'\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1'
-                b'\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5'
-                b'\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?'
-                b'\x00\xfb\xd2\x8a(\x03\xff\xd9'
-            ).decode()
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": VLM_MODEL,
-                    "messages": [{"role": "user", "content": "hi", "images": [tiny_jpeg]}],
-                    "stream": False,
-                    "keep_alive": "5m",
-                    "options": {"num_gpu": 99, "num_predict": 5},
-                },
-                timeout=FIRST_REQUEST_TIMEOUT,
-            )
-            elapsed = time.time() - t0
-            self._vlm_warmed = True
-            if r.status_code == 200:
-                print(f"[Brain] VLM warm in {elapsed:.1f}s")
-            else:
-                print(f"[Brain] VLM warm-up got status {r.status_code}")
-        except Exception as e:
-            print(f"[Brain] VLM warm-up error: {e}")
-
-    def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Build the message list for the Ollama chat API."""
+    def _build_messages(self, transcript: str, state: Dict[str, Any]) -> list:
+        """Build the LangChain message list for ChatDartmouth."""
         state_lines = "\n".join(f"- {k}: {v}" for k, v in state.items())
         system_content = SYSTEM_PROMPT + f"\n\nCurrent robot state:\n{state_lines}"
 
-        messages = [{"role": "system", "content": system_content}]
+        messages = [SystemMessage(content=system_content)]
         messages.extend(self.history)
-        messages.append({"role": "user", "content": transcript})
+        messages.append(HumanMessage(content=transcript))
 
         return messages
 
@@ -246,8 +174,8 @@ class SpotBrain:
         Returns:
             Dict with keys:
                 "actions": list of {"intent": str, "params": dict}
-                "response": str  — what the robot says back
-                "raw_llm": str   — raw LLM output (for debugging)
+                "response": str  -- what the robot says back
+                "raw_llm": str   -- raw LLM output (for debugging)
         """
         if state is None:
             state = {}
@@ -255,37 +183,11 @@ class SpotBrain:
         messages = self._build_messages(transcript, state)
 
         try:
-            timeout = FIRST_REQUEST_TIMEOUT if self._first_request else REQUEST_TIMEOUT
-            if self._first_request:
-                print("[Brain] First request — loading model, this may take a moment...")
+            llm = self._get_llm()
 
             t0 = time.time()
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": "30m",
-                    "options": {
-                        "temperature": 0.3,
-                        "top_p": 0.9,
-                        "num_predict": 150,
-                        "num_gpu": 99,
-                        "num_ctx": 4096,
-                    },
-                },
-                timeout=timeout,
-            )
-            self._first_request = False
-
-            if r.status_code != 200:
-                print(f"[Brain] Ollama error {r.status_code}: {r.text[:200]}")
-                return {"actions": [], "response": "", "raw_llm": ""}
-
-            message = r.json().get("message", {})
-            content = (message.get("content") or "").strip()
+            result = llm.invoke(messages)
+            content = (result.content or "").strip()
             elapsed = time.time() - t0
             print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
 
@@ -296,8 +198,18 @@ class SpotBrain:
             try:
                 data = json.loads(content)
             except json.JSONDecodeError:
-                print(f"[Brain] Failed to parse JSON: {content[:200]}")
-                return {"actions": [], "response": content, "raw_llm": content}
+                # Model may wrap JSON in markdown code fences -- try to extract
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        data = json.loads(json_match.group())
+                    except json.JSONDecodeError:
+                        print(f"[Brain] Failed to parse JSON: {content[:200]}")
+                        return {"actions": [], "response": content, "raw_llm": content}
+                else:
+                    print(f"[Brain] Failed to parse JSON: {content[:200]}")
+                    return {"actions": [], "response": content, "raw_llm": content}
 
             response = str(data.get("response", "")).strip()
 
@@ -330,9 +242,9 @@ class SpotBrain:
             else:
                 print("[Brain] No action (conversation only)")
 
-            # Update conversation history
-            self.history.append({"role": "user", "content": transcript})
-            self.history.append({"role": "assistant", "content": content})
+            # Update conversation history (LangChain message objects)
+            self.history.append(HumanMessage(content=transcript))
+            self.history.append(AIMessage(content=content))
 
             if len(self.history) > MAX_HISTORY:
                 self.history = self.history[-MAX_HISTORY:]
@@ -343,13 +255,6 @@ class SpotBrain:
                 "raw_llm": content,
             }
 
-        except requests.Timeout:
-            print(f"[Brain] Timeout after {timeout}s — model may be loading")
-            return {"actions": [], "response": "", "raw_llm": ""}
-        except requests.ConnectionError:
-            print("[Brain] Cannot connect to Ollama. Is it running?")
-            self._available = False
-            return {"actions": [], "response": "", "raw_llm": ""}
         except Exception as e:
             print(f"[Brain] Error: {e}")
             return {"actions": [], "response": "", "raw_llm": ""}
@@ -417,20 +322,11 @@ class SpotBrain:
         Returns:
             VLM's text response describing the image.
         """
-        # On-demand VLM warm-up (first call only)
-        if not self._vlm_warmed:
-            self.warm_up_vlm()
-
         image_b64 = base64.b64encode(image_bytes).decode()
 
-        vlm_prompt = (
-            f"You are Spot, a Boston Dynamics robot at Dartmouth College. "
-            f"This image is what you see right now through your own camera eyes. "
-            f"A user asked: \"{question}\". "
-        )
-        if yolo_hint:
-            vlm_prompt += f"{yolo_hint} "
-        vlm_prompt += (
+        vlm_system = (
+            "You are Spot, a Boston Dynamics robot at Dartmouth College. "
+            "This image is what you see right now through your own camera eyes. "
             "Respond naturally in first person as if you are looking around, "
             "NOT as if you are analyzing a photograph. Never mention 'image', "
             "'photo', 'picture', 'angle', or 'vantage point'. "
@@ -438,38 +334,29 @@ class SpotBrain:
             "Be specific about objects, people, and surroundings."
         )
 
+        user_text = f'A user asked: "{question}".'
+        if yolo_hint:
+            user_text += f" {yolo_hint}"
+
+        # Multimodal message with image_url (OpenAI-compatible format)
+        user_msg = HumanMessage(content=[
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {
+                "url": f"data:image/jpeg;base64,{image_b64}"
+            }},
+        ])
+
         try:
+            vlm = self._get_vlm()
             print(f"[Brain] Querying VLM ({VLM_MODEL})...")
             t0 = time.time()
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": VLM_MODEL,
-                    "messages": [
-                        {"role": "user", "content": vlm_prompt, "images": [image_b64]}
-                    ],
-                    "stream": False,
-                    "keep_alive": "5m",
-                    "options": {"num_gpu": 99, "num_predict": 200},
-                },
-                timeout=VLM_TIMEOUT,
-            )
+            result = vlm.invoke([SystemMessage(content=vlm_system), user_msg])
             elapsed = time.time() - t0
 
-            if r.status_code != 200:
-                print(f"[Brain] VLM error {r.status_code}: {r.text[:200]}")
-                return "Sorry, I couldn't process the image right now."
-
-            content = r.json().get("message", {}).get("content", "").strip()
+            content = (result.content or "").strip()
             print(f"[Brain] VLM responded in {elapsed:.1f}s")
             return content or "I can see the image but I'm having trouble describing it."
 
-        except requests.Timeout:
-            print(f"[Brain] VLM timeout after {VLM_TIMEOUT}s")
-            return "Sorry, the image analysis took too long."
-        except requests.ConnectionError:
-            print("[Brain] VLM cannot connect to Ollama")
-            return "Sorry, I can't access my vision system right now."
         except Exception as e:
             print(f"[Brain] VLM error: {e}")
             return "Sorry, something went wrong with my vision."
@@ -505,18 +392,18 @@ def process_with_brain(transcript: str, state: Optional[Dict[str, Any]] = None,
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("=" * 60)
-    print("Spot LLM Brain — Interactive Test (Structured JSON)")
+    print("Spot LLM Brain — Interactive Test (Dartmouth API)")
     print("=" * 60)
 
-    import sys
-    model = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MODEL
+    import sys as _sys
+    model = _sys.argv[1] if len(_sys.argv) > 1 else DEFAULT_MODEL
     brain = SpotBrain(model=model)
 
     if not brain.is_available():
-        print(f"\nOllama is not running or model '{model}' is not available.")
-        print(f"1. Start Ollama:  sudo systemctl start ollama")
-        print(f"2. Pull model:    ollama pull {model}")
-        sys.exit(1)
+        print(f"\nDartmouth Chat API not reachable for model '{model}'.")
+        print("1. Ensure DARTMOUTH_CHAT_API_KEY is set in .env")
+        print("2. Ensure you are on campus WiFi")
+        _sys.exit(1)
 
     print(f"Using model: {model}")
     print("Type messages as if speaking to Spot. Type 'quit' to exit.\n")

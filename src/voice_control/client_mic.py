@@ -2,7 +2,7 @@
 Voice control client for Spot with LLM brain.
 
 Architecture (Boston Dynamics "Robots That Can Chat" style):
-    Mic → VAD → Whisper ASR → LLM Brain (state + history + personality) → Action + Response
+    Mic -> VAD -> Dartmouth STT -> LLM Brain (state + history + personality) -> Action + Response
 
 Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
@@ -25,7 +25,6 @@ from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
 import webrtcvad
-import grpc
 
 
 # Convert SIGTERM to KeyboardInterrupt so the main loop's finally block
@@ -37,12 +36,11 @@ def _sigterm_handler(signum, frame):
 
 signal.signal(signal.SIGTERM, _sigterm_handler)
 
-from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
-from asr_pb2_grpc import ASRStub
+from dartmouth_stt import transcribe as dartmouth_transcribe
 from intent import parse_intent
 from llm_brain import SpotBrain, DEFAULT_MODEL
 from spot_tts import SpotTTS
-from audio_feedback import beep
+from audio_feedback import beep, init_audio_feedback
 
 class VoiceState(Enum):
     WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
@@ -190,34 +188,6 @@ def float32_to_pcm16(audio: np.ndarray) -> bytes:
 
 
 # ============================================================================
-# ASR Communication
-# ============================================================================
-def send_to_asr(stub, pcm_bytes: bytes) -> str:
-    """Stream audio to ASR server and return transcript."""
-    def request_generator():
-        # Send config first
-        yield StreamingRequest(config=StreamingConfig(
-            language_code="en",
-            sample_rate_hz=SAMPLE_RATE,
-            enable_punctuation=True
-        ))
-        # Send audio chunks
-        chunk_size = BYTES_PER_FRAME
-        for i in range(0, len(pcm_bytes), chunk_size):
-            yield StreamingRequest(audio=AudioChunk(pcm16=pcm_bytes[i:i+chunk_size]))
-
-    try:
-        responses = stub.StreamingRecognize(request_generator())
-        for response in responses:
-            if response.is_final:
-                return response.transcript.strip()
-        return ""
-    except Exception as e:
-        print(f"[ASR error: {e}]")
-        return ""
-
-
-# ============================================================================
 # Intent Execution
 # ============================================================================
 def execute_on_spot(intent: dict) -> bool:
@@ -306,8 +276,11 @@ WAKE_PHRASE_PATTERN = re.compile(
 def main():
 
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
-    parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
-    parser.add_argument("--device", type=int, default=24, help="Audio device index (default: 24 = XVF3800)")
+    parser.add_argument("--list-devices", action="store_true", help="List audio input devices and exit")
+    parser.add_argument("--list-output-devices", action="store_true", help="List audio output devices and exit")
+    parser.add_argument("--device", type=int, default=24, help="Audio input device index (default: 24 = XVF3800)")
+    parser.add_argument("--output-device", type=str, default=None,
+                        help="Audio output device name or index for TTS and beeps (e.g. 'bluez_sink.XX' or 7)")
     parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
@@ -317,6 +290,24 @@ def main():
     if args.list_devices:
         print(sd.query_devices())
         return
+
+    if args.list_output_devices:
+        print("Output-capable audio devices:")
+        for i, dev in enumerate(sd.query_devices()):
+            if dev["max_output_channels"] > 0:
+                print(f"  [{i}] {dev['name']}  (outputs: {dev['max_output_channels']})")
+        return
+
+    def _parse_output_device(dev_arg):
+        """Resolve --output-device to int index or string name."""
+        if dev_arg is None:
+            return None
+        try:
+            return int(dev_arg)
+        except ValueError:
+            return dev_arg  # string device name
+
+    output_device = _parse_output_device(args.output_device)
 
     # ========================================================================
     # Startup
@@ -341,24 +332,17 @@ def main():
     energy_threshold = rolling_noise_rms * ENERGY_THRESHOLD_MULTIPLIER
     print(f"[Energy threshold: {energy_threshold:.5f} ({ENERGY_THRESHOLD_MULTIPLIER}x noise, adaptive)]")
 
-    # Connect to ASR
-    asr_server = "localhost:50055"
-    print(f"\nConnecting to ASR server at {asr_server}...")
-    channel = grpc.insecure_channel(asr_server)
-    stub = ASRStub(channel)
+    # Initialize audio output device for beeps
+    if output_device is not None:
+        print(f"Audio output device: {output_device}")
+        init_audio_feedback(output_device)
 
     # Initialize LLM Brain
     brain = None
     if not args.no_brain:
         print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
         brain = SpotBrain(model=DEFAULT_MODEL)
-        if brain.is_available():
-            print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
-            brain.warm_up()
-        else:
-            print(f"[Brain] Ollama not available — falling back to regex-only mode")
-            print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
-            brain = None
+        print(f"[Brain] Ready — model: {DEFAULT_MODEL} (Dartmouth API)")
     else:
         print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
 
@@ -366,7 +350,11 @@ def main():
     tts = None
     if not args.no_tts:
         print("\nInitializing TTS...")
-        tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic)
+        tts = SpotTTS(
+            output_device=output_device,
+            on_mute=_mute_mic,
+            on_unmute=_unmute_mic,
+        )
         if tts.is_available():
             print("[TTS] Ready (mic will mute during playback)")
         else:
@@ -572,7 +560,7 @@ def main():
                         if speech_frame_count >= MAX_UTTERANCE_FRAMES:
                             print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                             safety_only = (state == VoiceState.WAKE_WORD)
-                            result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                            result = process_utterance(speech_buffer, speech_float_buffer,
                                                        brain, safety_only=safety_only, tts=tts,
                                                        has_wake_detector=bool(wake_detector))
                             is_speaking = False
@@ -611,7 +599,7 @@ def main():
                             if elapsed_silence > effective_silence:
                                 print(f"\n>>> Processing...")
                                 safety_only = (state == VoiceState.WAKE_WORD)
-                                result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                                result = process_utterance(speech_buffer, speech_float_buffer,
                                                            brain, safety_only=safety_only, tts=tts,
                                                            has_wake_detector=bool(wake_detector))
                                 is_speaking = False
@@ -681,27 +669,27 @@ def _drain_audio_queue():
 MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
 
 
-def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
+def process_utterance(speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
                       has_wake_detector=False):
-    """Process recorded speech through ASR then LLM brain (or regex fallback).
+    """Process recorded speech through STT then LLM brain (or regex fallback).
 
     Args:
         safety_only: If True, only execute safety commands (stop/freeze/estop).
                      Non-safety speech is discarded. Used when wake word not detected.
         tts: SpotTTS instance for spoken responses (None = no speech output).
-        has_wake_detector: If True, dedicated wake word detector is active —
+        has_wake_detector: If True, dedicated wake word detector is active --
                           skip ASR-based wake phrase detection (detector handles it).
 
     Returns:
         "wake_detected" if a wake phrase was found (ASR fallback only), None otherwise.
 
     Flow:
-        Audio → Whisper ASR → transcript
-        transcript → safety check (instant regex for stop/estop/freeze)
-        transcript → wake phrase check (ASR fallback, only if no dedicated detector)
-        transcript → LLM brain (state + history → action + response)
-        OR (legacy) → regex parser → intent → dispatch
+        Audio -> Dartmouth STT API -> transcript
+        transcript -> safety check (instant regex for stop/estop/freeze)
+        transcript -> wake phrase check (ASR fallback, only if no dedicated detector)
+        transcript -> LLM brain (state + history -> action + response)
+        OR (legacy) -> regex parser -> intent -> dispatch
     """
     if not speech_float_buffer:
         return None
@@ -717,14 +705,14 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         print(f"[Too short ({duration:.2f}s) — skipping]")
         return None
 
-    # Convert to PCM16 and send to ASR
+    # Convert to PCM16 and send to Dartmouth STT
     pcm_bytes = float32_to_pcm16(audio_float)
-    print(f"[Sending {duration:.1f}s to ASR...]")
+    print(f"[Sending {duration:.1f}s to Dartmouth STT...]")
 
     t_asr_start = time.time()
-    transcript = send_to_asr(stub, pcm_bytes)
+    transcript = dartmouth_transcribe(pcm_bytes)
     t_asr_end = time.time()
-    print(f"[Timing] ASR: {t_asr_end - t_asr_start:.2f}s")
+    print(f"[Timing] STT: {t_asr_end - t_asr_start:.2f}s")
 
     if not transcript:
         print("[No speech recognized]")

@@ -116,6 +116,16 @@ class AudioFeedback:
 beep = AudioFeedback()
 
 
+def init_audio_feedback(output_device=None):
+    """Reinitialize the beep singleton with a specific output device.
+
+    Call this after CLI argument parsing to route beeps to the chosen
+    output device (e.g. a Bluetooth speaker).
+    """
+    global beep
+    beep = AudioFeedback(output_device=output_device)
+
+
 # ---------------------------------------------------------------------------
 # CLI test
 # ---------------------------------------------------------------------------
