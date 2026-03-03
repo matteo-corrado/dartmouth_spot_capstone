@@ -25,7 +25,7 @@ except ImportError:
 #   0=af  1=af_bella  2=af_nicole  3=af_sarah  4=af_sky
 #   5=am_adam  6=am_michael  7=bf_emma  8=bf_isabella  9=bm_george  10=bm_lewis
 DEFAULT_SPEAKER_ID = 3       # af_sarah — warm/natural American female
-DEFAULT_SPEED = 1.1
+DEFAULT_SPEED = 1.3
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models" / "tts" / "kokoro-en-v0_19"
 
 
@@ -165,8 +165,25 @@ class SpotTTS:
             audio = self._tts.generate(text, sid=self.speaker_id, speed=self.speed)
 
             if audio.samples is not None and len(audio.samples) > 0:
-                sd.play(audio.samples, samplerate=audio.sample_rate,
-                        device=self.output_device)
+                samples = np.array(audio.samples, dtype=np.float32)
+                rate = audio.sample_rate  # 24000 for Kokoro
+
+                # Resample if output device doesn't support native rate
+                if self.output_device is not None:
+                    try:
+                        dev_info = sd.query_devices(self.output_device)
+                        dev_rate = int(dev_info['default_samplerate'])
+                        if dev_rate != rate:
+                            # Simple linear interpolation resample
+                            ratio = dev_rate / rate
+                            n_out = int(len(samples) * ratio)
+                            indices = np.arange(n_out) / ratio
+                            samples = np.interp(indices, np.arange(len(samples)), samples)
+                            rate = dev_rate
+                    except Exception:
+                        pass
+
+                sd.play(samples, samplerate=rate, device=self.output_device)
                 sd.wait()
 
         except Exception as e:

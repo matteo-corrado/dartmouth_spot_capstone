@@ -307,7 +307,8 @@ def main():
 
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
-    parser.add_argument("--device", type=int, default=24, help="Audio device index (default: 24 = XVF3800)")
+    parser.add_argument("--device", type=int, default=25, help="Mic input device index (default: 25 = XVF3800)")
+    parser.add_argument("--output-device", type=int, default=24, help="Speaker output device index (default: 24 = UACDemoV1.0)")
     parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
@@ -366,14 +367,18 @@ def main():
     tts = None
     if not args.no_tts:
         print("\nInitializing TTS...")
-        tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic)
+        tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic,
+                      output_device=args.output_device)
         if tts.is_available():
-            print("[TTS] Ready (mic will mute during playback)")
+            print(f"[TTS] Ready (output device: {args.output_device}, mic will mute during playback)")
         else:
             print("[TTS] Not available (install piper-tts). Continuing without speech output.")
             tts = None
     else:
         print("\n[TTS] Disabled (--no-tts flag)")
+
+    # Point audio feedback beeps at the speaker
+    beep.device = args.output_device
 
     # Initialize VAD
     vad = webrtcvad.Vad(VAD_LEVEL)

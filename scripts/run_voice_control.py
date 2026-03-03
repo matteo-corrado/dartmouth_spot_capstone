@@ -253,7 +253,9 @@ def main():
     parser.add_argument("--no-wake-word", action="store_true",
                         help="Always listening (skip wake word)")
     parser.add_argument("--device", type=int, default=None,
-                        help="Audio device index (default: 24 = XVF3800)")
+                        help="Mic input device index (default: 25 = XVF3800)")
+    parser.add_argument("--output-device", type=int, default=None,
+                        help="Speaker output device index (default: 24 = UACDemoV1.0)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -315,6 +317,8 @@ def main():
         client_cmd.append("--no-wake-word")
     if args.device is not None:
         client_cmd.extend(["--device", str(args.device)])
+    if args.output_device is not None:
+        client_cmd.extend(["--output-device", str(args.output_device)])
 
     try:
         client_proc = subprocess.run(client_cmd, cwd=str(VOICE_DIR))
