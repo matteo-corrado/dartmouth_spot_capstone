@@ -114,7 +114,9 @@ def preload_models():
     def _load():
         try:
             _get_person_model()
-            _get_world_model()
+            # YOLO-World is heavy (~28MB, slow CPU init) and only needed for
+            # "go to <object>" commands — lazy-load on first use instead of
+            # blocking startup and starving the audio thread.
         except Exception as e:
             print(f"[VisualNav] Pre-load failed (will retry on first use): {e}")
 

@@ -25,7 +25,7 @@ except ImportError:
 #   0=af  1=af_bella  2=af_nicole  3=af_sarah  4=af_sky
 #   5=am_adam  6=am_michael  7=bf_emma  8=bf_isabella  9=bm_george  10=bm_lewis
 DEFAULT_SPEAKER_ID = 3       # af_sarah — warm/natural American female
-DEFAULT_SPEED = 1.3
+DEFAULT_SPEED = 1.1
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models" / "tts" / "kokoro-en-v0_19"
 
 

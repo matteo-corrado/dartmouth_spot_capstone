@@ -44,6 +44,32 @@ from llm_brain import SpotBrain, DEFAULT_MODEL
 from spot_tts import SpotTTS
 from audio_feedback import beep
 
+
+# ============================================================================
+# Device Lookup (by name, so index changes don't break things)
+# ============================================================================
+MIC_DEVICE_NAME = "XVF3800"          # reSpeaker XVF3800 4-Mic Array
+SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # USB speaker on Spot CORE I/O
+
+def _find_device_by_name(substring: str, kind: str = "input") -> int | None:
+    """Find audio device index by substring match on its name.
+
+    Args:
+        substring: Partial name to match (case-insensitive).
+        kind: "input" to require input channels, "output" for output channels.
+
+    Returns:
+        Device index or None if not found.
+    """
+    devices = sd.query_devices()
+    for i, dev in enumerate(devices):
+        if substring.lower() in dev["name"].lower():
+            if kind == "input" and dev["max_input_channels"] > 0:
+                return i
+            elif kind == "output" and dev["max_output_channels"] > 0:
+                return i
+    return None
+
 class VoiceState(Enum):
     WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
     LISTENING = auto()   # Wake word heard, waiting for speech
@@ -307,13 +333,28 @@ def main():
 
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
-    parser.add_argument("--device", type=int, default=25, help="Mic input device index (default: 25 = XVF3800)")
-    parser.add_argument("--output-device", type=int, default=24, help="Speaker output device index (default: 24 = UACDemoV1.0)")
+    parser.add_argument("--device", type=int, default=None, help="Mic input device index (auto-detected from XVF3800)")
+    parser.add_argument("--output-device", type=int, default=None, help="Speaker output device index (auto-detected from UACDemoV1.0)")
     parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
     parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
     args = parser.parse_args()
+
+    # Auto-detect devices by name if not explicitly specified
+    if args.device is None:
+        args.device = _find_device_by_name(MIC_DEVICE_NAME, "input")
+        if args.device is None:
+            print(f"ERROR: Could not find mic device matching '{MIC_DEVICE_NAME}'")
+            print("Run with --list-devices to see available devices, then pass --device <index>")
+            return
+        print(f"[Auto-detected mic: device {args.device} ({MIC_DEVICE_NAME})]")
+    if args.output_device is None:
+        args.output_device = _find_device_by_name(SPEAKER_DEVICE_NAME, "output")
+        if args.output_device is None:
+            print(f"WARNING: Could not find speaker matching '{SPEAKER_DEVICE_NAME}', using system default")
+        else:
+            print(f"[Auto-detected speaker: device {args.output_device} ({SPEAKER_DEVICE_NAME})]")
 
     if args.list_devices:
         print(sd.query_devices())
@@ -401,13 +442,9 @@ def main():
     else:
         print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
-    # Pre-load YOLO models in background (non-blocking, CPU only)
-    try:
-        from visual_nav import preload_models
-        preload_models()
-        print("[YOLO] Pre-loading models in background...")
-    except ImportError:
-        pass
+    # YOLO models (YOLOv8n, YOLO-World) lazy-load on first use.
+    # Pre-loading them at startup starves the audio thread (CPU-bound
+    # PyTorch init causes PortAudio input overflow and delays wake word).
 
     # Open audio stream (try stereo for XVF3800, fall back to mono)
     try:

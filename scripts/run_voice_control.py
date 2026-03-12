@@ -253,9 +253,9 @@ def main():
     parser.add_argument("--no-wake-word", action="store_true",
                         help="Always listening (skip wake word)")
     parser.add_argument("--device", type=int, default=None,
-                        help="Mic input device index (default: 25 = XVF3800)")
+                        help="Mic input device index (auto-detected from XVF3800)")
     parser.add_argument("--output-device", type=int, default=None,
-                        help="Speaker output device index (default: 24 = UACDemoV1.0)")
+                        help="Speaker output device index (auto-detected from UACDemoV1.0)")
     args = parser.parse_args()
 
     print("=" * 60)
