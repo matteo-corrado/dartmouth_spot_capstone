@@ -2,6 +2,8 @@
 
 Voice-controlled Boston Dynamics Spot robot powered by on-device LLM inference on NVIDIA Jetson AGX Orin. Built by the Dartmouth 25F capstone team.
 
+**Primary Engineer:** [Christian Nyamekye](https://github.com/ChristianNyamekye)
+
 ## What It Does
 
 Say **"Hey Spot, stand up"** and the robot stands. Ask **"What do you see?"** and it describes its surroundings using a vision-language model. Tell it **"go to the lab"** and it navigates there autonomously using a pre-recorded map.
