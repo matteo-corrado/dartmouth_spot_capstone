@@ -18,6 +18,7 @@ import json
 import time
 import base64
 import requests
+from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 # ---------------------------------------------------------------------------
@@ -102,6 +103,59 @@ User: "Go to the red chair"
 {"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}"""
 
 
+# ---------------------------------------------------------------------------
+# Knowledge packs — appended to the system prompt at import time.
+#
+# Currently always-on: every LLM call carries the full knowledge pack(s).
+# Cheap on qwen2.5:7b at the current pack size (~3 KB) and removes any need
+# for a "did the user mention the tour?" trigger heuristic, which is the
+# right call for the open-house demo where any visitor question may end up
+# being tour-relevant.
+#
+# Future improvements (deliberately not implemented now):
+#   1. Gate injection on intent — only attach tour_route.md when the user
+#      mentions tour/Thayer/a known stop name, to keep the default prompt
+#      smaller. Needs a trigger heuristic that doesn't miss; not worth the
+#      risk before a live demo.
+#   2. Add a dedicated `start_tour` dispatcher action that walks the full
+#      Thayer route waypoint list with narration at each stop, instead of
+#      relying on the LLM to chain the existing `tour` action with talking
+#      points. Cleaner UX, but a real new dispatch path — defer until after
+#      the demo and validate behind the existing `tour` action first.
+# ---------------------------------------------------------------------------
+_KNOWLEDGE_DIR = Path(__file__).parent / "knowledge"
+_KNOWLEDGE_FILES = ["tour_route.md"]
+
+
+def _load_knowledge_packs() -> str:
+    chunks = []
+    for name in _KNOWLEDGE_FILES:
+        path = _KNOWLEDGE_DIR / name
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            print(f"[Brain] Knowledge pack not found, skipping: {path}")
+            continue
+        except Exception as e:
+            print(f"[Brain] Failed to load knowledge pack {path}: {e}")
+            continue
+        chunks.append(f"=== KNOWLEDGE PACK: {name} ===\n{text}")
+    if not chunks:
+        return ""
+    return "\n\n".join(chunks)
+
+
+_KNOWLEDGE_TEXT = _load_knowledge_packs()
+if _KNOWLEDGE_TEXT:
+    SYSTEM_PROMPT = (
+        SYSTEM_PROMPT
+        + "\n\nYou also have the following reference knowledge. Use it to "
+          "answer questions and stay on-script when relevant. Do not invent "
+          "facts that aren't in here; if asked something not covered, say so.\n\n"
+        + _KNOWLEDGE_TEXT
+    )
+
+
 class SpotBrain:
     """Conversational LLM brain for Spot robot using Ollama structured JSON.
 
@@ -158,8 +212,8 @@ class SpotBrain:
                     "messages": messages,
                     "format": "json",
                     "stream": False,
-                    "keep_alive": "30m",
-                    "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 4096},
+                    "keep_alive": -1,
+                    "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 32768},
                 },
                 timeout=FIRST_REQUEST_TIMEOUT,
             )
@@ -173,10 +227,14 @@ class SpotBrain:
             print(f"[Brain] Warm-up error: {e}")
 
     def warm_up_vlm(self):
-        """Pre-load VLM into VRAM by sending a tiny image.
+        """Pre-load VLM into memory by sending a tiny image.
 
-        Called on-demand before first VLM query (not at startup) because
-        LLM and VLM share VRAM on Jetson — warming VLM would evict LLM.
+        Intended to be called eagerly at pipeline startup alongside warm_up().
+        Both models stay resident — Ollama is configured with
+        OLLAMA_MAX_LOADED_MODELS=2 and OLLAMA_KEEP_ALIVE=-1, and AGX Orin's
+        61 GiB unified memory has plenty of headroom for both. The lazy
+        fallback in query_vlm() remains as defense-in-depth in case eager
+        warm-up failed (e.g. Ollama not yet ready when client_mic starts).
         """
         if self._vlm_warmed:
             return
@@ -211,7 +269,7 @@ class SpotBrain:
                     "model": VLM_MODEL,
                     "messages": [{"role": "user", "content": "hi", "images": [tiny_jpeg]}],
                     "stream": False,
-                    "keep_alive": "5m",
+                    "keep_alive": -1,
                     "options": {"num_gpu": 99, "num_predict": 5},
                 },
                 timeout=FIRST_REQUEST_TIMEOUT,
@@ -267,13 +325,21 @@ class SpotBrain:
                     "messages": messages,
                     "format": "json",
                     "stream": False,
-                    "keep_alive": "30m",
+                    "keep_alive": -1,
                     "options": {
                         "temperature": 0.3,
                         "top_p": 0.9,
                         "num_predict": 150,
                         "num_gpu": 99,
-                        "num_ctx": 4096,
+                        # 32768 = qwen2.5:7b's native context max (no YaRN
+                        # rescaling needed). The injected knowledge pack
+                        # alone is ~4400 tokens, so 4096 silently truncates
+                        # history. Measured KV-cache cost on Jetson AGX Orin:
+                        # ~1.9 GB at this setting, against ~21 GB headroom
+                        # with both qwen2.5 + qwen2.5vl resident. warm_up()
+                        # passes the same num_ctx so Ollama doesn't reload
+                        # the model on the first real request.
+                        "num_ctx": 32768,
                     },
                 },
                 timeout=timeout,
@@ -449,7 +515,7 @@ class SpotBrain:
                         {"role": "user", "content": vlm_prompt, "images": [image_b64]}
                     ],
                     "stream": False,
-                    "keep_alive": "5m",
+                    "keep_alive": -1,
                     "options": {"num_gpu": 99, "num_predict": 200},
                 },
                 timeout=VLM_TIMEOUT,

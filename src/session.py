@@ -1,3 +1,4 @@
+
 # src/session.py
 from contextlib import contextmanager
 import time
@@ -60,59 +61,59 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
     lease = lease_client.take()
     lease_keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True)
 
-    # Power on and stand (optional)
-    if stand_on_enter:
-
-        # Check if robot is already powered before trying to power on
-        robot_state = state_client.get_robot_state()
-        is_powered = robot_state.power_state.motor_power_state == robot_state.power_state.STATE_ON
-
-        if not is_powered:
-            try:
-                robot.power_on(timeout_sec=20)
-            except Exception as e:
-                error_type = type(e).__name__
-                if "KeepaliveMotorsOff" in error_type or "KeepaliveMotorsOffError" in str(e):
-                    # Retry once: clear policies again and try power on
-                    print("[Session] Keepalive still blocking — clearing policies again and retrying...")
-                    _clear_keepalive_policies()
-                    try:
-                        robot.power_on(timeout_sec=20)
-                    except Exception:
-                        print("[Session] Warning: Cannot power on - keepalive still blocking motors.")
-                        print("[Session] Try releasing e-stop from tablet, then retry.")
-                        raise
-                elif "Estopped" in error_type or "EstoppedError" in str(e):
-                    print("[Session] Warning: Robot is e-stopped.")
-                    print("[Session] Release e-stop from the tablet, then retry.")
-                    raise
-                else:
-                    raise
-        
-        # Robot is powered (or we powered it on), now stand
-        try:
-            blocking_stand(cmd_client, timeout_sec=20)
-        except Exception as e:
-            print(f"[Session] Warning: Stand command failed: {e}")
-            # Don't raise - robot might already be standing or estop might be blocking
-            # Continue with session anyway
-
-    # Optional: Upload map and localize
-    if upload_map and map_path:
-        try:
-            from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
-            print("[Session] Uploading map...")
-            if upload_graph_and_snapshots(robot, map_path):
-                if auto_localize:
-                    print("[Session] Auto-localizing...")
-                    initialize_localization(robot, use_fiducial=True)
-            else:
-                print("[Session] Warning: Map upload failed")
-        except Exception as e:
-            print(f"[Session] Warning: Map upload/localization error: {e}")
-            # Don't fail the session if map upload fails
-
     try:
+        # Power on and stand (optional)
+        if stand_on_enter:
+
+            # Check if robot is already powered before trying to power on
+            robot_state = state_client.get_robot_state()
+            is_powered = robot_state.power_state.motor_power_state == robot_state.power_state.STATE_ON
+
+            if not is_powered:
+                try:
+                    robot.power_on(timeout_sec=20)
+                except Exception as e:
+                    error_type = type(e).__name__
+                    if "KeepaliveMotorsOff" in error_type or "KeepaliveMotorsOffError" in str(e):
+                        # Retry once: clear policies again and try power on
+                        print("[Session] Keepalive still blocking — clearing policies again and retrying...")
+                        _clear_keepalive_policies()
+                        try:
+                            robot.power_on(timeout_sec=20)
+                        except Exception:
+                            print("[Session] Warning: Cannot power on - keepalive still blocking motors.")
+                            print("[Session] Try releasing e-stop from tablet, then retry.")
+                            raise
+                    elif "Estopped" in error_type or "EstoppedError" in str(e):
+                        print("[Session] Warning: Robot is e-stopped.")
+                        print("[Session] Release e-stop from the tablet, then retry.")
+                        raise
+                    else:
+                        raise
+
+            # Robot is powered (or we powered it on), now stand
+            try:
+                blocking_stand(cmd_client, timeout_sec=20)
+            except Exception as e:
+                print(f"[Session] Warning: Stand command failed: {e}")
+                # Don't raise - robot might already be standing or estop might be blocking
+                # Continue with session anyway
+
+        # Optional: Upload map and localize
+        if upload_map and map_path:
+            try:
+                from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
+                print("[Session] Uploading map...")
+                if upload_graph_and_snapshots(robot, map_path):
+                    if auto_localize:
+                        print("[Session] Auto-localizing...")
+                        initialize_localization(robot, use_fiducial=True)
+                else:
+                    print("[Session] Warning: Map upload failed")
+            except Exception as e:
+                print(f"[Session] Warning: Map upload/localization error: {e}")
+                # Don't fail the session if map upload fails
+
         yield {
             "robot": robot,
             "lease_client": lease_client,

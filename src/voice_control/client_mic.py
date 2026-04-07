@@ -17,10 +17,12 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 import re
+import glob
 import time
 import queue
 import signal
 import argparse
+import subprocess
 from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
@@ -144,6 +146,93 @@ def _unmute_mic():
 
 
 # ============================================================================
+# Mic stream open (with retry on transient device-busy)
+# ============================================================================
+# PortAudio reports both "wrong channel count" and "device busy" through the
+# same generic exception. The original code caught any failure, assumed it
+# was a channel mismatch, and printed "Stereo not supported, falling back to
+# mono" — which masked the real cause when the actual problem was that a
+# previous client_mic.py instance was still releasing the snd_usb_audio
+# substream (kernel-release lag after the prior process exited). The helper
+# below distinguishes the two cases and retries on busy.
+
+def _is_format_error(err: Exception) -> bool:
+    """True if a PortAudio error is a real channel/sample-rate mismatch.
+
+    Anything else (especially -9985 / paDeviceUnavailable) is treated as a
+    transient busy condition worth retrying.
+    """
+    msg = str(err).lower()
+    return ("invalid number of channels" in msg
+            or "invalid sample rate" in msg
+            or "incompatible" in msg)
+
+
+def _log_pcm_holders() -> None:
+    """Print processes holding any ALSA capture PCM. Best-effort, never raises.
+
+    Called when a stream open fails with a non-format error so we can see
+    *who* is squatting on the mic. Output is empty when the kernel hasn't
+    finished releasing the substream from a just-exited holder — that empty
+    case is itself the diagnosis (kernel-release lag).
+    """
+    try:
+        pcm_files = sorted(glob.glob("/dev/snd/pcmC*c"))
+        if not pcm_files:
+            print("[mic-busy probe] no /dev/snd/pcmC*c devices found")
+            return
+        result = subprocess.run(
+            ["fuser", "-v"] + pcm_files,
+            capture_output=True, text=True, timeout=2,
+        )
+        # fuser writes its table to stderr; combine for safety.
+        out = ((result.stderr or "") + (result.stdout or "")).strip()
+        if out:
+            print(f"[mic-busy probe] capture PCM holders:\n{out}")
+        else:
+            print("[mic-busy probe] no PCM holders — likely kernel-release lag")
+    except FileNotFoundError:
+        print("[mic-busy probe] fuser not installed; skipping")
+    except Exception as exc:
+        print(f"[mic-busy probe failed: {exc}]")
+
+
+def _open_input_stream_with_retry(device, callback, *,
+                                  attempts: int = 6,
+                                  backoff: float = 0.5) -> sd.InputStream:
+    """Open a stereo InputStream, retrying on transient device-busy errors.
+
+    - Real channel/format mismatches → fall back to mono on the first attempt.
+    - Anything else (e.g. -9985 paDeviceUnavailable) → retry with backoff.
+      On the first failure we dump the current PCM holders so the next
+      occurrence is diagnosable from the log.
+    """
+    last_err: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return sd.InputStream(
+                device=device, channels=2, samplerate=SAMPLE_RATE,
+                callback=callback, blocksize=FRAME_SAMPLES,
+            )
+        except Exception as e:
+            if _is_format_error(e):
+                print(f"[Stereo not supported on device {device}, falling back to mono]")
+                return sd.InputStream(
+                    device=device, channels=1, samplerate=SAMPLE_RATE,
+                    callback=callback, blocksize=FRAME_SAMPLES,
+                )
+            last_err = e
+            if attempt == 0:
+                print(f"[mic open failed: {e}]")
+                _log_pcm_holders()
+            if attempt < attempts - 1:
+                print(f"[mic busy; retry {attempt + 1}/{attempts - 1} in {backoff}s]")
+                time.sleep(backoff)
+    assert last_err is not None
+    raise last_err
+
+
+# ============================================================================
 # Noise Calibration
 # ============================================================================
 def calibrate_noise_floor(duration_sec: float, device=None) -> float:
@@ -164,14 +253,7 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> float:
         samples.append(mono.copy())
 
     try:
-        # Try stereo first (XVF3800), fall back to mono if device doesn't support it
-        try:
-            stream_ctx = sd.InputStream(device=device, channels=2, samplerate=SAMPLE_RATE,
-                                        callback=callback, blocksize=FRAME_SAMPLES)
-        except Exception:
-            print(f"[Stereo not supported on device {device}, falling back to mono]")
-            stream_ctx = sd.InputStream(device=device, channels=1, samplerate=SAMPLE_RATE,
-                                        callback=callback, blocksize=FRAME_SAMPLES)
+        stream_ctx = _open_input_stream_with_retry(device, callback)
         with stream_ctx:
             start = time.time()
             while sum(len(s) for s in samples) < samples_needed:
@@ -397,6 +479,7 @@ def main():
         if brain.is_available():
             print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
             brain.warm_up()
+            brain.warm_up_vlm()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
             print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
@@ -446,25 +529,9 @@ def main():
     # Pre-loading them at startup starves the audio thread (CPU-bound
     # PyTorch init causes PortAudio input overflow and delays wake word).
 
-    # Open audio stream (try stereo for XVF3800, fall back to mono)
+    # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
-        try:
-            stream = sd.InputStream(
-                device=args.device,
-                channels=2,
-                samplerate=SAMPLE_RATE,
-                callback=audio_callback,
-                blocksize=FRAME_SAMPLES
-            )
-        except Exception:
-            print(f"[Stereo not supported on device {args.device}, falling back to mono]")
-            stream = sd.InputStream(
-                device=args.device,
-                channels=1,
-                samplerate=SAMPLE_RATE,
-                callback=audio_callback,
-                blocksize=FRAME_SAMPLES
-            )
+        stream = _open_input_stream_with_retry(args.device, audio_callback)
         stream.start()
     except Exception as e:
         print(f"Audio error: {e}")

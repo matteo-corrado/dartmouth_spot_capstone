@@ -196,7 +196,10 @@ class VoicePipelineManager:
                 return True, "Voice pipeline already running"
 
         try:
-            self._log_file = open(VOICE_LOG_PATH, "w")
+            # Append (not truncate) so prior shutdown traces survive a
+            # stop→start cycle — needed to debug device-busy races where
+            # the previous instance is the one holding the mic.
+            self._log_file = open(VOICE_LOG_PATH, "a")
             script = str(PROJECT_ROOT / "scripts" / "run_voice_control.py")
             env = os.environ.copy()
             env["PYTHONUNBUFFERED"] = "1"
