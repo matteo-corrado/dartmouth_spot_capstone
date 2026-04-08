@@ -149,6 +149,29 @@ def save_location(name: str, waypoint_id: str) -> bool:
     return True
 
 
+def save_locations(items: Dict[str, str]) -> int:
+    """Save many locations to the current map slice in one read+write.
+
+    Equivalent to calling ``save_location`` in a loop, but does a single
+    ``_load_raw`` and a single ``_atomic_write`` instead of N of each — used
+    by ``scripts/download_map_from_spot.py`` when extracting waypoint names
+    from a freshly downloaded graph.
+
+    Returns the number of locations saved.
+    """
+    if not items:
+        return 0
+    data = _load_raw()
+    maps = data.setdefault("maps", {})
+    key = _current_map_key()
+    slice_dict = maps.setdefault(key, {})
+    for name, waypoint_id in items.items():
+        slice_dict[name.lower()] = waypoint_id
+    _atomic_write(data)
+    print(f"\u2713 Saved {len(items)} location(s) to map slice '{key}'")
+    return len(items)
+
+
 def load_location(name: str) -> Optional[str]:
     """Load waypoint ID for a named location from the current map slice.
 

@@ -13,7 +13,7 @@ sys.path.insert(0, str(project_root))
 
 from src.session import spot_session
 from src.map_loader import write_last_used
-from src.location_manager import save_location
+from src.location_manager import save_locations
 from bosdyn.client.graph_nav import GraphNavClient
 
 
@@ -153,10 +153,9 @@ def download_map(output_dir="maps/downloaded_map"):
     print(f"✓ Marked '{map_name}' as the current map (maps/.last_used)")
 
     if waypoint_names:
-        # Route through location_manager so the v2 namespacing is honored.
-        for name, wp_id in waypoint_names.items():
-            save_location(name, wp_id)
-
+        # Single read+write through location_manager so the v2 namespacing is
+        # honored without N+1 file operations.
+        save_locations(waypoint_names)
         print("✓ Generated locations.json:")
         for name, wp_id in waypoint_names.items():
             print(f"    '{name}' → {wp_id[:8]}...")

@@ -10,24 +10,21 @@ Usage:
 
 The orchestrator:
   1. Acquires a /tmp/wakespot.pid lockfile (refuses if another wakespot is alive).
-  2. Resolves the requested map (if any) via src.map_loader.resolve_map_path.
-  3. Claims the E-Stop in-process (a daemon thread runs the keepalive loop) so
-     there is no buffered-stdout / signal-race issue with subprocess approach.
+  2. Resolves the requested map (if any) via src.map_loader.resolve_map_path
+     and records it in maps/.last_used.
+  3. Claims the E-Stop via src.estop.estop_session — its EstopKeepAlive runs
+     its own heartbeat thread, so we just hold the context manager open.
   4. Execs scripts/run_voice_control.py in the foreground, forwarding any
      pass-through flags plus --map <resolved_path>.
-  5. On clean exit (or KeyboardInterrupt), records the deployed map name in
-     maps/.last_used and tears down the E-Stop thread.
+  5. The estop_session context manager releases the E-Stop on exit.
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import signal
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +33,9 @@ LOCKFILE = Path("/tmp/wakespot.pid")
 # Make `import src.*` work when wakespot.py is run directly.
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from src import map_loader
+from src.estop import estop_session
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +68,6 @@ def _acquire_lockfile() -> bool:
                 f"(PID {existing}). Refusing to start."
             )
             return False
-        # Stale lockfile — remove it.
         try:
             LOCKFILE.unlink()
         except OSError:
@@ -86,68 +85,10 @@ def _release_lockfile() -> None:
     try:
         if not LOCKFILE.exists():
             return
-        contents = LOCKFILE.read_text().strip()
-        if contents == str(os.getpid()):
+        if LOCKFILE.read_text().strip() == str(os.getpid()):
             LOCKFILE.unlink()
     except OSError:
         pass
-
-
-# ---------------------------------------------------------------------------
-# E-Stop in-process
-# ---------------------------------------------------------------------------
-def _import_estop_run():
-    """Import scripts/estop_run.py as a module despite its sys.path side-effects.
-
-    `scripts/estop_run.py` does `sys.path.append(...)` at the top, so it can't
-    be imported via the normal `from scripts.estop_run import ...` (no __init__,
-    plus path magic). Use importlib's spec_from_file_location to load it
-    directly from disk.
-    """
-    estop_path = PROJECT_ROOT / "scripts" / "estop_run.py"
-    spec = importlib.util.spec_from_file_location("estop_run", estop_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load {estop_path}")
-    estop_run = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(estop_run)
-    return estop_run
-
-
-def _start_estop_thread(stop_event: threading.Event):
-    """Claim the E-Stop in a daemon thread and run the keepalive loop.
-
-    Returns (thread, holder) where `holder` is a dict containing the
-    EstopKeepAlive object once the claim succeeds (so the caller can call
-    .shutdown() on cleanup). The thread exits when stop_event is set.
-    """
-    estop_run = _import_estop_run()
-    holder: dict = {"keepalive": None, "error": None, "ready": threading.Event()}
-
-    def _runner():
-        try:
-            print("[wakespot] Claiming E-Stop...")
-            _, _, _, keepalive = estop_run.start_estop(claim=True)
-            holder["keepalive"] = keepalive
-            holder["ready"].set()
-            print("[wakespot] E-Stop active.")
-            while not stop_event.is_set():
-                try:
-                    keepalive.allow()
-                except Exception:
-                    print(
-                        "[wakespot] E-Stop endpoint lost — another client "
-                        "took ownership. Stopping keepalive."
-                    )
-                    break
-                time.sleep(0.5)
-        except Exception as e:
-            holder["error"] = e
-            holder["ready"].set()
-            print(f"[wakespot] E-Stop claim failed: {e}")
-
-    thread = threading.Thread(target=_runner, name="wakespot-estop", daemon=True)
-    thread.start()
-    return thread, holder
 
 
 # ---------------------------------------------------------------------------
@@ -187,52 +128,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the startup map upload entirely.",
     )
     # Pass-through flags forwarded to scripts/run_voice_control.py
-    parser.add_argument(
-        "--no-tts",
-        action="store_true",
-        help="Forwarded to voice control: disable text-to-speech.",
-    )
-    parser.add_argument(
-        "--no-wake-word",
-        action="store_true",
-        help="Forwarded to voice control: always-listening mode.",
-    )
-    parser.add_argument(
-        "--volume",
-        type=float,
-        default=None,
-        help="Forwarded to voice control: TTS + beep output gain (0.0-1.5).",
-    )
-    parser.add_argument(
-        "--debug-audio",
-        action="store_true",
-        help="Forwarded to voice control: print mic levels for diagnostics.",
-    )
-    parser.add_argument(
-        "--device",
-        type=int,
-        default=None,
-        help="Forwarded to voice control: mic input device index.",
-    )
-    parser.add_argument(
-        "--output-device",
-        type=int,
-        default=None,
-        help="Forwarded to voice control: speaker output device index.",
-    )
-    parser.add_argument(
-        "--debug-crash",
-        action="store_true",
-        help=(
-            "Forwarded to voice control: enable native-crash diagnostics "
-            "(MALLOC_CHECK_=3 + PYTHONFAULTHANDLER=1)."
-        ),
-    )
-    parser.add_argument(
-        "--skip-services",
-        action="store_true",
-        help="Forwarded to voice control: do not auto-start Riva/Ollama.",
-    )
+    parser.add_argument("--no-tts", action="store_true",
+                        help="Forwarded to voice control: disable text-to-speech.")
+    parser.add_argument("--no-wake-word", action="store_true",
+                        help="Forwarded to voice control: always-listening mode.")
+    parser.add_argument("--volume", type=float, default=None,
+                        help="Forwarded to voice control: TTS + beep output gain (0.0-1.5).")
+    parser.add_argument("--debug-audio", action="store_true",
+                        help="Forwarded to voice control: print mic levels for diagnostics.")
+    parser.add_argument("--device", type=int, default=None,
+                        help="Forwarded to voice control: mic input device index.")
+    parser.add_argument("--output-device", type=int, default=None,
+                        help="Forwarded to voice control: speaker output device index.")
+    parser.add_argument("--debug-crash", action="store_true",
+                        help="Forwarded to voice control: enable native-crash diagnostics "
+                             "(MALLOC_CHECK_=3 + PYTHONFAULTHANDLER=1).")
+    parser.add_argument("--skip-services", action="store_true",
+                        help="Forwarded to voice control: do not auto-start Riva/Ollama.")
     return parser
 
 
@@ -270,24 +182,15 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    # ----- Lockfile -----
     if not _acquire_lockfile():
         return 1
-
-    estop_thread = None
-    estop_holder = None
-    stop_event = threading.Event()
-    return_code = 0
 
     try:
         # ----- Resolve map (skip if --no-map) -----
         resolved_map: Path | None = None
         if not args.no_map:
             try:
-                from src import map_loader
-
                 resolved_map = map_loader.resolve_map_path(args.map, PROJECT_ROOT)
-                print(f"[wakespot] Map resolved: {resolved_map}")
             except FileNotFoundError as e:
                 print(f"[wakespot] {e}")
                 print(
@@ -295,75 +198,36 @@ def main() -> int:
                     f"{PROJECT_ROOT / 'maps'} or run with --no-map."
                 )
                 return 1
-            except NotImplementedError:
-                # W1 hasn't landed yet — graceful fallback.
-                print(
-                    "[wakespot] map_loader not yet implemented "
-                    "(W1 not merged). Re-run with --no-map to skip "
-                    "startup map upload."
-                )
-                return 1
+            print(f"[wakespot] Map resolved: {resolved_map}")
+
+            # Record .last_used now — once the user has chosen a map and it
+            # exists on disk, that IS the current map for this session.
+            # Writing here (rather than after voice control exits) ensures the
+            # right slice is used by save_location calls and survives a crash.
+            try:
+                map_loader.write_last_used(PROJECT_ROOT, resolved_map.name)
+            except OSError as e:
+                print(f"[wakespot] WARN: could not write .last_used: {e}")
         else:
             print("[wakespot] Skipping startup map upload (--no-map).")
 
-        # ----- E-Stop in daemon thread -----
-        estop_thread, estop_holder = _start_estop_thread(stop_event)
-        # Wait for the claim to finish (success or failure) before launching
-        # voice control, so we never start voice control with an unclaimed
-        # e-stop.
-        estop_holder["ready"].wait(timeout=30)
-        if estop_holder["error"] is not None:
-            print(
-                f"[wakespot] E-Stop could not be claimed: "
-                f"{estop_holder['error']}"
-            )
-            return 2
-        if estop_holder["keepalive"] is None:
-            print("[wakespot] E-Stop did not become ready within timeout.")
-            return 2
-
-        # ----- Voice control in foreground -----
+        # ----- E-Stop + voice control -----
+        # estop_session opens the EstopClient, claims the endpoint, and starts
+        # an internal EstopKeepAlive heartbeat thread. The context manager
+        # releases the E-Stop on exit (issues STOP, then shuts down the
+        # keepalive). subprocess.run blocks the main thread for the duration
+        # of voice control while the heartbeat thread keeps the E-Stop alive.
         cmd = _build_voice_control_cmd(args, resolved_map)
-        try:
-            completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
-            return_code = completed.returncode
-        except KeyboardInterrupt:
-            print("\n[wakespot] Interrupted — shutting down.")
-            return_code = 130
-
-        # ----- Record .last_used on a clean voice-control exit -----
-        if resolved_map is not None and return_code == 0:
+        with estop_session(name="wakespot_estop"):
+            print("[wakespot] E-Stop active.")
             try:
-                from src import map_loader
-
-                map_loader.write_last_used(PROJECT_ROOT, resolved_map.name)
-                print(f"[wakespot] Recorded {resolved_map.name} in maps/.last_used")
-            except NotImplementedError:
-                # W1 not landed yet — non-fatal.
-                pass
-            except Exception as e:
-                print(f"[wakespot] Could not write .last_used: {e}")
-
-        return return_code
-
-    except KeyboardInterrupt:
-        print("\n[wakespot] Interrupted before voice control started.")
-        return 130
+                completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
+                return completed.returncode
+            except KeyboardInterrupt:
+                print("\n[wakespot] Interrupted — shutting down.")
+                return 130
     finally:
-        # ----- Cleanup -----
-        stop_event.set()
-        if estop_thread is not None:
-            estop_thread.join(timeout=3.0)
-        if estop_holder is not None and estop_holder.get("keepalive") is not None:
-            try:
-                estop_holder["keepalive"].stop()
-            except Exception:
-                pass
-            try:
-                estop_holder["keepalive"].shutdown()
-            except Exception:
-                pass
-        print("[wakespot] Stopped E-Stop and cleaned up.")
+        print("[wakespot] Released E-Stop and cleaned up.")
         _release_lockfile()
 
 
