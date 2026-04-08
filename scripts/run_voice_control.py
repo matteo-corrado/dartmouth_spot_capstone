@@ -360,17 +360,93 @@ def main():
         print("        MALLOC_CHECK_=3 PYTHONFAULTHANDLER=1")
         print("        (expect a glibc 'malloc: ...' line and a Python traceback on abort)")
 
+    # Use Popen instead of subprocess.run so we can manually wait, escalate
+    # the kill on a second Ctrl+C, and avoid the wedge where the parent's
+    # subprocess.run sits forever in process.wait() while the child is hung
+    # in cleanup. Without this escape hatch, Ctrl+C in the terminal looked
+    # to the user like it did nothing — see ``client_mic.py``'s
+    # ``_shutdown_signal_handler`` for the matching child-side fix.
+    client_proc = subprocess.Popen(client_cmd, cwd=str(VOICE_DIR), env=client_env)
+
+    # Shutdown signal forwarding.
+    #
+    # There are three ways this script gets a shutdown signal, and the
+    # signal-routing differs in each case:
+    #
+    #   1. CLI Ctrl+C: terminal sends SIGINT to the foreground process
+    #      group. Both this parent and ``client_mic.py`` receive it
+    #      simultaneously. The child runs its own graceful shutdown.
+    #      We just need to wait.
+    #
+    #   2. Web panel stop button: ``web_panel.py`` calls
+    #      ``os.killpg(pgid, SIGINT)``. Same as case 1 — process-group
+    #      delivery. We just need to wait.
+    #
+    #   3. wakespot orchestrator: ``wakespot.py`` puts us in our own
+    #      session via ``start_new_session=True`` and then sends
+    #      ``proc.send_signal(SIGTERM)`` — to the PARENT ONLY, not the
+    #      group. Without explicit forwarding, ``client_mic.py`` never
+    #      hears about the shutdown and keeps running its main loop
+    #      while we sit here in ``client_proc.wait()`` with nothing to
+    #      wait for. This was the bug that made wakespot's graceful
+    #      stop look completely broken.
+    #
+    # Cases 1 and 2 deliver SIGINT and the child has already received it
+    # via the process group. We must NOT re-forward SIGINT to the child,
+    # because ``client_mic.py``'s second-signal handler treats a second
+    # signal as the "force quit" escape hatch and would call os._exit()
+    # immediately, skipping cleanup. So SIGINT we just absorb and wait.
+    #
+    # Case 3 delivers SIGTERM and the child got nothing. We forward
+    # SIGINT to it explicitly so its main loop wakes up into cleanup.
+    def _on_sigterm(signum, frame):
+        if client_proc.poll() is None:
+            try:
+                client_proc.send_signal(signal.SIGINT)
+            except (ProcessLookupError, OSError):
+                pass
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, _on_sigterm)
     try:
-        client_proc = subprocess.run(client_cmd, cwd=str(VOICE_DIR), env=client_env)
+        try:
+            client_proc.wait()
+        except KeyboardInterrupt:
+            # First Ctrl+C: the SIGINT already went to the child via the
+            # foreground process group, so client_mic.py is doing its
+            # graceful shutdown right now. Wait a generous-but-bounded
+            # window for it to finish (sit + power_off can legitimately
+            # take ~30s on a healthy robot). A second Ctrl+C escalates.
+            print("\n\nShutting down... (press Ctrl+C again to force quit)")
+            try:
+                client_proc.wait(timeout=40)
+            except KeyboardInterrupt:
+                print("\n[run_voice_control] second Ctrl+C — terminating client")
+                client_proc.terminate()
+                try:
+                    client_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    print("[run_voice_control] client did not exit — sending SIGKILL")
+                    client_proc.kill()
+                    client_proc.wait()
+            except subprocess.TimeoutExpired:
+                print("[run_voice_control] client cleanup exceeded 40s — terminating")
+                client_proc.terminate()
+                try:
+                    client_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    client_proc.kill()
+                    client_proc.wait()
         return client_proc.returncode
-    except KeyboardInterrupt:
-        print("\n\nShutting down...")
     finally:
         if server_proc and server_proc.poll() is None:
             print("Stopping ASR server...")
             server_proc.terminate()
-            server_proc.wait()
-    return 0
+            try:
+                server_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("[run_voice_control] ASR server did not exit — SIGKILL")
+                server_proc.kill()
+                server_proc.wait()
 
 
 if __name__ == "__main__":

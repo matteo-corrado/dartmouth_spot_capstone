@@ -7,6 +7,7 @@ Architecture (Boston Dynamics "Robots That Can Chat" style):
 Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
 """
+import os
 import sys
 import pathlib
 
@@ -32,14 +33,36 @@ import webrtcvad
 import grpc
 
 
-# Convert SIGTERM to KeyboardInterrupt so the main loop's finally block
-# runs the graceful shutdown (sit robot down, power off).  This matters
-# when the web panel stops the pipeline — it sends SIGINT first, but
-# falls back to SIGTERM if the process hasn't exited.
-def _sigterm_handler(signum, frame):
+# Shutdown signal handling.
+#
+# First SIGINT or SIGTERM → raise KeyboardInterrupt so the main loop's
+# finally block runs the graceful shutdown (cancel nav, sit robot down,
+# power off, drain audio player).
+#
+# Second signal → os._exit() immediately. cleanup_spot() can take tens of
+# seconds for legitimate reasons (blocking_sit + power_off are bosdyn
+# gRPC blocking calls that aren't interruptible from Python while they're
+# inside C++). Without an escape hatch, a user pressing Ctrl+C in the
+# terminal can find themselves unable to exit at all — we observed this
+# in the field, where Ctrl+C fired but the pipeline kept running and the
+# user had to manually `kill` the processes. The hard-exit on the second
+# signal guarantees they can always escape.
+#
+# Both SIGINT and SIGTERM share this handler so the web panel's
+# SIGINT-then-SIGTERM escalation also gets the hard-exit on the SIGTERM.
+_shutdown_requested = False
+
+def _shutdown_signal_handler(signum, frame):
+    global _shutdown_requested
+    if _shutdown_requested:
+        # Second signal — escape hatch. cleanup is wedged; bail.
+        print("\n[Shutdown] second signal received — force exiting", flush=True)
+        os._exit(130 if signum == signal.SIGINT else 143)
+    _shutdown_requested = True
     raise KeyboardInterrupt
 
-signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGINT, _shutdown_signal_handler)
+signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
@@ -398,12 +421,31 @@ def get_spot_state() -> dict:
 def cleanup_spot():
     """Clean up Spot session and audio player on exit.
 
-    Order matters: shut the AudioPlayer down BEFORE the process exits so the
-    daemon worker thread doesn't get torn down mid ``stream.write()``, which
-    would corrupt the heap (the same ``malloc(): unaligned tcache chunk``
-    bug we already fixed for force_reset). The shutdown call drains the
-    queue, joins the worker, and closes the stream gracefully.
+    Order matters:
+
+    1. Cancel any in-progress navigation thread FIRST. follow_me /
+       go_to_object / tour / patrol all run in a daemon thread that
+       keeps issuing velocity / trajectory commands until its
+       ``stop_event`` is set. If we skip this and go straight to
+       ``blocking_sit``, the daemon's velocity stream fights the sit
+       command — both bosdyn calls hit their full 15s + 20s timeouts
+       and the whole shutdown drags on so long that the user thinks
+       Ctrl+C didn't work and reaches for ``kill``.
+
+    2. Then close the Spot session (sit + power_off + lease release).
+
+    3. Then shut the AudioPlayer down. Doing this BEFORE the process
+       exits keeps the daemon worker thread from being torn down mid
+       ``stream.write()``, which would corrupt the heap (the same
+       ``malloc(): unaligned tcache chunk`` bug we already fixed for
+       force_reset). The shutdown call drains the queue, joins the
+       worker, and closes the stream gracefully.
     """
+    try:
+        from src.voice_control.spot_dispatch import _cancel_nav
+        _cancel_nav()
+    except Exception as e:
+        print(f"[Spot] cancel_nav error during cleanup: {e}")
     try:
         from src.voice_control.spot_dispatch import close_spot_session
         close_spot_session()

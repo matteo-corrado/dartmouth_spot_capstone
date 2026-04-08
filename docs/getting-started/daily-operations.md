@@ -69,6 +69,30 @@ For localization, either:
 2. **Ctrl+C** in the voice control terminal — Spot sits and powers off
 3. **Ctrl+C** in the E-Stop terminal — releases E-Stop
 
+### When launched with `wakespot`
+
+The orchestrator owns both E-Stop and voice control in a single terminal,
+so the shutdown is driven by `wakespot.py` itself. Three keys, three
+behaviors:
+
+| Key | Behavior |
+|---|---|
+| **Ctrl+C** (once) | **Graceful.** wakespot asks voice control to run `blocking_sit` then `power_off` motors, waits up to 45s, then releases the E-Stop endpoint **without** issuing a motor cut. |
+| **Ctrl+C twice** | **Escalates to emergency** mid-graceful: issues an immediate E-Stop CUT and `SIGKILL`s voice control. |
+| **Ctrl+\\** (`SIGQUIT`) | **Always-immediate emergency.** Same as double Ctrl+C but no first-press needed. Use this when Spot is doing something unsafe and you don't want to wait for the sit. |
+
+After the first Ctrl+C, wakespot prints `...waiting for voice control` every
+5 seconds so you can tell it's waiting on Spot, not hung. If voice control
+doesn't exit within 45 seconds, wakespot escalates to the emergency cut on
+its own — you don't have to press anything else.
+
+!!! warning "The graceful path is graceful, the emergency path is not"
+    The graceful path leaves Spot sitting on its hocks with motors cleanly
+    powered off — what you want at the end of a normal session. The
+    emergency cut de-energizes motors instantly; if Spot is standing or
+    moving, it will collapse onto its joints. Only use Ctrl+\\ / double
+    Ctrl+C when something is genuinely wrong.
+
 ## Using tmux for Persistent Sessions
 
 If you're SSHing in, use `tmux` so processes survive SSH disconnects:

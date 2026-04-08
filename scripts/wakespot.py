@@ -14,9 +14,14 @@ The orchestrator:
      and records it in maps/.last_used.
   3. Claims the E-Stop via src.estop.estop_session — its EstopKeepAlive runs
      its own heartbeat thread, so we just hold the context manager open.
-  4. Execs scripts/run_voice_control.py in the foreground, forwarding any
+  4. Spawns scripts/run_voice_control.py in its own process group, forwarding
      pass-through flags plus --map <resolved_path>.
-  5. The estop_session context manager releases the E-Stop on exit.
+  5. Drives a graceful-or-emergency shutdown state machine:
+       * Ctrl+C  → graceful: ask voice control to sit Spot and power off
+                   motors, wait, then release the E-Stop endpoint WITHOUT
+                   issuing a CUT.
+       * Ctrl+C twice OR Ctrl+\\ (SIGQUIT) → emergency: issue an immediate
+                   E-Stop CUT, then SIGKILL voice control.
 """
 from __future__ import annotations
 
@@ -25,10 +30,54 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LOCKFILE = Path("/tmp/wakespot.pid")
+
+# Upper bound on how long we wait for voice control to finish blocking_sit +
+# power_off after we ask it to shut down. Sized to comfortably cover
+# close_spot_session()'s blocking_sit(timeout_sec=15) + power_off(timeout_sec=20)
+# plus audio teardown slack. Past this, we escalate to the emergency path so
+# the user is never stuck with a hung child holding the lease.
+GRACEFUL_TIMEOUT_SEC = 45
+
+# ---------------------------------------------------------------------------
+# Shutdown signalling state (set by signal handlers, read by the wait loop).
+# ---------------------------------------------------------------------------
+_shutdown_requested = threading.Event()
+_emergency_requested = threading.Event()
+_sigint_count = 0
+
+
+def _on_sigint(signum, frame):
+    """First Ctrl+C → graceful. Second Ctrl+C → escalate to emergency."""
+    global _sigint_count
+    _sigint_count += 1
+    if _sigint_count == 1:
+        print(
+            "\n[wakespot] Graceful shutdown requested — sit, power off, then "
+            "release E-Stop. Hit Ctrl+C again or Ctrl+\\ for an emergency cut.",
+            flush=True,
+        )
+        _shutdown_requested.set()
+    else:
+        print(
+            "\n[wakespot] EMERGENCY E-Stop (second Ctrl+C) — cutting motors NOW.",
+            flush=True,
+        )
+        _emergency_requested.set()
+
+
+def _on_sigquit(signum, frame):
+    """Ctrl+\\ is always an immediate emergency cut, no second-press needed."""
+    print(
+        "\n[wakespot] EMERGENCY E-Stop (SIGQUIT) — cutting motors NOW.",
+        flush=True,
+    )
+    _emergency_requested.set()
 
 # Make `import src.*` work when wakespot.py is run directly.
 if str(PROJECT_ROOT) not in sys.path:
@@ -176,6 +225,101 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
 
 
 # ---------------------------------------------------------------------------
+# Shutdown state machine
+# ---------------------------------------------------------------------------
+def _emergency_cut(proc: subprocess.Popen, keepalive) -> int:
+    """Issue an immediate E-Stop CUT and SIGKILL the voice control subprocess.
+
+    Order matters: cut motors FIRST, then kill the process. The opposite
+    order would leave a brief window in which a runaway voice control
+    process could send another command before motors are de-energized.
+    """
+    try:
+        keepalive.stop()  # E-Stop CUT
+        print("[wakespot] E-Stop CUT issued — motors de-energized.", flush=True)
+    except Exception as e:
+        print(f"[wakespot] keepalive.stop() failed: {e}", flush=True)
+
+    if proc.poll() is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            print("[wakespot] Voice control SIGKILLed.", flush=True)
+        except (ProcessLookupError, OSError) as e:
+            print(f"[wakespot] killpg failed: {e}", flush=True)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            print("[wakespot] WARN: voice control did not reap after SIGKILL.",
+                  flush=True)
+    return 137  # 128 + SIGKILL(9)
+
+
+def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
+    """Ask voice control to sit Spot and power off motors, then return.
+
+    Sends SIGTERM to the child (which client_mic.py converts to a
+    KeyboardInterrupt and runs cleanup_spot → blocking_sit → power_off),
+    then waits up to GRACEFUL_TIMEOUT_SEC for the child to exit. If the
+    user escalates to emergency mid-wait, OR the timeout expires, we
+    escalate to _emergency_cut.
+    """
+    print("[wakespot] Asking voice control to sit Spot and power off motors...",
+          flush=True)
+    try:
+        proc.send_signal(signal.SIGTERM)
+    except ProcessLookupError:
+        # Child already dead — nothing to wait on, fall through to release.
+        pass
+
+    deadline = time.monotonic() + GRACEFUL_TIMEOUT_SEC
+    last_progress = time.monotonic()
+    while proc.poll() is None and time.monotonic() < deadline:
+        if _emergency_requested.is_set():
+            print("[wakespot] Emergency requested mid-graceful — escalating.",
+                  flush=True)
+            return _emergency_cut(proc, keepalive)
+        # Heartbeat so the user can see we are waiting on the child, not hung.
+        if time.monotonic() - last_progress >= 5:
+            remaining = int(deadline - time.monotonic())
+            print(f"[wakespot]   ...waiting for voice control "
+                  f"({remaining}s before escalation)", flush=True)
+            last_progress = time.monotonic()
+        time.sleep(0.1)
+
+    if proc.poll() is None:
+        print(
+            f"[wakespot] Voice control did not exit within {GRACEFUL_TIMEOUT_SEC}s "
+            "— escalating to emergency cut.",
+            flush=True,
+        )
+        return _emergency_cut(proc, keepalive)
+
+    print("[wakespot] Voice control exited cleanly. Releasing E-Stop endpoint "
+          "(no cut).", flush=True)
+    return proc.returncode if proc.returncode is not None else 0
+
+
+def _wait_for_child(proc: subprocess.Popen, keepalive) -> int:
+    """Idle wait loop. Watches for shutdown / emergency events and the child.
+
+    Runs entirely on the main thread so signal handlers (which Python only
+    invokes on the main thread) can deliver their state via the
+    threading.Events. Polling cadence is 100ms — fast enough that an
+    emergency-cut request feels instant to a human, slow enough to be
+    invisible on the CPU profile.
+    """
+    while proc.poll() is None:
+        if _emergency_requested.is_set():
+            return _emergency_cut(proc, keepalive)
+        if _shutdown_requested.is_set():
+            return _graceful_shutdown(proc, keepalive)
+        time.sleep(0.1)
+    # Voice control exited on its own (e.g. user said "shutdown" via voice).
+    print(f"[wakespot] Voice control exited (rc={proc.returncode}).", flush=True)
+    return proc.returncode if proc.returncode is not None else 0
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
@@ -184,6 +328,11 @@ def main() -> int:
 
     if not _acquire_lockfile():
         return 1
+
+    # Install our shutdown handlers BEFORE doing any robot work, so a Ctrl+C
+    # during early bring-up (auth, time-sync, map upload) is still observed.
+    signal.signal(signal.SIGINT, _on_sigint)
+    signal.signal(signal.SIGQUIT, _on_sigquit)
 
     try:
         # ----- Resolve map (skip if --no-map) -----
@@ -213,25 +362,32 @@ def main() -> int:
 
         # ----- E-Stop + voice control -----
         # estop_session opens the EstopClient, claims the endpoint, and starts
-        # an internal EstopKeepAlive heartbeat thread. The context manager
-        # releases the E-Stop on exit (issues STOP, then shuts down the
-        # keepalive). subprocess.run blocks the main thread for the duration
-        # of voice control while the heartbeat thread keeps the E-Stop alive.
+        # an internal EstopKeepAlive heartbeat thread. We pass cut_on_exit=False
+        # so the context manager only releases the endpoint on exit — wakespot
+        # itself decides whether to issue keepalive.stop() (the CUT) based on
+        # whether the user requested a graceful or emergency shutdown.
         cmd = _build_voice_control_cmd(args, resolved_map)
-        with estop_session(name="wakespot_estop"):
+        with estop_session(name="wakespot_estop", cut_on_exit=False) as estop_ctx:
+            keepalive = estop_ctx["keepalive"]
             print("[wakespot] E-Stop active.")
-            try:
-                completed = subprocess.run(cmd, cwd=str(PROJECT_ROOT))
-                return completed.returncode
-            except KeyboardInterrupt:
-                print("\n[wakespot] Interrupted — shutting down.")
-                return 130
+            print("[wakespot]   Ctrl+C  = graceful shutdown (sit, power off, "
+                  "then release)")
+            print("[wakespot]   Ctrl+C ×2 / Ctrl+\\ = emergency E-Stop CUT")
+
+            # start_new_session=True puts the child in its OWN process group,
+            # so the terminal's Ctrl+C / Ctrl+\ only hit wakespot. Wakespot
+            # then forwards SIGTERM (graceful) or SIGKILL (emergency) on its
+            # own terms. Without this, both processes would race to handle
+            # the same signal and the e-stop release could fire before the
+            # child finished sitting Spot.
+            proc = subprocess.Popen(
+                cmd, cwd=str(PROJECT_ROOT), start_new_session=True
+            )
+            return _wait_for_child(proc, keepalive)
     finally:
         print("[wakespot] Released E-Stop and cleaned up.")
         _release_lockfile()
 
 
 if __name__ == "__main__":
-    # Make Ctrl+C in the main thread propagate cleanly through to our finally.
-    signal.signal(signal.SIGINT, signal.default_int_handler)
     sys.exit(main())

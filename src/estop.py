@@ -39,7 +39,22 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
                   username: str = BOSDYN_CLIENT_USERNAME,
                   password: str = BOSDYN_CLIENT_PASSWORD,
                   name: str = "dartmouth_estop",
-                  timeout_sec: int = 3):
+                  timeout_sec: int = 3,
+                  cut_on_exit: bool = True):
+    """Claim Spot's E-Stop and yield the live keepalive.
+
+    Args:
+        cut_on_exit: When True (default), the context manager issues
+            ``keepalive.stop()`` (the E-Stop CUT) on exit before releasing
+            the endpoint. Safe default for callers that just want a hard
+            stop on teardown. Pass ``False`` when the caller drives its own
+            shutdown sequence (e.g. wakespot's graceful sit/power-off path)
+            and wants to release the endpoint WITHOUT cutting motors —
+            cutting after a clean ``power_off`` is harmless but conceptually
+            contradicts a "graceful" shutdown. The caller is then
+            responsible for calling ``keepalive.stop()`` itself when an
+            emergency cut is actually wanted.
+    """
     sdk = create_standard_sdk("dartmouth_spot_capstone_estop")
     robot = sdk.create_robot(hostname)
     robot.authenticate(username, password)
@@ -62,11 +77,12 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
     try:
         yield {"robot": robot, "estop_client": estop_client, "endpoint": endpoint, "keepalive": keepalive}
     finally:
-        # Return to safe STOP state and release
-        try:
-            keepalive.stop()  # issue STOP before exiting
-        except Exception:
-            pass
+        # Optionally return to safe STOP state, then release the endpoint.
+        if cut_on_exit:
+            try:
+                keepalive.stop()  # issue STOP before exiting
+            except Exception:
+                pass
         try:
             keepalive.shutdown()
         except Exception:
