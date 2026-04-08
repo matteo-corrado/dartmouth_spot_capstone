@@ -24,7 +24,7 @@ def dispatch_intent(intent: dict) -> bool
 
 **Supported intents:** `stop`, `freeze`, `estop`, `stand`, `sit`, `selfright`,
 `walk`, `strafe`, `turn`, `body_height`, `set_speed`, `go_to`, `tour`,
-`patrol`, `come_back`, `save_location`, `list_locations`, `open_door`,
+`patrol`, `come_back`, `save_location`, `list_locations`,
 `go_to_object`, `follow_me`, `describe`, `battery_status`, `status`,
 `power_off`.
 

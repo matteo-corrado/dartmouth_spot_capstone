@@ -51,7 +51,6 @@ nav:
     - Mapping: guides/mapping.md
     - Adding Commands: guides/adding-commands.md
     - Web Panel: guides/web-panel.md
-    - Door Opening: guides/door-opening.md
     - Troubleshooting: guides/troubleshooting.md
   - Project:
     - Dartmouth Setup: project/dartmouth-setup.md

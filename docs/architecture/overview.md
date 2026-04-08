@@ -21,7 +21,6 @@ graph LR
     DISPATCH --> VLM[VLM<br/>qwen2.5vl:7b<br/>Ollama]
     DISPATCH --> YOLO[YOLO<br/>CPU inference]
     DISPATCH --> GNAV[GraphNav<br/>BD SDK]
-    DISPATCH --> DOOR[DoorService<br/>AutoPush]
 
     style MIC fill:#2196F3,color:#fff
     style SPOT fill:#4CAF50,color:#fff
@@ -107,7 +106,7 @@ speech at normal conversational distance.
 | Voice Client | `src/voice_control/client_mic.py` | Main audio loop: VAD, speech detection, ASR dispatch, LLM orchestration |
 | ASR Bridge Server | `src/voice_control/server.py` | gRPC bridge to Riva ASR with hallucination filtering |
 | LLM Brain | `src/voice_control/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
-| Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision, door) |
+| Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision) |
 | Wake Word Detector | `src/voice_control/wake_word.py` | sherpa-onnx keyword spotter for "Hey Spot" |
 | TTS | `src/voice_control/spot_tts.py` | sherpa-onnx Kokoro TTS (non-blocking, speaker af_sarah) |
 | Audio Feedback | `src/voice_control/audio_feedback.py` | Short beep/chime tones for user feedback |

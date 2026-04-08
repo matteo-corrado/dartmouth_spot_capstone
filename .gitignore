@@ -14,10 +14,6 @@ spot-sdk/
 test/
 spot-env
 
-# Door calibration images (regenerated per-environment)
-door_calibration/
-door_config.json
-
 # NGC CLI artifacts
 ngc-cli/
 ngc-cli.md5

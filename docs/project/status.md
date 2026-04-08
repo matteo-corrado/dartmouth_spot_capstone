@@ -34,7 +34,6 @@ Current implementation status of all features.
 | Feature | Description | Status | Next Step |
 |---------|-------------|--------|-----------|
 | Follow Mode | Person following | YOLO unreliable on fisheye | Switch to AprilTag fiducials via WorldObjectClient |
-| Door Opening | Push-bar doors via AutoPush | Implemented, untested | Test with `--vlm --depth 0.5` |
 
 ---
 

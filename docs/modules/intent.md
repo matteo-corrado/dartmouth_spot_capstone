@@ -38,7 +38,6 @@ None  # no match
 | Visual nav | `go_to_object` (find/look for/search), `follow_me` |
 | Navigation | `go_to`, `tour`, `patrol`, `come_back`, `save_location` |
 | Status | `battery_status`, `status`, `power_off` |
-| Door | `open_door` |
 | Other | `list_locations` |
 
 ## Pattern Features

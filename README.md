@@ -141,7 +141,6 @@ Detailed guides and reference docs live in [`docs/`](docs/):
 - [Adding Commands](docs/guides/adding-commands.md) -- How to add new commands
 - [Mapping](docs/guides/mapping.md) -- Recording and managing maps
 - [Web Panel](docs/guides/web-panel.md) -- Browser-based control
-- [Door Opening](docs/guides/door-opening.md) -- AutoPush door handling
 - [Troubleshooting](docs/guides/troubleshooting.md) -- Common issues and fixes
 
 **Project**

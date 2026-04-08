@@ -122,19 +122,6 @@ the nearest detected person, maintaining distance.
 
 Camera options: `front` (default), `left`, `right`, `back`.
 
-### Door
-
-| Voice Command | Example Phrases | Action | Parameters |
-|---|---|---|---|
-| open_door | "open the door", "push the door" | Open a push-bar door | None |
-
-Uses BD DoorService `AutoPushCommand`. The robot pitches up, detects the
-push bar via VLM, computes a 3D push point, and pushes the door open.
-Requires the robot to be positioned ~1m from the door, facing it.
-
-**Note:** Door opening is experimental. Calibration may be required
-(`scripts/calibrate_door.py`).
-
 ### Status
 
 | Voice Command | Example Phrases | Action | Parameters |

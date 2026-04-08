@@ -8,7 +8,7 @@ The project uses BD SDK v5.0.1.1. The main packages are:
 
 ```
 bosdyn-client          # Core SDK — robot connection, commands, leases
-bosdyn-mission         # Mission/Autowalk API (used by door service)
+bosdyn-mission         # Mission/Autowalk API
 bosdyn-choreography-client  # Choreography API (available but not used)
 ```
 

@@ -12,7 +12,6 @@ voice-controlled Spot with navigation, TTS, and arm capabilities.
 | VLM (vision) | Ollama + qwen2.5-vl:7b | GPU |
 | TTS (text-to-speech) | Kokoro ONNX (82M params) | CPU |
 | Voice pipeline | VAD → ASR → LLM Brain → Dispatch → TTS | Jetson |
-| Door opening | Remote Mission Service (arm/gripper) | Jetson + Spot arm |
 
 ## Why flash first?
 
@@ -391,55 +390,6 @@ python client_mic.py
 
 ---
 
-## Phase 9: Door Opening with Arm (AutoWalk)
-
-The door-opening service uses Spot's arm to press buttons or grasp handles
-during AutoWalk missions. This runs as a Remote Mission Service that Spot calls
-at configured waypoints.
-
-### 9.1 Get Jetson's IP as seen by Spot
-
-```bash
-source spot-env/bin/activate
-HOST_IP=$(python3 -m bosdyn.client 192.168.80.3 self-ip)
-echo "Jetson IP: $HOST_IP"
-```
-
-### 9.2 Start the door service
-
-In a **separate terminal** (E-Stop must already be running):
-
-```bash
-python scripts/run_door_service.py --host-ip $HOST_IP --port 50052
-```
-
-### 9.3 Configure on the tablet
-
-1. Open **Autowalk** > **Record** a new mission
-2. Walk Spot to a door
-3. Tap **"+"** > **"Create New Action"** > **"Remote GRPC"**
-4. Select **"door-opening-service"** from the list
-5. Configure parameters:
-   - `door_type`: `button` (handicap button) or `handle` (door handle)
-   - `door_direction`: `push` or `pull`
-   - `handle_height_m`: height of handle in meters (default 1.0)
-   - `button_height_m`: height of button in meters (default 1.0)
-   - `button_offset_y_m`: lateral offset of button (default -0.3)
-6. Continue recording the rest of the mission
-7. On **playback**, Spot will call the door service at the configured waypoint
-
-### 9.4 Supported door types
-
-**Push-button doors** (recommended starting point):
-
-Spot approaches > unstows arm > presses button > waits for door > walks through > stows arm
-
-**Handle-based doors** (more complex):
-
-Spot approaches > unstows arm > opens gripper > grasps handle > pushes/pulls > holds open > walks through > releases > stows arm
-
----
-
 ## Phase 10: Test Components Individually
 
 ### Test LLM Brain (no robot needed)
@@ -467,12 +417,6 @@ python src/voice_control/spot_tts.py af_heart "Testing Kokoro TTS on Spot"
 ./scripts/setup_riva.sh test
 ```
 
-### Test door service (standalone, no AutoWalk)
-
-```bash
-python scripts/test_door_standalone.py
-```
-
 ---
 
 ## Troubleshooting
@@ -490,14 +434,12 @@ python scripts/test_door_standalone.py
 | "Stop" doesn't cancel navigation | Fixed in latest code, pull and redeploy |
 | `ModuleNotFoundError` | Activate venv: `source spot-env/bin/activate` |
 | Robot credentials error | Check `.env` has correct username and password |
-| Door service not visible on tablet | Check `--host-ip` is correct (use `self-ip` command) |
 
 ## Port Reference
 
 | Port | Service |
 |------|---------|
 | 50051 | NVIDIA Riva ASR server (Docker) |
-| 50052 | Door opening Remote Mission Service |
 | 50055 | ASR bridge server (custom proto to Riva) |
 | 11434 | Ollama LLM/VLM API |
 
@@ -521,8 +463,4 @@ python scripts/setup_map.py --map-path maps/lab_map2 --waypoint-init
 
 # 4. Start voice control
 python scripts/run_voice_control.py
-
-# 5. (Optional) Start door service (separate terminal)
-HOST_IP=$(python3 -m bosdyn.client 192.168.80.3 self-ip)
-python scripts/run_door_service.py --host-ip $HOST_IP --port 50052
 ```
