@@ -423,6 +423,8 @@ def main():
     parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
     parser.add_argument("--volume", type=float, default=1.0,
                         help="TTS + beep output gain (0.0-1.5, default 1.0)")
+    parser.add_argument("--map", type=str, default=None,
+                        help="GraphNav map path to upload during session bring-up.")
     args = parser.parse_args()
 
     # Auto-detect devices by name if not explicitly specified
@@ -537,7 +539,22 @@ def main():
 
     # YOLO models (YOLOv8n, YOLO-World) lazy-load on first use.
     # Pre-loading them at startup starves the audio thread (CPU-bound
-    # PyTorch init causes PortAudio input overflow and delays wake word).
+    # PyTorch init causes PortAudio init overflow and delays wake word).
+
+    # Eagerly initialize the Spot session (and upload a map if --map was
+    # passed) BEFORE starting the audio loop. Without --map this is still
+    # useful: it surfaces auth/lease errors before the user starts speaking,
+    # rather than at the moment of the first command. With --map, this is
+    # the only way to load the map as part of the same session bring-up
+    # (lazy init from dispatch would happen too late).
+    if args.map:
+        print(f"\n[Spot] Eager session init with map: {args.map}")
+        from src.voice_control.spot_dispatch import ensure_spot_session
+        try:
+            ensure_spot_session(map_path=args.map)
+        except Exception as e:
+            print(f"[Spot] Eager session init failed: {e}")
+            print("[Spot] Will retry lazily on first command.")
 
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:

@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# wakespot — thin launcher. Derives its own location so it works in any worktree.
+DIR="$(dirname "$(readlink -f "$0")")"
+exec "$DIR/../spot-env/bin/python" "$DIR/wakespot.py" "$@"

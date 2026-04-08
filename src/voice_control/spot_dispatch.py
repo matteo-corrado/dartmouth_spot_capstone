@@ -163,17 +163,40 @@ def capture_frame(camera: str = "front") -> bytes:
         return b""
 
 
-def ensure_spot_session():
-    """Ensure Spot session is initialized and return session dict."""
+def ensure_spot_session(map_path=None):
+    """Ensure Spot session is initialized and return session dict.
+
+    Args:
+        map_path: Optional GraphNav map directory to upload during session
+            bring-up. When provided AND the session is not yet active, the
+            session is created with ``upload_map=True``, ``map_path=...``, and
+            ``auto_localize=True`` so the robot uploads the map and attempts
+            fiducial localization as part of stand-up.
+
+            When provided AND a session is ALREADY active, the existing
+            session is returned silently — the assumption is that the caller
+            wants the session, not necessarily the map. To switch maps at
+            runtime, use the ``load_map`` voice handler instead, which
+            re-uploads on a live session.
+
+    Returns:
+        dict with the live session clients (robot, lease_client, cmd, power,
+        state).
+    """
     global _spot_session, _session_context
-    
+
     if _spot_session is None:
         try:
             # Start a persistent session (don't sit/power off on exit for voice control)
-            _session_context = spot_session(
-                stand_on_enter=True,
-                sit_on_exit=False  # Keep robot standing for voice commands
-            )
+            session_kwargs = {
+                "stand_on_enter": True,
+                "sit_on_exit": False,  # Keep robot standing for voice commands
+            }
+            if map_path:
+                session_kwargs["upload_map"] = True
+                session_kwargs["map_path"] = str(map_path)
+                session_kwargs["auto_localize"] = True
+            _session_context = spot_session(**session_kwargs)
             _spot_session = _session_context.__enter__()
             print("[Spot] Connected and standing ready for voice commands.")
         except Exception as e:
@@ -181,7 +204,7 @@ def ensure_spot_session():
             # Clear the context so we can retry
             _session_context = None
             raise
-    
+
     return _spot_session
 
 
