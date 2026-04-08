@@ -264,6 +264,9 @@ def main():
     parser.add_argument("--volume", type=float, default=1.0,
                         help="TTS + beep output gain (0.0-1.5, default 1.0). "
                              "Voice control accepts 1-100%% at runtime.")
+    parser.add_argument("--map", type=str, default=None,
+                        help="Path to a GraphNav map directory to upload at "
+                             "startup (default: don't upload).")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -329,6 +332,8 @@ def main():
         client_cmd.extend(["--output-device", str(args.output_device)])
     if args.volume != 1.0:
         client_cmd.extend(["--volume", str(args.volume)])
+    if args.map:
+        client_cmd.extend(["--map", args.map])
 
     client_env = os.environ.copy()
     if args.debug_crash:
