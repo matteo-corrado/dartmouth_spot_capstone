@@ -80,6 +80,18 @@ COMMANDS = [
 
     # === OTHER ===
     (r"\b(?:list locations|what locations|show locations|saved locations)\b", "list_locations", {}),
+
+    # === MAP MANAGEMENT ===
+    # Order: most specific first. The parser stops on the first match.
+    # 1) "load the jackson map" / "load thayer map" / "load the lab_map"
+    (r"\bload\s+(?:the\s+)?(?P<map>\w+)\s+map\b", "load_map", {"map": "$map"}),
+    # 2) "load map jackson"
+    (r"\bload\s+map\s+(?P<map>\w+)\b", "load_map", {"map": "$map"}),
+    # 3) Bare "load map" — negative lookahead so it does NOT match "load map jackson".
+    #    Empty params dict → handler defaults to last-used map.
+    (r"\bload\s+map\b(?!\s+\w)", "load_map", {}),
+    # 4) "list maps" / "show maps" / "what are the available maps" / etc.
+    (r"\b(?:list|show|what)\s+(?:are\s+)?(?:the\s+)?(?:available\s+)?maps\b", "list_maps", {}),
 ]
 
 # Precompile with IGNORECASE for more robust matching

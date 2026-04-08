@@ -69,6 +69,8 @@ AVAILABLE ACTIONS:
 - come_back: Return to position before last navigation. No params. Use for "come back", "go home", "return".
 - save_location: Save current position. Params: {"location": "<name>"}.
 - list_locations: List saved locations. No params.
+- load_map: Switch to a different GraphNav map. Params: {"map": "<name>"} (optional — omit to reload the last-used map). The available maps are listed in the robot state under "available_maps". Loading a map disrupts any in-progress navigation and the robot will need to re-localize (best with a fiducial visible).
+- list_maps: List the GraphNav maps available on disk. No params.
 - open_door: Open a push-bar door. No params needed (uses tuned defaults). Use for "open the door", "push the door".
 - go_to_object: Walk toward a visible object using the camera. Params: {"description": "<what to find>"}. Use for "go to the red chair", "find the backpack", "walk to the table". Only for objects you can SEE — use go_to for saved map locations.
 - follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
