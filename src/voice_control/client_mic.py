@@ -20,9 +20,11 @@ import re
 import glob
 import time
 import queue
+import random
 import signal
 import argparse
 import subprocess
+import threading
 from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
@@ -43,6 +45,7 @@ from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
 from llm_brain import SpotBrain, DEFAULT_MODEL
+from audio_player import AudioPlayer
 from spot_tts import SpotTTS
 from audio_feedback import beep
 
@@ -104,18 +107,74 @@ NOISE_FLOOR_MIN = 0.001          # Minimum noise floor (prevent threshold from d
 NOISE_FLOOR_MAX = 0.05           # Maximum noise floor (prevent threshold from going absurdly high)
 NAV_ENERGY_MULT = 5.0            # Extra energy multiplier during navigation (suppresses motor noise)
 
+# Inter-action waits when chaining LLM actions (e.g. "walk forward then sit").
+# Empirical values — give Spot enough time for the previous command to finish
+# before issuing the next, otherwise the second command races against the first.
+CHAIN_MOVEMENT_WAIT_S = 3.0  # walk / strafe / turn (timed locomotion)
+CHAIN_POSTURE_WAIT_S = 4.0   # sit / stand / selfright / body_height (slower body changes)
+
+# Stock acknowledgments spoken before a VLM query. The LLM's own "response"
+# field for a describe action is often a hallucinated answer (it can't see
+# the camera), so we override it with one of these to fill the ~2-5s gap
+# while the VLM actually runs. See process_utterance() for the override.
+_DESCRIBE_ACKS = (
+    "Let me take a look...",
+    "One sec, checking now...",
+    "Hold on, looking around...",
+    "Taking a look...",
+    "Let me see what's in front of me...",
+    "Checking my camera...",
+)
+
 # ============================================================================
 # Audio Queue (filled by callback)
 # ============================================================================
-audio_queue = queue.Queue()
+# Bounded so that a wedged main loop or a long mic-mute window can't grow
+# the queue without limit. 33 frames at 30ms each = ~1s of headroom, well
+# above the 0.15s SPEAKER_TAIL_COOLDOWN_S grace period. On overflow we
+# drop frames in the callback (see audio_callback) rather than blocking
+# PortAudio's high-priority thread.
+AUDIO_QUEUE_MAX = 33
+audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX)
 MIC_CHANNEL = 0  # 0=left (beamformed), 1=right (ASR); set from --channel arg
-_mic_muted = False  # Set True during TTS playback to prevent feedback
+
+# Mic-mute interlock — derived from AudioPlayer state instead of a flag.
+# The audio callback discards input frames whenever the player is busy
+# (TTS speaking or beep playing) so the mic can never feed Spot's own
+# voice back into ASR. Wired up in main() before the input stream opens.
+_audio_player: AudioPlayer | None = None
+
+# Cooldown after the player goes idle: the OS audio buffer keeps draining
+# for ~tens of ms after stream.write() returns, so the mic would otherwise
+# pick up the tail of Spot's own utterance. 150ms is enough headroom on
+# the USB speaker; raise it if you ever see TTS-tail bleed into ASR.
+SPEAKER_TAIL_COOLDOWN_S = 0.15
+_player_last_busy_at = 0.0  # monotonic timestamp of the most recent busy frame
+
+# The mic-mute watchdog lives inside AudioPlayer (audio_player.py) as its own
+# daemon thread. Putting it there instead of the main loop here means it can
+# still recover from a wedge that happens *inside* process_utterance, when
+# this loop is blocked on tts.wait() — which was the exact failure shape that
+# motivated the refactor.
 
 
 def audio_callback(indata, frames, time_info, status):
-    """Sounddevice callback - converts stereo to mono PCM16."""
-    if _mic_muted:
-        return  # Mic muted during TTS — discard all audio
+    """Sounddevice callback - converts stereo to mono PCM16.
+
+    Mute logic: while the AudioPlayer is busy (TTS speaking or beep playing)
+    we discard frames, and we keep discarding for SPEAKER_TAIL_COOLDOWN_S
+    after it goes idle so the OS audio buffer has time to fully drain.
+    The watchdog that recovers a wedged player runs in the main loop, not
+    here — this callback runs on PortAudio's high-priority thread and must
+    not do heavy work or block.
+    """
+    global _player_last_busy_at
+    now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
+    if _audio_player is not None and _audio_player.is_busy():
+        _player_last_busy_at = now
+        return  # discard frame — speaker is active
+    if now - _player_last_busy_at < SPEAKER_TAIL_COOLDOWN_S:
+        return  # cooldown — speaker buffer still draining
     if status:
         print(f"[Audio: {status}]")
     # Select channel: 0=left (beamformed), 1=right (ASR) for stereo mics like XVF3800
@@ -124,25 +183,13 @@ def audio_callback(indata, frames, time_info, status):
     else:
         mono = indata[:, 0].astype(np.float32)
     pcm16 = (mono * 32767).astype(np.int16).tobytes()
-    audio_queue.put(pcm16)
-
-
-def _mute_mic():
-    """Mute mic (called by TTS before playback)."""
-    global _mic_muted
-    _mic_muted = True
-
-
-def _unmute_mic():
-    """Unmute mic and drain stale audio (called by TTS after playback)."""
-    global _mic_muted
-    _mic_muted = False
-    # Drain any residual audio that leaked through during mute transition
-    while not audio_queue.empty():
-        try:
-            audio_queue.get_nowait()
-        except queue.Empty:
-            break
+    try:
+        audio_queue.put_nowait(pcm16)
+    except queue.Full:
+        # Drop the frame instead of blocking PortAudio's callback thread.
+        # ~1s of frames are already buffered; if the main loop is that far
+        # behind, the right answer is to keep the audio device responsive.
+        pass
 
 
 # ============================================================================
@@ -349,12 +396,24 @@ def get_spot_state() -> dict:
 
 
 def cleanup_spot():
-    """Clean up Spot session on exit."""
+    """Clean up Spot session and audio player on exit.
+
+    Order matters: shut the AudioPlayer down BEFORE the process exits so the
+    daemon worker thread doesn't get torn down mid ``stream.write()``, which
+    would corrupt the heap (the same ``malloc(): unaligned tcache chunk``
+    bug we already fixed for force_reset). The shutdown call drains the
+    queue, joins the worker, and closes the stream gracefully.
+    """
     try:
         from src.voice_control.spot_dispatch import close_spot_session
         close_spot_session()
     except Exception:
         pass
+    if _audio_player is not None:
+        try:
+            _audio_player.shutdown()
+        except Exception as e:
+            print(f"[Player] shutdown error during cleanup: {e}")
 
 
 def _is_robot_moving() -> bool:
@@ -460,8 +519,8 @@ def main():
         try:
             info = sd.query_devices(sd.default.device[0])
             print(f"Audio device: {info['name']} (default)")
-        except:
-            print("Audio device: system default")
+        except Exception as e:
+            print(f"Audio device: system default (query failed: {e})")
 
     # Calibrate noise floor (seeds the adaptive noise tracker)
     noise_rms = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
@@ -482,8 +541,15 @@ def main():
         brain = SpotBrain(model=DEFAULT_MODEL)
         if brain.is_available():
             print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
-            brain.warm_up()
-            brain.warm_up_vlm()
+            # Warm both Ollama models in parallel — each is an I/O+CPU bound
+            # roundtrip, and they're independent (different models on the
+            # same Ollama server). Saves ~2-3s of cold-start latency.
+            brain_warm = threading.Thread(target=brain.warm_up, daemon=True)
+            vlm_warm = threading.Thread(target=brain.warm_up_vlm, daemon=True)
+            brain_warm.start()
+            vlm_warm.start()
+            brain_warm.join()
+            vlm_warm.join()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
             print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
@@ -491,18 +557,23 @@ def main():
     else:
         print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
 
-    # Initialize TTS (with mic mute/unmute callbacks to prevent feedback)
+    # Initialize the shared audio player BEFORE TTS / beeps. Owns the single
+    # persistent OutputStream that all playback (TTS and beeps) flows through.
+    # The mic-mute interlock in audio_callback reads its is_busy() state.
+    global _audio_player
+    print("\nInitializing audio player...")
+    _audio_player = AudioPlayer(output_device=args.output_device)
+
+    # Initialize TTS — submits playback through the shared player.
     tts = None
     if not args.no_tts:
         print("\nInitializing TTS...")
-        tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic,
-                      output_device=args.output_device,
-                      volume=args.volume)
+        tts = SpotTTS(player=_audio_player, volume=args.volume)
         if tts.is_available():
             print(f"[TTS] Ready (output device: {args.output_device}, "
                   f"volume={args.volume}, mic will mute during playback)")
         else:
-            print("[TTS] Not available (install piper-tts). Continuing without speech output.")
+            print("[TTS] Not available (kokoro-onnx model missing). Continuing without speech output.")
             tts = None
         # Register the live TTS instance as the module singleton so the LLM
         # set_volume action (in spot_dispatch._handle_set_volume) can find it.
@@ -512,8 +583,10 @@ def main():
     else:
         print("\n[TTS] Disabled (--no-tts flag)")
 
-    # Point audio feedback beeps at the speaker and apply master volume
-    beep.device = args.output_device
+    # Wire the audio feedback beeps to the shared player and apply volume.
+    # ``beep.device`` is kept as a no-op attribute for backwards compat —
+    # device selection is now owned by the player.
+    beep.set_player(_audio_player)
     beep.set_volume(args.volume)
 
     # Initialize VAD
@@ -592,6 +665,7 @@ def main():
     frame_count = 0
     consecutive_speech = 0       # Tracks consecutive VAD-positive frames for onset debounce
     pending_speech_frames = []   # Buffers frames during onset confirmation
+    last_vad_error_log_time = 0.0  # Token-bucket guard for VAD failure logs (one/min max)
     from collections import deque
     preroll_buffer = deque(maxlen=PREROLL_FRAMES)  # Ring buffer for pre-onset audio
 
@@ -601,8 +675,15 @@ def main():
 
     try:
         while True:
-            # Get audio from queue
-            pcm = audio_queue.get()
+            # Get audio from queue. Short timeout so we still cycle (and stay
+            # responsive to SIGTERM / KeyboardInterrupt) even when the audio
+            # callback has stopped putting frames in the queue — which is
+            # what happens whenever the AudioPlayer is busy (mic muted) or
+            # the watchdog has just force-reset the player.
+            try:
+                pcm = audio_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
             window += pcm
 
             # Process complete frames
@@ -641,7 +722,14 @@ def main():
                 if frame_rms > effective_threshold:
                     try:
                         is_speech = vad.is_speech(frame, SAMPLE_RATE)
-                    except:
+                    except Exception as e:
+                        # webrtcvad rejects mismatched frame sizes / rates,
+                        # which would normally fire silently here. Rate-limit
+                        # to one log line per minute so a real bug shows up
+                        # without flooding the console at 33 frames/sec.
+                        if time.time() - last_vad_error_log_time > 60.0:
+                            print(f"[VAD] is_speech failed: {type(e).__name__}: {e}")
+                            last_vad_error_log_time = time.time()
                         is_speech = False
                 else:
                     is_speech = False
@@ -973,6 +1061,25 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         if not actions and result.get("action"):
             actions = [result["action"]]
 
+        # If a describe action is queued, the LLM's "response" field is
+        # often a hallucinated answer (the model can't actually see the
+        # camera). Replace it with a stock acknowledgment so we don't
+        # speak a fake description before the VLM provides the real one.
+        # Note: this only suppresses what gets spoken — the raw LLM JSON
+        # is still stored in brain.history, so the model can still see
+        # its own hallucination on the next turn (acceptable footnote).
+        describe_action = next(
+            (a for a in actions if a.get("intent") == "describe"),
+            None,
+        )
+        if describe_action:
+            query = describe_action.get("params", {}).get("query", "")
+            response = (
+                f"Let me take a look for the {query}..."
+                if query
+                else random.choice(_DESCRIBE_ACKS)
+            )
+
         # Show what the robot "says"
         if response:
             print(f"\nSPOT (LLM): \"{response}\"")
@@ -1066,9 +1173,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                         if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
                             _wait_for_nav_complete()
                         elif cmd in ("walk", "strafe", "turn"):
-                            time.sleep(3.0)  # timed movement commands
+                            time.sleep(CHAIN_MOVEMENT_WAIT_S)
                         elif cmd in ("sit", "stand", "selfright", "body_height"):
-                            time.sleep(4.0)  # postural changes need time to complete
+                            time.sleep(CHAIN_POSTURE_WAIT_S)
         else:
             # Conversation only — speak response
             if tts and response:

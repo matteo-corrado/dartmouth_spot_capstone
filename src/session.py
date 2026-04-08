@@ -10,11 +10,47 @@ from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.power import PowerClient
 from bosdyn.client.time_sync import TimeSyncClient
 from bosdyn.client.robot_command import RobotCommandClient, blocking_stand, blocking_sit
-from bosdyn.client.robot_command import RobotCommandBuilder
 from bosdyn.client.exceptions import RetryableRpcError
 from bosdyn.client.keepalive import KeepaliveClient, remove_all_policies
 
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
+
+
+def quick_robot(client_name: str,
+                hostname: str = BOSDYN_ROBOT_IP,
+                username: str = BOSDYN_CLIENT_USERNAME,
+                password: str = BOSDYN_CLIENT_PASSWORD,
+                time_sync_attempts: int = 5,
+                time_sync_backoff: float = 0.2):
+    """Connect, authenticate, and time-sync a Spot ``Robot`` object.
+
+    Lighter-weight alternative to ``spot_session()`` for callers that need
+    a connected ``Robot`` but **not** the full lease/power-on/stand
+    lifecycle. Used by E-Stop scripts and the web panel's camera streamer
+    — they only need to talk to one or two clients (e.g. ``EstopClient``,
+    ``ImageClient``) and would otherwise duplicate the same SDK boilerplate
+    in each call site.
+
+    Returns the ``Robot`` instance ready for ``ensure_client(...)`` calls.
+    Does NOT take a lease, does NOT power on motors, and does NOT do any
+    teardown — the caller owns the lifetime.
+
+    Time-sync uses a small retry loop because Spot's TimeSyncClient can
+    occasionally raise on the very first call right after reboot.
+    """
+    sdk = create_standard_sdk(client_name)
+    robot = sdk.create_robot(hostname)
+    robot.authenticate(username, password)
+
+    ts = robot.ensure_client(TimeSyncClient.default_service_name)
+    for _ in range(time_sync_attempts):
+        try:
+            ts.get_time_sync_update()
+            break
+        except Exception:
+            time.sleep(time_sync_backoff)
+
+    return robot
 
 
 @contextmanager

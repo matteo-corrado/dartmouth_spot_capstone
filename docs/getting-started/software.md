@@ -190,7 +190,7 @@ ollama run qwen2.5:7b "Say hello in one sentence"
 TTS and wake word models must be downloaded separately:
 
 ```bash
-python scripts/setup_kokoro.py    # Kokoro TTS (~340MB)
+python scripts/setup_kokoro.py    # Kokoro TTS v1.0 GPU (~200MB)
 python scripts/setup_kws.py       # Wake word KWS (~5MB)
 ```
 

@@ -36,6 +36,7 @@ nav:
       - intent: modules/intent.md
     - Audio:
       - wake_word: modules/wake-word.md
+      - audio_player: modules/audio-player.md
       - spot_tts: modules/spot-tts.md
       - audio_feedback: modules/audio-feedback.md
     - Robot:

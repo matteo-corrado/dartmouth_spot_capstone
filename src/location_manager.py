@@ -43,6 +43,21 @@ LEGACY_KEY = "_legacy"
 FORMAT_VERSION = "v2"
 
 
+def normalize_location_name(name: str) -> str:
+    """Canonicalize a location name for storage/lookup.
+
+    Maps user phrasings like "My Desk" or "  kitchen " to a single
+    consistent key ("my_desk", "kitchen") so that ``save_location("My Desk", ...)``
+    and a later ``load_location("my desk")`` resolve to the same entry.
+
+    The voice dispatcher's tour/patrol code applies the same transformation
+    inline; keeping the rule in one place avoids the round-tripping bug
+    where ``save_location`` stored a name with spaces and tour/patrol
+    couldn't find it again.
+    """
+    return (name or "").strip().lower().replace(" ", "_")
+
+
 def _current_map_key() -> str:
     """Return the slice key for the currently-deployed map.
 
@@ -141,7 +156,7 @@ def save_location(name: str, waypoint_id: str) -> bool:
     maps = data.setdefault("maps", {})
     key = _current_map_key()
     slice_dict = maps.setdefault(key, {})
-    slice_dict[name.lower()] = waypoint_id
+    slice_dict[normalize_location_name(name)] = waypoint_id
 
     _atomic_write(data)
 
@@ -166,7 +181,7 @@ def save_locations(items: Dict[str, str]) -> int:
     key = _current_map_key()
     slice_dict = maps.setdefault(key, {})
     for name, waypoint_id in items.items():
-        slice_dict[name.lower()] = waypoint_id
+        slice_dict[normalize_location_name(name)] = waypoint_id
     _atomic_write(data)
     print(f"\u2713 Saved {len(items)} location(s) to map slice '{key}'")
     return len(items)
@@ -182,7 +197,7 @@ def load_location(name: str) -> Optional[str]:
         Waypoint ID string, or None if not found in the current map.
     """
     data = _load_raw()
-    return _slice_for_current_map(data).get(name.lower())
+    return _slice_for_current_map(data).get(normalize_location_name(name))
 
 
 def load_all_locations() -> Dict[str, str]:

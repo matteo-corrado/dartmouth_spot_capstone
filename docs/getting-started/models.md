@@ -6,7 +6,7 @@ All models are downloaded locally and gitignored. Nothing is fetched at runtime 
 
 | Model | Size | Location | Setup Command |
 |-------|------|----------|---------------|
-| Kokoro TTS (v0.19) | ~340MB | `models/tts/kokoro-en-v0_19/` | `python scripts/setup_kokoro.py` |
+| Kokoro TTS (v1.0 fp16-gpu) | ~200MB | `models/tts/kokoro-v1.0/` | `python scripts/setup_kokoro.py` |
 | KWS Wake Word (zipformer int8) | ~5MB | `models/kws/` | `python scripts/setup_kws.py` |
 | YOLOv8n (person detection) | ~7MB | auto-downloaded by ultralytics | first use |
 | YOLO-World v2 (open-vocab) | ~28MB | auto-downloaded by ultralytics | first use |
@@ -16,27 +16,23 @@ All models are downloaded locally and gitignored. Nothing is fetched at runtime 
 
 Total disk usage: approximately 15GB across all models.
 
-## TTS: Kokoro (sherpa-onnx)
+## TTS: Kokoro v1.0 (kokoro-onnx, GPU)
 
-The Kokoro-en-v0_19 model provides high-quality neural text-to-speech with 11 English speakers. It runs on CPU via sherpa-onnx (no GPU needed).
+The Kokoro v1.0 model provides high-quality neural text-to-speech with 54 voices. It runs on the Jetson AGX Orin's CUDA Execution Provider via `kokoro-onnx` + `onnxruntime-gpu` for ~7-10x realtime synthesis.
 
 ```bash
 python scripts/setup_kokoro.py
 ```
 
-This downloads and extracts the model pack (~340MB) to `models/tts/kokoro-en-v0_19/`. The download streams directly into tar extraction to avoid doubling disk usage.
-
-Contents after setup:
+This downloads two files into `models/tts/kokoro-v1.0/`:
 
 ```
-models/tts/kokoro-en-v0_19/
-    model.onnx       # ~330MB neural TTS model
-    voices.bin        # Speaker embeddings
-    tokens.txt        # Tokenizer vocabulary
-    espeak-ng-data/   # Phonemizer data
+models/tts/kokoro-v1.0/
+    kokoro-v1.0.fp16-gpu.onnx   # ~170MB FP16 model tuned for CUDA
+    voices-v1.0.bin             # ~27MB, 54 voice embeddings
 ```
 
-The default speaker is `af_sarah` (speaker ID 3), a warm American English female voice. Speaker can be changed in `src/voice_control/spot_tts.py`.
+The default speaker is `af_sarah`, a warm American English female voice. Speaker can be changed in `src/voice_control/spot_tts.py`.
 
 Verify:
 

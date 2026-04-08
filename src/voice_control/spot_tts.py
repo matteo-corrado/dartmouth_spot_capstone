@@ -13,6 +13,14 @@ Why not the kokoro-onnx default provider selection?
     hatch at __init__.py:46 is `ONNX_PROVIDER` env var override, which we
     set below before importing the package.
 
+Architecture
+------------
+``SpotTTS`` is a *renderer* — it knows how to turn text into audio samples
+via Kokoro and applies the volume gain. It does NOT own an output stream
+or play audio directly. Playback is delegated to ``AudioPlayer``, which
+serializes all audio (TTS + beeps) through one persistent OutputStream
+and one worker thread. See ``audio_player.py`` for the rationale.
+
 Install (Jetson AGX Orin, JetPack 6, CUDA 12.6, Python 3.10, aarch64):
     pip install --no-deps "numpy==1.26.4"
     pip install --no-deps "opencv-python==4.11.0.86"
@@ -20,11 +28,10 @@ Install (Jetson AGX Orin, JetPack 6, CUDA 12.6, Python 3.10, aarch64):
     pip install joblib
     pip install --no-deps --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126 \
                 "onnxruntime-gpu==1.23.0"
-    python scripts/setup_kokoro_v1.py    # downloads kokoro-v1.0.fp16-gpu.onnx + voices-v1.0.bin
+    python scripts/setup_kokoro.py    # downloads kokoro-v1.0.fp16-gpu.onnx + voices-v1.0.bin
 """
 
 import os
-import threading
 from pathlib import Path
 import numpy as np
 
@@ -32,10 +39,7 @@ import numpy as np
 # through CUDA. See module docstring for the bug rationale.
 os.environ.setdefault("ONNX_PROVIDER", "CUDAExecutionProvider")
 
-try:
-    import sounddevice as sd
-except ImportError:
-    sd = None
+from src.voice_control.audio_player import AudioPlayer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -54,57 +58,61 @@ VOICES_FILE = MODEL_DIR / "voices-v1.0.bin"
 
 
 class SpotTTS:
-    """Non-blocking GPU-accelerated text-to-speech via kokoro-onnx + CUDA.
+    """GPU-accelerated text renderer that submits playback to an AudioPlayer.
 
     Usage:
-        tts = SpotTTS()
-        tts.speak("Hello!")        # non-blocking (background thread)
-        tts.speak_sync("Hello!")   # blocking (waits for playback)
+        player = AudioPlayer(output_device=3)
+        tts = SpotTTS(player=player)
+        tts.speak("Hello!")        # non-blocking — queued in player
+        tts.speak_sync("Hello!")   # blocks until playback finishes
+        tts.wait()                 # wait for queued speech to drain
+
+    The previous version of this class spawned a daemon thread per ``speak``
+    call and used the global ``sd.play()`` / ``sd.wait()`` API. That raced
+    with ``audio_feedback.beep`` over sounddevice's module-global stream
+    state and could deadlock the mic-mute interlock. Now playback is owned
+    by ``AudioPlayer`` and there is exactly one worker for the whole pipeline.
     """
 
-    def __init__(self, voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED,
-                 output_device=None, on_mute=None, on_unmute=None,
-                 volume: float = DEFAULT_VOLUME):
-        """Initialize kokoro-onnx Kokoro TTS on GPU.
+    def __init__(self, player: AudioPlayer | None = None,
+                 voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED,
+                 output_device=None, volume: float = DEFAULT_VOLUME):
+        """Initialize the Kokoro renderer.
 
         Args:
+            player: Shared AudioPlayer to submit playback through. If None,
+                a private AudioPlayer is created using ``output_device``
+                (lazy fallback for the get_tts() singleton path).
             voice: Kokoro voice name (e.g. "af_sarah"). See Kokoro.get_voices().
             speed: Speech speed (1.0 = normal, >1 = faster).
-            output_device: sounddevice output device index (None = system default).
-            on_mute: Callback invoked before playback starts (use to mute mic).
-            on_unmute: Callback invoked after playback ends (use to unmute mic).
+            output_device: Only used if ``player`` is None. The production
+                path always passes an explicit player from client_mic.py.
             volume: Output gain multiplier (0.0=silent, 1.0=full, 1.5=max).
         """
         self.voice = voice
         self.speed = speed
-        self.output_device = output_device
         self.volume = max(0.0, min(MAX_VOLUME, float(volume)))
-        self._on_mute = on_mute
-        self._on_unmute = on_unmute
         self._tts = None
-        self._thread = None
-        self._playing = False
-        self._lock = threading.Lock()
         self._available = None
+        self._player = player if player is not None else AudioPlayer(output_device=output_device)
 
         self._load_model()
 
     def _load_model(self):
         """Load kokoro-onnx Kokoro TTS model on the CUDA Execution Provider."""
-        if sd is None:
-            print("[TTS] sounddevice not installed — no audio playback")
-            print("[TTS] Install with: pip install sounddevice")
+        if not self._player.is_available():
+            print("[TTS] AudioPlayer unavailable — no audio playback")
             self._available = False
             return
 
         if not MODEL_FILE.exists():
             print(f"[TTS] Model not found: {MODEL_FILE}")
-            print(f"[TTS] Run: python scripts/setup_kokoro_v1.py")
+            print(f"[TTS] Run: python scripts/setup_kokoro.py")
             self._available = False
             return
         if not VOICES_FILE.exists():
             print(f"[TTS] Voices file not found: {VOICES_FILE}")
-            print(f"[TTS] Run: python scripts/setup_kokoro_v1.py")
+            print(f"[TTS] Run: python scripts/setup_kokoro.py")
             self._available = False
             return
 
@@ -134,7 +142,6 @@ class SpotTTS:
             active = "unknown"
 
         self._available = True
-        sample_rate = getattr(self._tts.sess, "_sample_rate", 24000)
         print(f"[TTS] Ready — voice={self.voice}, speed={self.speed}, "
               f"provider={active}, sample_rate=24000Hz")
         if active != "CUDAExecutionProvider":
@@ -143,7 +150,7 @@ class SpotTTS:
                   f"the ONNX_PROVIDER env var is set before module import.")
 
     def is_available(self) -> bool:
-        """Check if TTS is ready."""
+        """Check if TTS is ready (model loaded AND player ready)."""
         return self._available is True
 
     def set_volume(self, volume: float) -> float:
@@ -151,87 +158,46 @@ class SpotTTS:
         self.volume = max(0.0, min(MAX_VOLUME, float(volume)))
         return self.volume
 
-    def is_speaking(self) -> bool:
-        """Check if audio is currently playing."""
-        return self._playing
-
     def speak(self, text: str):
-        """Speak text non-blocking (returns immediately, plays in background)."""
+        """Enqueue ``text`` for synthesis and playback. Returns immediately.
+
+        Kokoro inference happens inside the AudioPlayer worker thread, so
+        the caller does not pay the ~1s rendering latency on its own thread.
+        Multiple ``speak`` calls play in submission order — there is no
+        cancel-and-replace behavior anymore.
+        """
         if not self.is_available():
             print(f'[TTS] Not available — would say: "{text}"')
             return
-
         if not text or not text.strip():
             return
 
-        # Cancel any in-progress speech
-        with self._lock:
-            if self._playing:
-                try:
-                    sd.stop()
-                except Exception:
-                    pass
-                self._playing = False
+        # Snapshot the volume at submission time so a later set_volume() does
+        # not retroactively change the gain of an in-flight utterance.
+        gain = self.volume
+        voice = self.voice
+        speed = self.speed
 
-        self._thread = threading.Thread(
-            target=self._speak_impl, args=(text,), daemon=True
-        )
-        self._thread.start()
+        def _render():
+            samples, rate = self._tts.create(
+                text, voice=voice, speed=speed, lang=DEFAULT_LANG
+            )
+            samples = np.asarray(samples, dtype=np.float32)
+            if gain != 1.0:
+                samples = samples * gain
+            return samples, rate
+
+        self._player.enqueue_render(_render, label=f"tts:{text[:40]}")
 
     def speak_sync(self, text: str):
         """Speak text and block until playback finishes."""
-        self._speak_impl(text)
-
-    def _speak_impl(self, text: str):
-        """Generate and play TTS audio."""
-        if not self.is_available() or not text:
-            return
-
-        try:
-            self._playing = True
-            if self._on_mute:
-                self._on_mute()
-
-            samples, rate = self._tts.create(
-                text, voice=self.voice, speed=self.speed, lang=DEFAULT_LANG
-            )
-            samples = np.asarray(samples, dtype=np.float32)
-
-            # Apply volume gain (snapshot self.volume so a mid-utterance
-            # set_volume() doesn't tear the buffer)
-            gain = self.volume
-            if gain != 1.0:
-                samples = samples * gain
-
-            # Resample if output device doesn't support native rate
-            if self.output_device is not None:
-                try:
-                    dev_info = sd.query_devices(self.output_device)
-                    dev_rate = int(dev_info['default_samplerate'])
-                    if dev_rate != rate:
-                        # Simple linear interpolation resample
-                        ratio = dev_rate / rate
-                        n_out = int(len(samples) * ratio)
-                        indices = np.arange(n_out) / ratio
-                        samples = np.interp(indices, np.arange(len(samples)), samples)
-                        rate = dev_rate
-                except Exception:
-                    pass
-
-            sd.play(samples, samplerate=rate, device=self.output_device)
-            sd.wait()
-
-        except Exception as e:
-            print(f"[TTS] Playback error: {e}")
-        finally:
-            self._playing = False
-            if self._on_unmute:
-                self._on_unmute()
+        self.speak(text)
+        self.wait()
 
     def wait(self):
-        """Wait for current speech to finish."""
-        if self._thread and self._thread.is_alive():
-            self._thread.join()
+        """Block until all queued speech (and any other player work) drains."""
+        if self._player:
+            self._player.wait()
 
 
 # ---------------------------------------------------------------------------
@@ -240,13 +206,21 @@ class SpotTTS:
 _tts_instance = None
 
 
-def get_tts(voice: str = DEFAULT_VOICE, output_device=None,
-            volume: float = DEFAULT_VOLUME) -> SpotTTS:
-    """Get or create the singleton SpotTTS instance."""
-    global _tts_instance
-    if _tts_instance is None:
-        _tts_instance = SpotTTS(voice=voice, output_device=output_device,
-                                volume=volume)
+def get_tts() -> SpotTTS | None:
+    """Return the singleton SpotTTS instance, or None if not registered yet.
+
+    Production path: ``client_mic.main()`` constructs SpotTTS explicitly with
+    the shared AudioPlayer and assigns the result to ``_tts_instance``. This
+    accessor is read-only — callers (notably ``spot_dispatch._handle_set_volume``)
+    must handle ``None`` and degrade gracefully if the pipeline hasn't booted.
+
+    The previous version of this function lazy-created a fresh ``SpotTTS()``
+    when ``_tts_instance`` was None. That construction path auto-creates a
+    private ``AudioPlayer``, which would compete with the real one for the
+    audio device. The lazy fallback was dead code in production but a
+    footgun if any new caller ever ran before client_mic registered the
+    singleton, so we removed it.
+    """
     return _tts_instance
 
 
@@ -273,7 +247,7 @@ if __name__ == "__main__":
     print(f"Text: {text}")
 
     if a.wav:
-        # Direct WAV export (no sounddevice needed)
+        # Direct WAV export (no AudioPlayer needed)
         import soundfile as _sf
         from kokoro_onnx import Kokoro
         engine = Kokoro(model_path=str(MODEL_FILE), voices_path=str(VOICES_FILE))

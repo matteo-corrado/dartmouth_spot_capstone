@@ -1,12 +1,11 @@
+#!/usr/bin/env python3
 # scripts/estop_run.py
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 import signal, time
-from bosdyn.client import create_standard_sdk
 from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-from bosdyn.client.time_sync import TimeSyncClient
-from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
+from src.session import quick_robot
 
 _running = True
 def _handle(sig, frame):
@@ -14,19 +13,7 @@ def _handle(sig, frame):
     _running = False
 
 def start_estop(claim=True):
-    sdk = create_standard_sdk("dartmouth_spot_capstone_estop")
-    robot = sdk.create_robot(BOSDYN_ROBOT_IP)
-    robot.authenticate(BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD)
-
-    # Best-effort time sync
-    ts = robot.ensure_client(TimeSyncClient.default_service_name)
-    for _ in range(5):
-        try:
-            ts.get_time_sync_update()
-            break
-        except Exception:
-            time.sleep(0.2)
-
+    robot = quick_robot("dartmouth_spot_capstone_estop")
     estop_client: EstopClient = robot.ensure_client(EstopClient.default_service_name)
 
     # Check and report existing E-Stop holders before claiming

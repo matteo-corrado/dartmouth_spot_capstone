@@ -16,6 +16,7 @@ import os
 import time
 import numpy as np
 import grpc
+from collections import Counter
 from concurrent import futures
 
 import riva.client
@@ -50,7 +51,6 @@ def _is_repetitive(text: str, threshold: float = 0.7) -> bool:
     words = text.strip().lower().split()
     if len(words) < 4:
         return False
-    from collections import Counter
     most_common_count = Counter(words).most_common(1)[0][1]
     return most_common_count / len(words) > threshold
 
@@ -221,7 +221,9 @@ def serve():
     print("SPOT ASR SERVER (NVIDIA Riva / Canary-Qwen-2.5B)")
     print("=" * 60)
 
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    # 4 workers: voice client + web panel polling + headroom for occasional
+    # bursts. Memory cost is negligible (each idle worker thread is ~16 KB).
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=4))
     pbg.add_ASRServicer_to_server(ASRServicer(riva_uri=args.riva_uri), server)
     server.add_insecure_port(f"[::]:{args.port}")
     server.start()

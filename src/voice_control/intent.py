@@ -75,9 +75,6 @@ COMMANDS = [
     (r"\b(?:status|status check|how are you|robot status)\b", "status", {}),
     (r"\b(?:power off|shut\s*down|turn off)\b",    "power_off", {}),
 
-    # === DOOR ===
-    (r"\b(?:open|push)\s+(?:the\s+)?door\b",           "open_door", {}),
-
     # === OTHER ===
     (r"\b(?:list locations|what locations|show locations|saved locations)\b", "list_locations", {}),
 

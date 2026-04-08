@@ -18,6 +18,8 @@ Usage:
 
 import pathlib
 
+import numpy as np
+
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _MODEL_DIR = _PROJECT_ROOT / "models" / "kws"
 
@@ -109,7 +111,6 @@ class WakeWordDetector:
             return False
 
         try:
-            import numpy as np
             samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             self._stream.accept_waveform(self._sample_rate, samples)
 
@@ -140,7 +141,6 @@ class WakeWordDetector:
 # ---------------------------------------------------------------------------
 def _test_mic(device=None):
     """Live microphone test — say 'Hey Spot' and see if it triggers."""
-    import numpy as np
     import sounddevice as sd
     import time
 
@@ -204,7 +204,6 @@ if __name__ == "__main__":
         det = WakeWordDetector()
         print(f"Available: {det.is_available()}")
         if det.is_available():
-            import numpy as np
             silence = np.zeros(480, dtype=np.int16).tobytes()
             for _ in range(100):
                 assert not det.process_frame(silence), "False positive on silence!"

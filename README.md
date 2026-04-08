@@ -62,7 +62,7 @@ For the full architecture diagram and design decisions, see [docs/architecture/o
 | ASR (speech-to-text) | NVIDIA Riva (Canary-Qwen-2.5B) | GPU (Docker) |
 | LLM (language model) | Ollama qwen2.5:7b | GPU |
 | VLM (vision-language) | Ollama qwen2.5vl:7b | GPU |
-| TTS (text-to-speech) | sherpa-onnx Kokoro (kokoro-en-v0_19) | CPU |
+| TTS (text-to-speech) | kokoro-onnx Kokoro v1.0 (fp16-gpu) | GPU |
 | Wake Word | sherpa-onnx KWS (zipformer-gigaspeech-3.3M) | CPU |
 | Object Detection | YOLOv8n + YOLO-World (ultralytics) | CPU |
 | Robot SDK | Boston Dynamics SDK 5.0.1.1 | CPU |

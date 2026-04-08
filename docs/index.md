@@ -60,7 +60,7 @@ See the [Quick Start guide](getting-started/quickstart.md) for a full walkthroug
 | ASR (speech-to-text) | NVIDIA Riva (Canary-Qwen-2.5B) | GPU (Docker) |
 | LLM (language model) | Ollama qwen2.5:7b | GPU |
 | VLM (vision-language) | Ollama qwen2.5vl:7b | GPU |
-| TTS (text-to-speech) | sherpa-onnx Kokoro (kokoro-en-v0_19) | CPU |
+| TTS (text-to-speech) | kokoro-onnx Kokoro v1.0 (fp16-gpu) | GPU |
 | Wake Word | sherpa-onnx KWS (zipformer-gigaspeech-3.3M, int8) | CPU |
 | Object Detection | YOLO (ultralytics) -- YOLOv8n + YOLO-World | CPU |
 | Robot SDK | Boston Dynamics SDK 5.0.1.1 | CPU |
@@ -97,7 +97,7 @@ dartmouth_spot_capstone/
             audio_feedback.py   # Beep tones for status feedback
             visual_nav.py       # YOLO object seeking + person following
     models/                     # Downloaded by setup scripts (gitignored)
-        tts/kokoro-en-v0_19/
+        tts/kokoro-v1.0/
         kws/
     maps/                       # GraphNav maps (gitignored)
     locations.json              # Saved named locations

@@ -45,7 +45,12 @@ def _port_open(port, host="127.0.0.1", timeout=1):
         ok = s.connect_ex((host, port)) == 0
         s.close()
         return ok
-    except Exception:
+    except Exception as e:
+        # Surface the underlying reason once instead of swallowing it.
+        # Otherwise the user gets a cryptic "Riva required for ASR" with
+        # no hint that e.g. the loopback adapter is misconfigured.
+        print(f"[svc] _port_open({host}:{port}) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return False
 
 
@@ -71,7 +76,13 @@ def _docker_container_running(name):
             capture_output=True, text=True, timeout=5
         )
         return r.stdout.strip() == "true"
-    except Exception:
+    except Exception as e:
+        # Most common cause: docker socket permission denied
+        # ("permission denied while trying to connect"). The old silent
+        # except left the user staring at "Riva required for ASR" with
+        # no hint that they need to add themselves to the docker group.
+        print(f"[svc] docker inspect {name} (Running) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return False
 
 
@@ -83,7 +94,9 @@ def _docker_container_exists(name):
             capture_output=True, text=True, timeout=5
         )
         return r.returncode == 0
-    except Exception:
+    except Exception as e:
+        print(f"[svc] docker inspect {name} (Status) failed: "
+              f"{type(e).__name__}: {e}", file=sys.stderr)
         return False
 
 

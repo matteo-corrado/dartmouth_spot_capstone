@@ -71,18 +71,19 @@ Target: `models/kws/`
 
 ## setup_kokoro.py
 
-Download the sherpa-onnx Kokoro TTS model pack (~340MB). Uses streaming
-download + extraction to avoid doubling disk usage.
+Download the Kokoro v1.0 TTS model files (~200MB total) for the
+`kokoro-onnx` GPU pipeline.
 
 ```bash
 python scripts/setup_kokoro.py
 ```
 
-No flags. The script checks if the model already exists and skips if so.
+No flags. The script checks if the model files already exist and skips if so.
 Requires `wget` to be installed.
 
-Model: `kokoro-en-v0_19` (English, 11 speaker voices)
-Target: `models/tts/kokoro-en-v0_19/`
+Model: Kokoro v1.0 (54 voices, default `af_sarah`), CUDA Execution Provider
+Target: `models/tts/kokoro-v1.0/`
+Files: `kokoro-v1.0.fp16-gpu.onnx`, `voices-v1.0.bin`
 
 ---
 

@@ -204,13 +204,9 @@ ollama list
 python scripts/setup_kokoro.py
 ```
 
-By default downloads the int8 model (~88MB) to `models/tts/`. For best quality:
-
-```bash
-python scripts/setup_kokoro.py --full     # 310MB, best quality
-python scripts/setup_kokoro.py --fp16     # 169MB, good balance
-python scripts/setup_kokoro.py --int8     # 88MB, smallest (default)
-```
+Downloads the Kokoro v1.0 fp16-gpu model (~170MB) and voice embeddings
+(~27MB) to `models/tts/kokoro-v1.0/`. The fp16 weights run on the Jetson
+AGX Orin's CUDA Execution Provider — no flags needed.
 
 ### 5.2 Test TTS
 

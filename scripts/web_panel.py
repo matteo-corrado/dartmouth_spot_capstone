@@ -10,6 +10,7 @@ Usage:
     python scripts/web_panel.py --no-spot        # UI-only mode (no Spot connection)
 """
 import sys
+import os
 import pathlib
 import argparse
 import json
@@ -66,23 +67,10 @@ class EStopManager:
                 return True, "E-Stop already claimed"
 
         try:
-            from bosdyn.client import create_standard_sdk
             from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-            from bosdyn.client.time_sync import TimeSyncClient
-            from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
+            from src.session import quick_robot
 
-            sdk = create_standard_sdk("dartmouth_spot_web_estop")
-            robot = sdk.create_robot(BOSDYN_ROBOT_IP)
-            robot.authenticate(BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD)
-
-            ts = robot.ensure_client(TimeSyncClient.default_service_name)
-            for _ in range(5):
-                try:
-                    ts.get_time_sync_update()
-                    break
-                except Exception:
-                    time.sleep(0.2)
-
+            robot = quick_robot("dartmouth_spot_web_estop")
             estop_client = robot.ensure_client(EstopClient.default_service_name)
             endpoint = EstopEndpoint(estop_client, name="dartmouth_web_estop",
                                      estop_timeout=3.0)
@@ -125,18 +113,25 @@ class EStopManager:
                 return False, f"Stop failed: {e}"
 
     def release(self):
-        """Resume — re-create keepalive so robot can move."""
+        """Resume — re-create keepalive so robot can move.
+
+        Holds the lock through the entire mutate-state operation. The
+        previous version released the lock between the early-return
+        checks and the keepalive re-creation, which left a window where
+        a concurrent stop() could re-cut motors while we were halfway
+        through allowing them. Web panel is single-operator so the
+        practical race is small, but the wider lock is essentially free.
+        """
         with self._lock:
             if not self._stopped:
                 if self._keepalive:
                     return True, "E-Stop already active"
                 return False, "E-Stop not claimed"
 
-        # Re-claim from scratch (endpoint was invalidated by stop)
-        try:
-            from bosdyn.client.estop import EstopEndpoint, EstopKeepAlive
+            try:
+                # Re-claim from scratch (endpoint was invalidated by stop)
+                from bosdyn.client.estop import EstopEndpoint, EstopKeepAlive
 
-            with self._lock:
                 endpoint = EstopEndpoint(self._estop_client,
                                          name="dartmouth_web_estop",
                                          estop_timeout=3.0)
@@ -147,13 +142,15 @@ class EStopManager:
                 self._keepalive = keepalive
                 self._stopped = False
                 self._running = True
+            except Exception as e:
+                return False, f"Release failed: {e}"
 
-            self._thread = threading.Thread(target=self._heartbeat, daemon=True)
-            self._thread.start()
+        # Heartbeat thread starts outside the lock so it can take its own
+        # lock immediately on first iteration without recursive contention.
+        self._thread = threading.Thread(target=self._heartbeat, daemon=True)
+        self._thread.start()
 
-            return True, "E-Stop released — robot can move"
-        except Exception as e:
-            return False, f"Release failed: {e}"
+        return True, "E-Stop released — robot can move"
 
     def _heartbeat(self):
         """Background keepalive loop."""
@@ -173,6 +170,35 @@ class EStopManager:
 # Voice pipeline manager
 # ---------------------------------------------------------------------------
 VOICE_LOG_PATH = "/tmp/spot-voice.log"
+# Manual one-shot rotation: when the log exceeds this size, the .1 backup is
+# overwritten and we reopen a fresh file. Avoids unbounded growth on the
+# Jetson's tight /tmp without pulling in logging.handlers.RotatingFileHandler
+# (web_panel uses plain print everywhere else).
+VOICE_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _rotate_voice_log():
+    """Rotate /tmp/spot-voice.log if it exceeds VOICE_LOG_MAX_BYTES.
+
+    Renames the existing file to ``<path>.1`` (clobbering any prior backup).
+    Best-effort: any failure is logged and ignored — we'd rather keep the
+    pipeline running than crash on a missing /tmp permission.
+    """
+    try:
+        size = os.path.getsize(VOICE_LOG_PATH)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        print(f"[web] log rotation stat failed: {e}")
+        return
+    if size < VOICE_LOG_MAX_BYTES:
+        return
+    backup = VOICE_LOG_PATH + ".1"
+    try:
+        os.replace(VOICE_LOG_PATH, backup)
+        print(f"[web] rotated voice log ({size} bytes -> {backup})")
+    except OSError as e:
+        print(f"[web] log rotation rename failed: {e}")
 
 
 class VoicePipelineManager:
@@ -182,6 +208,13 @@ class VoicePipelineManager:
         self._proc = None
         self._log_file = None
         self._lock = threading.Lock()
+        # Cache for get_logs(). The frontend polls every ~2s and the log
+        # can grow to 10s of MB during a long session — re-reading the
+        # whole file each poll would saturate the eMMC. We key the cache
+        # on (st_size, st_mtime); if neither changed since the last call,
+        # we return the cached lines instead of re-reading.
+        self._log_cache_key = None        # (size, mtime) tuple
+        self._log_cache_lines = []
 
     @property
     def status(self):
@@ -196,9 +229,11 @@ class VoicePipelineManager:
                 return True, "Voice pipeline already running"
 
         try:
-            # Append (not truncate) so prior shutdown traces survive a
-            # stop→start cycle — needed to debug device-busy races where
+            # Rotate before opening so each pipeline session starts with
+            # bounded growth. Append mode preserves prior shutdown traces
+            # within a session — needed to debug device-busy races where
             # the previous instance is the one holding the mic.
+            _rotate_voice_log()
             self._log_file = open(VOICE_LOG_PATH, "a")
             script = str(PROJECT_ROOT / "scripts" / "run_voice_control.py")
             env = os.environ.copy()
@@ -213,6 +248,9 @@ class VoicePipelineManager:
             )
             return True, f"Voice pipeline started (PID {self._proc.pid})"
         except Exception as e:
+            # If Popen raised after the log was opened, close the fd so
+            # repeated failed starts don't leak file descriptors.
+            self._close_log()
             return False, f"Failed to start: {e}"
 
     def _close_log(self):
@@ -226,7 +264,6 @@ class VoicePipelineManager:
                 return True, "Voice pipeline not running"
 
         try:
-            import os
             pgid = os.getpgid(self._proc.pid)
 
             # Send SIGINT first — triggers KeyboardInterrupt in Python,
@@ -258,13 +295,39 @@ class VoicePipelineManager:
             return False, f"Failed to stop: {e}"
 
     def get_logs(self, max_lines=200):
-        """Read recent voice pipeline log lines."""
+        """Read recent voice pipeline log lines (cached + tail-only)."""
         try:
-            with open(VOICE_LOG_PATH, "r") as f:
-                lines = f.readlines()
-            return [l.rstrip() for l in lines[-max_lines:]]
+            stat = os.stat(VOICE_LOG_PATH)
         except FileNotFoundError:
+            self._log_cache_key = None
+            self._log_cache_lines = []
             return []
+        except OSError:
+            return self._log_cache_lines
+
+        key = (stat.st_size, stat.st_mtime)
+        if key == self._log_cache_key:
+            return self._log_cache_lines
+
+        # Tail-read: seek to roughly the last `max_lines * 200 bytes` chunk
+        # so we never read more than ~40 KB even when the file is hundreds
+        # of MB. The 200 bytes/line estimate is generous for our log
+        # format (mostly short status lines).
+        tail_window = max_lines * 200
+        try:
+            with open(VOICE_LOG_PATH, "rb") as f:
+                if stat.st_size > tail_window:
+                    f.seek(stat.st_size - tail_window)
+                    f.readline()  # discard the partial first line
+                data = f.read()
+            text = data.decode("utf-8", errors="replace")
+            lines = text.splitlines()[-max_lines:]
+        except OSError:
+            return self._log_cache_lines
+
+        self._log_cache_key = key
+        self._log_cache_lines = lines
+        return lines
 
 
 # ---------------------------------------------------------------------------
@@ -290,16 +353,10 @@ class CameraStreamer:
         if self._image_client is not None:
             return True
         try:
-            from bosdyn.client import create_standard_sdk
             from bosdyn.client.image import ImageClient
-            from src.config import (
-                BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
-            )
+            from src.session import quick_robot
 
-            sdk = create_standard_sdk("dartmouth_spot_web_camera")
-            robot = sdk.create_robot(BOSDYN_ROBOT_IP)
-            robot.authenticate(BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD)
-            robot.time_sync.wait_for_sync()
+            robot = quick_robot("dartmouth_spot_web_camera")
             self._image_client = robot.ensure_client(
                 ImageClient.default_service_name
             )
@@ -848,7 +905,6 @@ document.getElementById('cam-select').addEventListener('change', function() {
 </html>
 """
 
-import os
 
 # ---------------------------------------------------------------------------
 # HTTP handler
@@ -1032,6 +1088,13 @@ def main():
     except Exception:
         pass
     finally:
+        # Tear down the voice subprocess first — it runs in its own
+        # process group (preexec_fn=os.setsid) and would otherwise keep
+        # holding the mic after the panel exits. The 20s SIGINT path
+        # gives client_mic.py time to sit Spot down cleanly.
+        if voice_mgr.status == "running":
+            print("Stopping voice pipeline...")
+            voice_mgr.stop()
         # Clean up E-Stop
         if estop_mgr.status == "active":
             print("Releasing E-Stop...")

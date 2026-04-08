@@ -18,9 +18,18 @@ from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
 from bosdyn.client.image import ImageClient
 from src.session import spot_session
-from src.location_manager import list_locations as _list_saved_locations
+from src.location_manager import (
+    list_locations as _list_saved_locations,
+    normalize_location_name as _normalize_location_name,
+)
 from src.map_loader import list_available_maps, read_last_used, resolve_map_path, write_last_used
 from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
+
+# Spot's e-stop hardware exposes a small enum on robot_state.estop_states[].state.
+# Used both by get_robot_state_dict() (for the LLM context) and the "status"
+# action handler (for the user-facing report) — keep the mapping in one place
+# so they can't drift.
+_ESTOP_STATE_NAMES = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
 
 # Camera source names for Spot's fisheye cameras
 CAMERA_SOURCES = {
@@ -70,13 +79,18 @@ def get_robot_state_dict() -> dict:
     Returns a dict with battery, posture, location, etc.
     Safe to call even if the session is not active yet.
     """
+    # Disk-backed state (locations.json + maps/.last_used). Snapshot once
+    # so the localization reverse-lookup below reuses the same dict instead
+    # of re-reading locations.json a second time per LLM round.
+    saved_locs = _list_saved_locations()
+
     state = {
         "battery_percent": "unknown",
         "estimated_runtime_minutes": "unknown",
         "is_powered": False,
         "is_standing": "unknown",
         "current_location": "unknown",
-        "saved_locations": ", ".join(_list_saved_locations().keys()) or "none",
+        "saved_locations": ", ".join(saved_locs.keys()) or "none",
         "estop_status": "unknown",
         "tts_volume_percent": _current_tts_volume_percent(),
         "available_maps": "unknown",
@@ -113,9 +127,8 @@ def get_robot_state_dict() -> dict:
         state["is_powered"] = is_on
 
         # E-stop
-        estop_map = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
         if robot_state.estop_states:
-            state["estop_status"] = estop_map.get(
+            state["estop_status"] = _ESTOP_STATE_NAMES.get(
                 robot_state.estop_states[0].state, "unknown"
             )
 
@@ -132,16 +145,17 @@ def get_robot_state_dict() -> dict:
         loc = gn.get_localization_state()
         wp = loc.localization.waypoint_id
         if wp:
-            # Reverse-lookup friendly name from locations.json
-            locs = _list_saved_locations()
+            # Reverse-lookup friendly name from the snapshot taken above.
             friendly = next(
-                (name for name, wid in locs.items() if wid == wp), None
+                (name for name, wid in saved_locs.items() if wid == wp), None
             )
             state["current_location"] = friendly or wp
         else:
             state["current_location"] = "not localized"
-    except Exception:
-        pass
+    except Exception as e:
+        # Surface localization failures via state_error so the LLM and
+        # whoever is reading the logs can see why current_location is unknown.
+        state["state_error"] = f"localization: {e}"
 
     return state
 
@@ -431,8 +445,15 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                             # Command expired or constraint fault — re-send with fresh command
                             nav_to_cmd_id = None
                             continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # navigation_feedback() can fail mid-traversal on a
+                        # GraphNav RPC blip, server restart, etc. The old
+                        # silent `except: pass` would let the inner loop
+                        # spin forever polling against a dead command — log
+                        # and break out so the outer waypoint loop can move
+                        # on (or the user can re-issue).
+                        print(f"[Spot] navigation_feedback error for '{name}': {e}")
+                        break
 
                     if stop_event.wait(0.5):
                         print("[Spot] Navigation cancelled")
@@ -489,6 +510,16 @@ def _handle_set_volume(params):
         from src.voice_control.spot_tts import get_tts
         from src.voice_control.audio_feedback import beep
         tts = get_tts()
+        if tts is None:
+            # The voice pipeline hasn't registered the TTS singleton yet.
+            # In production this never happens — set_volume only fires from
+            # an LLM action inside process_utterance, which only runs after
+            # client_mic.main() has assigned _tts_instance. Handle the
+            # degenerate case anyway so we never crash on missing state.
+            print("[Spot] set_volume: TTS not initialized — only updating beep volume")
+            applied_beep = beep.set_volume(gain)
+            print(f"[Spot] ✓ Volume set to {int(pct)}% (tts=skipped, beep={applied_beep:.2f})")
+            return True
         applied_tts = tts.set_volume(gain)
         applied_beep = beep.set_volume(gain)
         print(f"[Spot] ✓ Volume set to {int(pct)}% (tts={applied_tts:.2f}, beep={applied_beep:.2f})")
@@ -793,14 +824,11 @@ def dispatch_intent(intent):
                 # Battery
                 battery = robot_state.power_state.locomotion_charge_percentage.value
 
-                # E-stop status
-                estop_states = {
-                    0: "unknown",
-                    1: "cut",
-                    2: "not_cut",
-                    3: "soft_stop"
-                }
-                estop = estop_states.get(robot_state.estop_states[0].state if robot_state.estop_states else 0, "unknown")
+                # E-stop status (uses module-level _ESTOP_STATE_NAMES)
+                estop = _ESTOP_STATE_NAMES.get(
+                    robot_state.estop_states[0].state if robot_state.estop_states else 0,
+                    "unknown",
+                )
 
                 print(f"[Spot] ✓ Status Report:")
                 print(f"[Spot]   Battery: {battery:.0f}%")
@@ -1243,8 +1271,11 @@ def dispatch_intent(intent):
                 return False
 
         elif name == "save_location":
-            # Save current position as a named location
-            location_name = params.get("location", "").lower()
+            # Save current position as a named location. Use the same
+            # canonical form (strip + lowercase + underscores) that
+            # tour/patrol use when looking up locations, so "save location
+            # my desk" → "my_desk" matches a later "go to my desk".
+            location_name = _normalize_location_name(params.get("location", ""))
             if not location_name:
                 print("[Spot] No location name provided")
                 return False
@@ -1383,7 +1414,10 @@ def dispatch_intent(intent):
                 return False
 
         elif name == "patrol":
-            # Visit all named locations once (single pass by default)
+            # Visit all named locations and loop continuously until stopped.
+            # The LLM system prompt advertises patrol as the looping variant
+            # of tour, so the underlying _start_nav_thread call below uses
+            # repeat=True. Stop with an explicit "stop" command.
             locations_param = params.get("locations", "all")
             print("[Spot] Starting patrol...")
             try:
@@ -1438,7 +1472,7 @@ def dispatch_intent(intent):
                     return False
 
                 _save_home_waypoint(graph_nav_client)
-                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False)
+                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=True)
 
                 print(f"[Spot] Patrol started: {', '.join(location_names)}")
                 return True

@@ -17,6 +17,7 @@ Models (recommended):
 import json
 import time
 import base64
+import collections
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, List
@@ -71,7 +72,6 @@ AVAILABLE ACTIONS:
 - list_locations: List saved locations. No params.
 - load_map: Switch to a different GraphNav map. Params: {"map": "<name>"} (optional — omit to reload the last-used map). The available maps are listed in the robot state under "available_maps". Loading a map disrupts any in-progress navigation and the robot will need to re-localize (best with a fiducial visible).
 - list_maps: List the GraphNav maps available on disk. No params.
-- open_door: Open a push-bar door. No params needed (uses tuned defaults). Use for "open the door", "push the door".
 - go_to_object: Walk toward a visible object using the camera. Params: {"description": "<what to find>"}. Use for "go to the red chair", "find the backpack", "walk to the table". Only for objects you can SEE — use go_to for saved map locations.
 - follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
 - describe: Take a photo and describe what you see. Params: {"camera": "front"|"left"|"right"|"back", "query": "<specific object to look for, if any>"}. Default camera "front". Omit query for general "what do you see" questions.
@@ -180,7 +180,10 @@ class SpotBrain:
     def __init__(self, model: str = DEFAULT_MODEL, ollama_url: str = OLLAMA_URL):
         self.model = model
         self.ollama_url = ollama_url
-        self.history: List[Dict[str, Any]] = []
+        # Bounded conversation history: deque drops the oldest message
+        # automatically when full, replacing the older list-slice pattern
+        # that re-allocated `self.history` on every turn.
+        self.history: "collections.deque[Dict[str, Any]]" = collections.deque(maxlen=MAX_HISTORY)
         self._available = None  # cached availability check
         self._first_request = True
         self._vlm_warmed = False
@@ -201,7 +204,11 @@ class SpotBrain:
                 print(f"[Brain] Run: ollama pull {self.model}")
             self._available = found
             return found
-        except Exception:
+        except Exception as e:
+            # Surface the cause once so the user has a starting point
+            # (e.g. "Connection refused" → ollama isn't running, or
+            # "Name or service not known" → wrong host).
+            print(f"[Brain] Ollama check failed: {type(e).__name__}: {e}")
             self._available = False
             return False
 
@@ -412,12 +419,25 @@ class SpotBrain:
             else:
                 print("[Brain] No action (conversation only)")
 
-            # Update conversation history
+            # Update conversation history.
+            #
+            # For describe actions the LLM's "response" field is often a
+            # hallucinated answer (the model can't actually see the camera),
+            # so we sanitize the assistant turn before storing it. Otherwise
+            # the fake description sticks around in history for up to
+            # MAX_HISTORY turns and biases future replies. The dispatcher
+            # (client_mic.process_utterance) handles the spoken side
+            # independently — this only fixes what gets remembered.
             self.history.append({"role": "user", "content": transcript})
-            self.history.append({"role": "assistant", "content": content})
+            if any(a["intent"] == "describe" for a in actions):
+                data["response"] = "Taking a look..."
+                sanitized = json.dumps(data)
+                self.history.append({"role": "assistant", "content": sanitized})
+            else:
+                self.history.append({"role": "assistant", "content": content})
 
-            if len(self.history) > MAX_HISTORY:
-                self.history = self.history[-MAX_HISTORY:]
+            # history is a deque(maxlen=MAX_HISTORY) — old turns are
+            # auto-evicted on append, no manual slicing needed.
 
             return {
                 "actions": actions,
