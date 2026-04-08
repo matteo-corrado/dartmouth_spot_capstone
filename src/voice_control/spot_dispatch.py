@@ -863,278 +863,53 @@ def dispatch_intent(intent):
                 print(f"[Spot] ✗ Emergency stop failed: {e}")
                 return False
 
-        elif name == "open_door":
-            # Open a door using BD's DoorService (AutoGrasp).
-            # Requires prior calibration: python scripts/calibrate_door.py
-            # Flow: pitch up -> capture image -> WalkToObject -> raycast ->
-            #       AutoGraspCommand -> DoorService handles grasp+open+walk-through
-            print("[Spot] Opening door...")
-
-            def _open_door_thread():
-                import json
-                import math
-                import numpy as np
-                from bosdyn.api import (manipulation_api_pb2, geometry_pb2,
-                                        basic_command_pb2)
-                from bosdyn.api.manipulation_api_pb2 import (
-                    WalkToObjectInImage, ManipulationApiRequest,
-                    ManipulationApiFeedbackRequest)
-                from bosdyn.api.spot import door_pb2
-                from bosdyn.client.manipulation_api_client import ManipulationApiClient
-                from bosdyn.client.door import DoorClient
-                from bosdyn.client.image import ImageClient
-                from bosdyn.client import frame_helpers
-                from bosdyn import geometry as bd_geometry
-
-                robot = session["robot"]
-
-                try:
-                    # Load calibration
-                    config_path = project_root / "door_config.json"
-                    if not config_path.exists():
-                        print("[Spot] No door calibration found.")
-                        print("[Spot] Run: python scripts/calibrate_door.py")
-                        return
-                    with open(config_path) as f:
-                        door_config = json.load(f)
-
-                    camera_source = door_config["camera_source"]
-                    handle_rx = door_config["handle_pixel_x_rotated"]
-                    handle_ry = door_config["handle_pixel_y_rotated"]
-                    hinge_side_str = door_config["hinge_side"]
-
-                    # 1. Pitch robot up to see the door
-                    print("[Spot] [1/5] Pitching up to view door...")
-                    pitch_cmd = RobotCommandBuilder.synchro_stand_command(
-                        footprint_R_body=bd_geometry.EulerZXY(
-                            pitch=-0.4, roll=0.0, yaw=0.0)
-                    )
-                    cmd_client.robot_command(pitch_cmd)
-                    time.sleep(2.0)
-
-                    # 2. Capture front fisheye image
-                    print("[Spot] [2/5] Capturing door image...")
-                    image_client = robot.ensure_client(
-                        ImageClient.default_service_name)
-                    image_responses = image_client.get_image_from_sources(
-                        [camera_source])
-                    if not image_responses:
-                        print(f"[Spot] No image from {camera_source}")
-                        return
-                    image_proto = image_responses[0]
-
-                    # Get image dimensions for pixel un-rotation
-                    img_h = image_proto.shot.image.rows
-                    img_w = image_proto.shot.image.cols
-                    # Rotated image dimensions (after 90 CW): W_rot=h, H_rot=w
-                    rotated_w = img_h
-
-                    # Un-rotate pixel from 90 CW display back to original
-                    # (same math as arm_door.py)
-                    th = -math.pi / 2
-                    xm = rotated_w / 2.0
-                    ym = img_w / 2.0
-                    x = handle_rx - xm
-                    y = handle_ry - ym
-                    orig_px = math.cos(th) * x - math.sin(th) * y + ym
-                    orig_py = math.sin(th) * x + math.cos(th) * y + xm
-
-                    # 3. WalkToObjectInImage: position robot and raycast
-                    # (skipped if robot is already close — falls back to
-                    #  body-frame search ray)
-                    print("[Spot] [3/5] Walking to door...")
-                    manip_client = robot.ensure_client(
-                        ManipulationApiClient.default_service_name)
-
-                    walk_cmd = WalkToObjectInImage()
-                    walk_cmd.pixel_xy.x = orig_px
-                    walk_cmd.pixel_xy.y = orig_py
-                    walk_cmd.frame_name_image_sensor = (
-                        image_proto.shot.frame_name_image_sensor)
-                    walk_cmd.transforms_snapshot_for_camera.CopyFrom(
-                        image_proto.shot.transforms_snapshot)
-                    walk_cmd.camera_model.CopyFrom(
-                        image_proto.source.pinhole)
-                    walk_cmd.offset_distance.value = 1.25
-
-                    walk_request = ManipulationApiRequest(
-                        walk_to_object_in_image=walk_cmd)
-                    walk_response = manip_client.manipulation_api_command(
-                        walk_request)
-
-                    # Poll for walk completion (with state logging)
-                    walk_cmd_id = walk_response.manipulation_cmd_id
-                    snapshot = None
-                    last_state = -1
-                    # Map state codes to names for logging
-                    state_names = {
-                        0: "UNKNOWN", 1: "DONE",
-                        2: "SEARCHING_FOR_GRASP",
-                        3: "MOVING_TO_GRASP",
-                        9: "FAILED_TO_RAYCAST",
-                        10: "WALKING_TO_OBJECT",
-                        12: "ATTEMPTING_RAYCASTING",
-                    }
-                    end_time = time.time() + 25.0
-                    while time.time() < end_time:
-                        fb = manip_client.manipulation_api_feedback_command(
-                            ManipulationApiFeedbackRequest(
-                                manipulation_cmd_id=walk_cmd_id))
-                        st = fb.current_state
-                        if st != last_state:
-                            sname = state_names.get(st, str(st))
-                            print(f"[Spot]   Walk state: {sname}")
-                            last_state = st
-                        if st == manipulation_api_pb2.MANIP_STATE_DONE:
-                            snapshot = (
-                                fb.transforms_snapshot_manipulation_data)
-                            break
-                        # Detect failure states
-                        if st in (7, 8, 9):  # FAILED / NO_SOLUTION / RAYCAST_FAIL
-                            print(f"[Spot]   Walk failed (state={st})")
-                            break
-                        time.sleep(0.5)
-
-                    # Reset body pitch
-                    cmd_client.robot_command(
-                        RobotCommandBuilder.synchro_stand_command())
-                    time.sleep(0.5)
-
-                    # 4. Build search ray and send AutoGrasp door command
-                    print("[Spot] [4/5] Sending AutoGrasp door command...")
-                    auto_cmd = door_pb2.DoorCommand.AutoGraspCommand()
-
-                    if snapshot is not None:
-                        # Use raycast-based search ray (vision frame)
-                        print("[Spot]   Using raycast search ray")
-                        vision_tform_raycast = frame_helpers.get_a_tform_b(
-                            snapshot, frame_helpers.VISION_FRAME_NAME,
-                            frame_helpers.RAYCAST_FRAME_NAME)
-                        vision_tform_sensor = frame_helpers.get_a_tform_b(
-                            snapshot, frame_helpers.VISION_FRAME_NAME,
-                            image_proto.shot.frame_name_image_sensor)
-
-                        raycast_pt = (
-                            vision_tform_raycast.get_translation())
-                        sensor_pt = (
-                            vision_tform_sensor.get_translation())
-
-                        ray_dir = raycast_pt - sensor_pt
-                        ray_dir_unit = ray_dir / np.linalg.norm(ray_dir)
-
-                        search_dist = 0.25
-                        search_vec = search_dist * ray_dir_unit
-                        ray_start = raycast_pt - search_vec
-                        ray_end = raycast_pt + search_vec
-
-                        auto_cmd.frame_name = (
-                            frame_helpers.VISION_FRAME_NAME)
-                        auto_cmd.search_ray_start_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(
-                                x=ray_start[0], y=ray_start[1],
-                                z=ray_start[2]))
-                        auto_cmd.search_ray_end_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(
-                                x=ray_end[0], y=ray_end[1],
-                                z=ray_end[2]))
-                    else:
-                        # Fallback: body-frame search ray (robot already
-                        # close to door). Ray angles upward from body
-                        # center to push bar height (~0.9-1.0m from floor;
-                        # body origin is ~0.5m off ground, so z≈0.4-0.5).
-                        print("[Spot]   Walk failed/timed out — using "
-                              "body-frame search ray")
-                        auto_cmd.frame_name = "body"
-                        auto_cmd.search_ray_start_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(x=0.4, y=0.0, z=0.0))
-                        auto_cmd.search_ray_end_in_frame.CopyFrom(
-                            geometry_pb2.Vec3(x=0.8, y=0.0, z=0.5))
-
-                    if hinge_side_str == "left":
-                        auto_cmd.hinge_side = (
-                            door_pb2.DoorCommand.HINGE_SIDE_LEFT)
-                    else:
-                        auto_cmd.hinge_side = (
-                            door_pb2.DoorCommand.HINGE_SIDE_RIGHT)
-                    auto_cmd.swing_direction = (
-                        door_pb2.DoorCommand.SWING_DIRECTION_PUSH)
-
-                    door_command = door_pb2.DoorCommand.Request(
-                        auto_grasp_command=auto_cmd)
-                    door_request = door_pb2.OpenDoorCommandRequest(
-                        door_command=door_command)
-
-                    door_client = robot.ensure_client(
-                        DoorClient.default_service_name)
-                    door_response = door_client.open_door(door_request)
-
-                    if (door_response.status !=
-                            door_pb2.OpenDoorCommandResponse.STATUS_OK):
-                        print(f"[Spot] Door command rejected: "
-                              f"{door_response.message}")
-                        return
-
-                    # 5. Poll for door completion
-                    print("[Spot] [5/5] Opening door...")
-                    fb_req = door_pb2.OpenDoorFeedbackRequest()
-                    fb_req.door_command_id = door_response.door_command_id
-
-                    end_time = time.time() + 60.0
-                    while time.time() < end_time:
-                        fb = door_client.open_door_feedback(fb_req)
-                        if (fb.status != basic_command_pb2
-                                .RobotCommandFeedbackStatus.STATUS_PROCESSING):
-                            print(f"[Spot] Door command stopped "
-                                  f"(status={fb.status})")
-                            break
-                        door_fb = fb.feedback.status
-                        if door_fb == (door_pb2.DoorCommand
-                                       .Feedback.STATUS_COMPLETED):
-                            print("[Spot] ✓ Door opened successfully!")
-                            return
-                        elif door_fb == (door_pb2.DoorCommand
-                                         .Feedback.STATUS_STALLED):
-                            print("[Spot] Door opening stalled")
-                            break
-                        elif door_fb == (door_pb2.DoorCommand
-                                         .Feedback.STATUS_NOT_DETECTED):
-                            print("[Spot] Door not detected")
-                            break
-                        time.sleep(0.5)
-
-                    print("[Spot] Door operation finished")
-
-                except Exception as e:
-                    print(f"[Spot] ✗ Door opening failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-                finally:
-                    # Reset body pitch in case it's still tilted
-                    try:
-                        cmd_client.robot_command(
-                            RobotCommandBuilder.synchro_stand_command())
-                    except Exception:
-                        pass
-
-            t = threading.Thread(target=_open_door_thread, daemon=True)
-            t.start()
-            return True
-
         elif name == "go_to_object":
-            # Visual navigation — walk toward a visible object using YOLO-World
+            # Generalized "go to X" — smart dispatch to three backends:
+            # 1. Saved location in the graph_nav map → delegate to go_to
+            # 2. WorldObject match ("fiducial 5" / "dock") → native AprilTag /
+            #    dock service, SE2 trajectory. No YOLO involvement.
+            # 3. Anything else → YOLO-World visual nav (the original path).
             description = params.get("description", "")
             if not description:
                 print("[Spot] No object description provided")
                 return False
 
-            # Check if description matches a saved location — use GraphNav instead
+            # (1) saved location shortcut
             saved = _list_saved_locations()
             desc_normalized = description.strip().lower().replace(" ", "_")
             if desc_normalized in saved:
                 print(f"[Spot] '{description}' is a saved location — using map navigation")
                 return dispatch_intent({"intent": "go_to", "params": {"location": desc_normalized}})
 
-            print(f"[Spot] Looking for '{description}'...")
+            # (2) world-object shortcut — fiducials and docks
+            try:
+                from src.voice_control.world_objects import find_navigation_target
+                robot_obj = session["robot"]
+                target = find_navigation_target(robot_obj, description)
+            except Exception as e:
+                print(f"[Spot] world_objects lookup failed, falling through to YOLO: {e}")
+                target = None
+
+            if target is not None:
+                print(f"[Spot] '{description}' → {target.source} "
+                      f"at ({target.x:.2f}, {target.y:.2f}, "
+                      f"yaw={target.yaw:.2f}) in {target.frame_name}")
+                try:
+                    goal_pose = SE2Pose(target.x, target.y, target.yaw)
+                    cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
+                        goal_se2=goal_pose.to_proto(),
+                        frame_name=target.frame_name,
+                    )
+                    cmd_client.robot_command(cmd, end_time_secs=time.time() + 15.0)
+                    print(f"[Spot] ✓ SE2 trajectory sent toward {target.source}")
+                    return True
+                except Exception as e:
+                    print(f"[Spot] ✗ World-object approach failed: {e}")
+                    # fall through to YOLO as a last resort
+                    pass
+
+            # (3) YOLO fallback
+            print(f"[Spot] Looking for '{description}' with YOLO-World...")
 
             def _visual_nav_thread():
                 try:
@@ -1153,6 +928,60 @@ def dispatch_intent(intent):
             _nav_stop_event = threading.Event()
             _nav_thread = threading.Thread(target=_visual_nav_thread, daemon=True)
             _nav_thread.start()
+            return True
+
+        elif name == "check_obstacles":
+            # Query Spot's native LocalGrid obstacle field via the
+            # perception module. Read-only — never commands motion.
+            # Returns structured (distance, direction) so the LLM can
+            # verbalize it. On a base Spot the grid may not be available
+            # at all (probe script reports this) — in that case we log
+            # and return True since "no obstacles reported" is a valid
+            # answer, not a failure.
+            try:
+                from src.voice_control.perception.obstacle_query import (
+                    nearest_obstacle_in_body_frame,
+                )
+            except Exception as e:
+                print(f"[Spot] check_obstacles: perception module unavailable: {e}")
+                return False
+
+            robot_obj = session["robot"]
+            try:
+                hit = nearest_obstacle_in_body_frame(robot_obj, max_radius_m=3.0)
+            except Exception as e:
+                print(f"[Spot] check_obstacles: query failed: {e}")
+                return False
+
+            if hit is None:
+                print("[Spot] check_obstacles: no obstacles within 3m "
+                      "(or obstacle-grid unavailable on this firmware)")
+                return True
+
+            # Convert bearing (radians, 0=forward, +pi/2=left) to a
+            # human-friendly direction label. 45°-wide bins.
+            import math as _m
+            deg = _m.degrees(hit.bearing_rad)
+            if -22.5 <= deg <= 22.5:
+                direction = "directly ahead"
+            elif 22.5 < deg <= 67.5:
+                direction = "ahead and to the left"
+            elif 67.5 < deg <= 112.5:
+                direction = "to the left"
+            elif 112.5 < deg <= 157.5:
+                direction = "behind and to the left"
+            elif deg > 157.5 or deg < -157.5:
+                direction = "directly behind"
+            elif -157.5 <= deg < -112.5:
+                direction = "behind and to the right"
+            elif -112.5 <= deg < -67.5:
+                direction = "to the right"
+            else:  # -67.5 <= deg < -22.5
+                direction = "ahead and to the right"
+            print(
+                f"[Spot] check_obstacles: nearest obstacle {hit.distance_m:.2f}m "
+                f"{direction} ({deg:.0f}°, source={hit.grid_name})"
+            )
             return True
 
         elif name == "follow_me":

@@ -72,9 +72,10 @@ AVAILABLE ACTIONS:
 - list_locations: List saved locations. No params.
 - load_map: Switch to a different GraphNav map. Params: {"map": "<name>"} (optional — omit to reload the last-used map). The available maps are listed in the robot state under "available_maps". Loading a map disrupts any in-progress navigation and the robot will need to re-localize (best with a fiducial visible).
 - list_maps: List the GraphNav maps available on disk. No params.
-- go_to_object: Walk toward a visible object using the camera. Params: {"description": "<what to find>"}. Use for "go to the red chair", "find the backpack", "walk to the table". Only for objects you can SEE — use go_to for saved map locations.
+- go_to_object: Walk toward any visible object Spot can recognise. Params: {"description": "<what to find>"}. Spot uses YOLO/VLM to identify the target in its surroundings — anything you can describe in a few words. Works for ordinary objects (chairs, tables, posters, backpacks, people), architectural features (doors, exits, doorways, windows), and pick-up targets ("the cup on the floor"). Only for things you can SEE in the camera right now — use go_to for saved map locations.
 - follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
 - describe: Take a photo and describe what you see. Params: {"camera": "front"|"left"|"right"|"back", "query": "<specific object to look for, if any>"}. Default camera "front". Omit query for general "what do you see" questions.
+- check_obstacles: Query Spot's built-in obstacle map for nearby obstacles. No params. Use for "is there anything in front of you", "is this room cluttered", "what direction is clearest", "can you move forward safely". Returns distances and bearings without using cameras or YOLO — it's a direct read of Spot's footstep-planning grid.
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
@@ -104,6 +105,21 @@ User: "Do you see the blue chair?"
 
 User: "Go to the red chair"
 {"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}
+
+User: "Walk to the door"
+{"actions": [{"action": "go_to_object", "params": {"description": "door"}}], "response": "Looking for a door."}
+
+User: "Find me a chair"
+{"actions": [{"action": "go_to_object", "params": {"description": "chair"}}], "response": "On it — finding a chair."}
+
+User: "Go to the poster on the wall"
+{"actions": [{"action": "go_to_object", "params": {"description": "poster"}}], "response": "Heading to the poster."}
+
+User: "Is there anything in front of you?"
+{"actions": [{"action": "check_obstacles", "params": {}}], "response": "Let me check."}
+
+User: "Is this room cluttered?"
+{"actions": [{"action": "check_obstacles", "params": {}}], "response": "Checking my obstacle map."}
 
 User: "Set your volume to 80 percent"
 {"actions": [{"action": "set_volume", "params": {"level": 80}}], "response": "Setting my volume to 80%."}

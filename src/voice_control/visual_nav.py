@@ -9,6 +9,7 @@ Both run on CPU to avoid GPU/VRAM competition with the LLM.
 Install: pip install ultralytics
 """
 
+import os
 import time
 import math
 import io
@@ -44,7 +45,15 @@ ALL_CAMERAS = [
     ("back_fisheye_image",       math.radians(180)),  # back — turn 180°
 ]
 
-# Approach mode (go_to_object)
+# Approach mode (go_to_object) — SDK manipulation API path (Tier 2a)
+APPROACH_OFFSET_M = 0.8         # how close to stand from the target (WalkToObjectInImage)
+APPROACH_TIMEOUT_S = 30.0       # max wall-clock for the SDK to complete the walk
+APPROACH_POLL_S = 0.25          # feedback poll cadence
+
+# Legacy visual-servo constants — only used if WalkToObjectInImage submission
+# fails BEFORE the SDK takes over (e.g. ImageSource not pinhole). Kept here as
+# a documented fallback path; removed entirely once the SDK path is proven
+# stable on every camera.
 APPROACH_STEP = 0.5             # meters forward per loop
 APPROACH_DONE_FRAC = 0.50       # bbox height / image height → close enough
 APPROACH_YAW_GAIN = 1.0         # steering proportional gain
@@ -72,6 +81,21 @@ FOLLOW_VEL_SMOOTH = 0.6         # velocity EMA smoothing (0=instant, 1=no change
 # Timing
 MOVE_SETTLE = 1.5               # seconds to let a step complete
 LOST_TIMEOUT = 10.0             # seconds without detection → give up
+
+# ---------------------------------------------------------------------------
+# Collision pre-check (Tier 4c of perception overhaul — feature flag)
+# ---------------------------------------------------------------------------
+# Enabled via env var ``SPOT_COLLISION_PRECHECK=1``. Off by default because
+# the obstacle_distance grid semantics on this Spot have not yet been
+# empirically verified — see plan Tier 4 risks. Failure mode is deliberately
+# **fail-open**: if the check raises, times out, or returns None (no grid
+# available), forward motion proceeds normally. Never brick the robot on a
+# query failure.
+COLLISION_PRECHECK_ENABLED = os.environ.get("SPOT_COLLISION_PRECHECK", "").lower() in (
+    "1", "true", "yes", "on",
+)
+COLLISION_MIN_DISTANCE_M = 0.6   # forward obstacle closer than this blocks vx
+COLLISION_QUERY_RADIUS_M = 2.0   # how far the obstacle query scans
 
 # ---------------------------------------------------------------------------
 # Lazy model loading
@@ -203,12 +227,21 @@ def _capture_multi(session, sources):
         return {}
 
 
-def _decode_depth(resp):
-    """Decode depth image response into numpy array (meters).
+# One-time warnings keyed by source name so a quirky camera can't spam the log.
+_depth_scale_warnings_emitted: set[str] = set()
+_depth_decode_failures_logged: set[str] = set()
 
-    Forces scale = 0.001 (mm → m) for DEPTH_U16 regardless of API depth_scale,
-    which can return incorrect values on some firmware.
+
+def _decode_depth(resp):
+    """Decode depth image response into numpy array of meters with NaN for invalid pixels.
+
+    Uses ``resp.source.depth_scale`` when > 0 (SDK convention: ``meters = raw / depth_scale``;
+    typically depth_scale == 1000.0, i.e. raw values are millimeters). Falls back to 1000.0
+    with a one-time warning per source if the scale is missing/zero. Invalid pixels (raw 0
+    and raw 65535, per the Spot SDK convention) are mapped to NaN. Returns None only on hard
+    errors (malformed response, wrong format, decode exception).
     """
+    source_name = getattr(getattr(resp, "source", None), "name", "<unknown>")
     try:
         img = resp.shot.image
         if img.rows == 0 or img.cols == 0:
@@ -216,11 +249,26 @@ def _decode_depth(resp):
         if img.format != image_pb2.Image.FORMAT_RAW:
             print(f"[VisualNav] Depth not RAW (format={img.format}), skipping")
             return None
-        arr = np.frombuffer(img.data, dtype=np.uint16).reshape(img.rows, img.cols)
-        # Always use 0.001 (mm → m) for uint16 depth — API depth_scale is unreliable
-        return arr.astype(np.float32) * 0.001
+        raw = np.frombuffer(img.data, dtype=np.uint16).reshape(img.rows, img.cols)
+
+        depth_scale = getattr(resp.source, "depth_scale", 0.0)
+        if not depth_scale or depth_scale <= 0:
+            if source_name not in _depth_scale_warnings_emitted:
+                _depth_scale_warnings_emitted.add(source_name)
+                print(f"[VisualNav] WARNING: source '{source_name}' has no valid depth_scale "
+                      f"(got {depth_scale!r}); falling back to 1000.0 (mm → m)")
+            depth_scale = 1000.0
+
+        # SDK convention: meters = raw / depth_scale. Raw 0 and raw 65535 are invalid sentinels.
+        invalid_mask = (raw == 0) | (raw == 65535)
+        meters = raw.astype(np.float32) / float(depth_scale)
+        meters[invalid_mask] = np.nan
+        return meters
     except Exception as e:
-        print(f"[VisualNav] Depth decode: {e}")
+        if source_name not in _depth_decode_failures_logged:
+            _depth_decode_failures_logged.add(source_name)
+            print(f"[VisualNav] Depth decode failed for source '{source_name}': "
+                  f"{type(e).__name__}: {e} (further failures for this source will be silent)")
         return None
 
 
@@ -230,6 +278,14 @@ def _depth_at_bbox(depth_arr, bbox):
     YOLO bbox is in rotated (90° CW) image coords.
     Depth image is in original camera frame.
     Un-rotate: orig_x = rot_y, orig_y = H_orig - 1 - rot_x
+
+    TODO(perception-overhaul-1b): replace this body with inner-60% bbox sampling
+    + optional mask path. BLOCKED on linked-hopping-anchor Stage 0 (rotation
+    table) and Stage 4 (seg model). The replacement signature must be
+    ``_depth_at_bbox(depth_arr, bbox, mask=None) -> float | None`` per the
+    sibling-plan contract in humming-stargazing-shell.md "INSTRUCTIONS FOR
+    THE linked-hopping-anchor.md AGENT" §3. Until then this function uses an
+    11×11 center patch and is forward-compat with Tier 1a NaN sentinels.
     """
     x1, y1, x2, y2 = bbox
     cx_rot = (x1 + x2) / 2.0
@@ -245,7 +301,8 @@ def _depth_at_bbox(depth_arr, bbox):
     pad = 5
     patch = depth_arr[max(0, orig_y - pad):min(orig_rows, orig_y + pad + 1),
                       max(0, orig_x - pad):min(orig_cols, orig_x + pad + 1)]
-    valid = patch[patch > 0.1]  # filter invalid readings
+    # NaN-aware until Tier 1b ships its proper inner-60%/mask replacement.
+    valid = patch[~np.isnan(patch) & (patch > 0.1)]
     return float(np.median(valid)) if len(valid) > 0 else 0.0
 
 
@@ -292,6 +349,103 @@ def detect_in_image(image_bytes: bytes, description: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Body-frame bearing + pixel un-rotation (Tiers 2b/2c of perception overhaul)
+# ---------------------------------------------------------------------------
+def _capture_with_response(session, source: str):
+    """Capture from one camera, returning ``(rotated_PIL, image_response)``.
+
+    The companion to ``_capture_rotated`` that ALSO returns the raw
+    ``ImageResponse`` proto. ``WalkToObjectInImage`` (Tier 2a) needs the
+    ``shot.transforms_snapshot`` and ``shot.frame_name_image_sensor``
+    fields, so we can't throw the response away after decoding.
+
+    Returns ``(None, None)`` on any failure.
+    """
+    if Image is None:
+        return None, None
+    try:
+        robot = session["robot"]
+        img_client = robot.ensure_client(ImageClient.default_service_name)
+        resps = img_client.get_image_from_sources([source])
+        if not resps:
+            return None, None
+        resp = resps[0]
+        data = resp.shot.image.data
+        pil = Image.open(io.BytesIO(data))
+        pil = pil.transpose(Image.Transpose.ROTATE_270)  # 90° CW
+        return pil, resp
+    except Exception as e:
+        print(f"[VisualNav] Capture (with response) failed for {source}: {e}")
+        return None, None
+
+
+def _unrotate_pixel(rot_x: float, rot_y: float,
+                    rot_w: int, rot_h: int) -> tuple[float, float]:
+    """Map a pixel from rotated (model) coords to native sensor coords.
+
+    All callers currently rotate captured frames by ``ROTATE_270``
+    (90° CW) before handing them to YOLO, so YOLO bboxes live in the
+    rotated frame. The SDK's ``pixel_to_camera_space`` and
+    ``WalkToObjectInImage`` need pixels in the **native** unrotated
+    sensor frame.
+
+    Inverse of 90° CW: ``native_x = rot_y``,
+    ``native_y = rot_w - 1 - rot_x``. Numerically verified against the
+    inverse rotation in ``_depth_at_bbox``.
+
+    TODO(perception-overhaul-2b/linked-hopping-anchor-stage0): when
+    linked-hopping-anchor's per-camera rotation table lands, replace
+    this with the shared helper that knows each source's actual angle.
+    """
+    native_x = float(rot_y)
+    native_y = float(rot_w - 1 - rot_x)
+    return native_x, native_y
+
+
+def _bearing_in_body_frame(image_response, native_x: float, native_y: float):
+    """Return the body-frame yaw (radians) of a pixel in a captured image.
+
+    Uses ``bosdyn.client.image.pixel_to_camera_space`` (pinhole only)
+    plus the captured frame snapshot to project a unit ray from the
+    pixel and compute its body-frame bearing — properly accounting for
+    the camera mount offset by transforming both the camera origin and
+    the depth-1 endpoint into the body frame and taking the difference.
+
+    Returns ``None`` if the source isn't pinhole, the frame chain is
+    missing, or anything else goes wrong. Pinhole-everywhere on this
+    Spot is empirically confirmed by the perception probe; see
+    ``docs/project/perception_probe_results.md``.
+    """
+    if image_response.source.WhichOneof("camera_models") != "pinhole":
+        return None
+    try:
+        from bosdyn.client.image import pixel_to_camera_space
+        from bosdyn.client.frame_helpers import get_a_tform_b, BODY_FRAME_NAME
+
+        snap = image_response.shot.transforms_snapshot
+        sensor_frame = image_response.shot.frame_name_image_sensor
+        if not sensor_frame:
+            return None
+        body_T_cam = get_a_tform_b(snap, BODY_FRAME_NAME, sensor_frame)
+        if body_T_cam is None:
+            return None
+
+        endpoint_cam = pixel_to_camera_space(
+            image_response.source, native_x, native_y, depth=1.0
+        )
+        origin_body = body_T_cam.transform_point(0.0, 0.0, 0.0)
+        endpoint_body = body_T_cam.transform_point(
+            endpoint_cam[0], endpoint_cam[1], endpoint_cam[2]
+        )
+        dx = endpoint_body[0] - origin_body[0]
+        dy = endpoint_body[1] - origin_body[1]
+        return math.atan2(dy, dx)
+    except Exception as e:
+        print(f"[VisualNav] bearing_in_body_frame failed: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Steering + movement
 # ---------------------------------------------------------------------------
 def _steer(bbox, img_w, img_h, gain, max_yaw):
@@ -299,6 +453,13 @@ def _steer(bbox, img_w, img_h, gain, max_yaw):
 
     Spot body frame: +yaw = CCW = turn left.
     Object to the right of image center → negative yaw → turn right.
+
+    TODO(perception-overhaul-2b): replace pixel-offset → yaw with a
+    body-frame ray bearing (atan2 of the deprojected ray). Pixel-offset
+    is wrong for fisheye distortion. BLOCKED on Tier 2a (we get the body-
+    frame ray for free once navigate_to_object switches to
+    WalkToObjectInImage / WalkToObjectRayInWorld). Reference technique:
+    /tmp/perception/geometry.py:pixel_to_ptz_angles_transform Steps 1–4.
     """
     x1, y1, x2, y2 = bbox
     cx = (x1 + x2) / 2.0
@@ -345,15 +506,74 @@ def _send_velocity(session, vx, vy, v_rot, duration=0.5):
         return False
 
 
+def _forward_collision_blocks(session, min_distance_m: float = COLLISION_MIN_DISTANCE_M) -> tuple[bool, str]:
+    """Query Spot's native LocalGrid obstacle field for a close forward obstacle.
+
+    Returns ``(blocks, reason)`` where ``blocks=True`` means "don't move
+    forward right now". **Fail-open**: if the feature flag is off, the
+    perception helpers are unavailable, the RPC fails, no grid is
+    exposed, or no obstacle is found, this returns ``(False, <reason>)``
+    so callers never get stuck on a query failure. Only explicit hits
+    within ``min_distance_m`` and within ±90° of the forward direction
+    cause a block.
+
+    Enable with ``SPOT_COLLISION_PRECHECK=1`` in the environment.
+    """
+    if not COLLISION_PRECHECK_ENABLED:
+        return False, "disabled"
+    try:
+        from src.voice_control.perception.obstacle_query import (
+            nearest_obstacle_in_body_frame,
+        )
+        robot = session["robot"]
+        hit = nearest_obstacle_in_body_frame(
+            robot, max_radius_m=COLLISION_QUERY_RADIUS_M
+        )
+    except Exception as e:  # fail-open on any unexpected error
+        return False, f"precheck_error:{type(e).__name__}"
+
+    if hit is None:
+        return False, "no_obstacle"
+    # Bearing convention matches obstacle_query: 0 = forward, ±π/2 = sides.
+    # Only block if the obstacle is in front (within ±90°).
+    if abs(hit.bearing_rad) > math.pi / 2:
+        return False, (
+            f"behind_{math.degrees(hit.bearing_rad):.0f}deg "
+            f"({hit.grid_name})"
+        )
+    if hit.distance_m < min_distance_m:
+        return True, (
+            f"obstacle_{hit.distance_m:.2f}m@"
+            f"{math.degrees(hit.bearing_rad):.0f}deg "
+            f"({hit.grid_name})"
+        )
+    return False, (
+        f"clear_{hit.distance_m:.2f}m@"
+        f"{math.degrees(hit.bearing_rad):.0f}deg"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def navigate_to_object(description: str, session, stop_event: threading.Event) -> bool:
-    """Visual servo to approach a described object.
+    """Walk Spot to a described object using the SDK manipulation API.
 
-    Phase 1: Scan 360° to find the object.
-    Phase 2: Walk toward it, correcting heading each step.
-    Stops when bbox is large enough (close) or target is lost.
+    Phase 1 (SCAN): check all 5 body cameras for the target. The SCAN
+    phase is still a serial loop today; ``linked-hopping-anchor`` Stage 2
+    will turn it into a single batched call.
+
+    Phase 2 (APPROACH): once the target is located on one camera, capture
+    a fresh frame from that camera, run the detector once more to get a
+    crisp bbox, and submit a ``WalkToObjectInImage`` request. The SDK
+    handles frame transforms, depth fusion, planning, and the actual
+    walk — we just poll until it reports ``MANIP_STATE_DONE``.
+
+    The probe at ``docs/project/perception_probe_results.md`` confirmed
+    every body camera is pinhole, so ``WalkToObjectInImage`` is safe.
+    On any submission failure (camera not pinhole, manipulation client
+    unavailable, etc.) the function logs and returns False — there is
+    no fallback to the old visual-servo loop, on purpose.
 
     Args:
         description: What to look for (e.g. "red chair", "backpack").
@@ -361,21 +581,30 @@ def navigate_to_object(description: str, session, stop_event: threading.Event) -
         stop_event: Threading event — set to cancel.
 
     Returns:
-        True if arrived near the object, False if lost/cancelled.
+        True if the SDK reports a successful walk-to-object, False if
+        the target is not visible, the SDK rejects the request, or the
+        approach times out.
     """
     print(f"[VisualNav] Looking for: '{description}'")
 
-    # Check all cameras (front, sides, back) without moving
+    # ---- SCAN phase ------------------------------------------------------
     found_cam = None
+    found_image = None
+    found_bbox = None
     turn_yaw = 0.0
     for cam_source, yaw in ALL_CAMERAS:
         if stop_event.is_set():
             return False
         cam_label = cam_source.replace("_fisheye_image", "")
-        img = _capture_rotated(session, source=cam_source)
-        if img is not None and _find_object(img, description) is not None:
+        img, resp = _capture_with_response(session, cam_source)
+        if img is None:
+            continue
+        bbox = _find_object(img, description)
+        if bbox is not None:
             print(f"[VisualNav] Found '{description}' on {cam_label} camera")
             found_cam = cam_source
+            found_image = (img, resp)
+            found_bbox = bbox
             turn_yaw = yaw
             break
 
@@ -383,43 +612,150 @@ def navigate_to_object(description: str, session, stop_event: threading.Event) -
         print(f"[VisualNav] '{description}' not visible on any camera")
         return False
 
-    # Turn to face the object if found on a side/back camera
+    # ---- Turn-to-face (only if target was found on a side/back cam) ------
+    # WalkToObjectInImage understands per-camera transforms, so technically
+    # the turn isn't required. But the manipulation API plans much shorter
+    # paths when the target is already in front, so we keep the existing
+    # turn-then-approach pattern. After turning, recapture from the FRONT
+    # camera so the manipulation request uses the same camera Spot is now
+    # facing.
     if abs(turn_yaw) > 0.1:
         cam_label = found_cam.replace("_fisheye_image", "")
         print(f"[VisualNav] Turning to face {cam_label} direction...")
         _move(session, 0, 0, turn_yaw)
         time.sleep(MOVE_SETTLE + 0.5)
 
-    print(f"[VisualNav] Approaching '{description}'...")
+        if stop_event.is_set():
+            return False
 
-    # Approach (always uses front camera from here)
-    last_seen = time.time()
+        # Re-acquire from the front camera after the body has settled.
+        front_img, front_resp = _capture_with_response(session, FRONT_CAMERA)
+        if front_img is None:
+            print(f"[VisualNav] Re-capture failed after turn")
+            return False
+        front_bbox = _find_object(front_img, description)
+        if front_bbox is None:
+            print(f"[VisualNav] Lost '{description}' after turn")
+            return False
+        found_cam = FRONT_CAMERA
+        found_image = (front_img, front_resp)
+        found_bbox = front_bbox
+
+    pil_img, image_response = found_image
+    bbox = found_bbox
+
+    # ---- APPROACH phase: WalkToObjectInImage -----------------------------
+    # The bbox is in rotated (model) coordinates because YOLO sees the
+    # rotated frame. Un-rotate the center to get the pixel in the native
+    # sensor frame, which is what pixel_to_camera_space + the manipulation
+    # API expect. The intrinsics in image_response.source.pinhole are
+    # also for the native frame.
+    cx_rot = (bbox[0] + bbox[2]) / 2.0
+    cy_rot = (bbox[1] + bbox[3]) / 2.0
+    rot_w, rot_h = pil_img.size
+    px_native, py_native = _unrotate_pixel(cx_rot, cy_rot, rot_w, rot_h)
+
+    if image_response.source.WhichOneof("camera_models") != "pinhole":
+        print(f"[VisualNav] {found_cam} is not pinhole — cannot use "
+              f"WalkToObjectInImage")
+        return False
+
+    try:
+        from bosdyn.client.manipulation_api_client import ManipulationApiClient
+        from bosdyn.api import manipulation_api_pb2, geometry_pb2
+        from google.protobuf import wrappers_pb2
+    except ImportError as e:
+        print(f"[VisualNav] manipulation API import failed: {e}")
+        return False
+
+    try:
+        manipulation_client = session["robot"].ensure_client(
+            ManipulationApiClient.default_service_name
+        )
+    except Exception as e:
+        print(f"[VisualNav] manipulation client unavailable: {e}")
+        return False
+
+    # Optional pre-flight bearing log so we can confirm the body-frame
+    # ray makes sense before handing off to the SDK. Useful for catching
+    # frame-tree mistakes during initial deployment.
+    bearing = _bearing_in_body_frame(image_response, px_native, py_native)
+    if bearing is not None:
+        print(f"[VisualNav] target bearing in body frame: "
+              f"{math.degrees(bearing):.0f}°")
+
+    walk_to = manipulation_api_pb2.WalkToObjectInImage(
+        pixel_xy=geometry_pb2.Vec2(x=px_native, y=py_native),
+        transforms_snapshot_for_camera=image_response.shot.transforms_snapshot,
+        frame_name_image_sensor=image_response.shot.frame_name_image_sensor,
+        camera_model=image_response.source.pinhole,
+        offset_distance=wrappers_pb2.FloatValue(value=APPROACH_OFFSET_M),
+    )
+    request = manipulation_api_pb2.ManipulationApiRequest(
+        walk_to_object_in_image=walk_to
+    )
+
+    try:
+        cmd_response = manipulation_client.manipulation_api_command(
+            manipulation_api_request=request
+        )
+    except Exception as e:
+        print(f"[VisualNav] WalkToObjectInImage submit failed: {e}")
+        return False
+
+    cmd_id = cmd_response.manipulation_cmd_id
+    print(f"[VisualNav] Walking to '{description}' "
+          f"(cmd_id={cmd_id}, offset={APPROACH_OFFSET_M:.2f}m)")
+
+    # Poll until done, failed, or timeout. There is no fallback path
+    # here on failure — the SDK either succeeds or it doesn't, and we
+    # surface the result honestly to the caller.
+    poll_start = time.time()
+    last_state = None
+    failure_states = {
+        manipulation_api_pb2.MANIP_STATE_GRASP_FAILED,
+        manipulation_api_pb2.MANIP_STATE_GRASP_PLANNING_NO_SOLUTION,
+        manipulation_api_pb2.MANIP_STATE_GRASP_FAILED_TO_RAYCAST_INTO_MAP,
+        manipulation_api_pb2.MANIP_STATE_PLACE_FAILED,
+        manipulation_api_pb2.MANIP_STATE_PLACE_FAILED_TO_RAYCAST_INTO_MAP,
+    }
 
     while not stop_event.is_set():
-        img = _capture_rotated(session)
-        if img is None:
-            time.sleep(0.5)
-            continue
+        if time.time() - poll_start > APPROACH_TIMEOUT_S:
+            print(f"[VisualNav] Approach timeout after {APPROACH_TIMEOUT_S}s")
+            return False
+        try:
+            feedback = manipulation_client.manipulation_api_feedback_command(
+                manipulation_api_feedback_request=
+                manipulation_api_pb2.ManipulationApiFeedbackRequest(
+                    manipulation_cmd_id=cmd_id
+                )
+            )
+        except Exception as e:
+            print(f"[VisualNav] feedback poll failed: {e}")
+            return False
 
-        bbox = _find_object(img, description)
+        state = feedback.current_state
+        if state != last_state:
+            try:
+                state_name = manipulation_api_pb2.ManipulationFeedbackState.Name(state)
+            except Exception:
+                state_name = f"STATE_{state}"
+            print(f"[VisualNav] approach state: {state_name}")
+            last_state = state
 
-        if bbox is None:
-            if time.time() - last_seen > LOST_TIMEOUT:
-                print(f"[VisualNav] Lost '{description}'")
-                return False
-            time.sleep(0.5)
-            continue
-
-        last_seen = time.time()
-        w, h = img.size
-        yaw, frac = _steer(bbox, w, h, APPROACH_YAW_GAIN, APPROACH_MAX_YAW)
-
-        if frac >= APPROACH_DONE_FRAC:
-            print(f"[VisualNav] Reached '{description}' (bbox {frac:.0%} of frame)")
+        if state == manipulation_api_pb2.MANIP_STATE_DONE:
+            print(f"[VisualNav] ✓ Reached '{description}'")
             return True
+        if state in failure_states:
+            try:
+                state_name = manipulation_api_pb2.ManipulationFeedbackState.Name(state)
+            except Exception:
+                state_name = f"STATE_{state}"
+            print(f"[VisualNav] ✗ Approach failed: {state_name}")
+            return False
 
-        _move(session, APPROACH_STEP, 0, yaw)
-        time.sleep(MOVE_SETTLE)
+        time.sleep(APPROACH_POLL_S)
 
     return False
 
@@ -697,6 +1033,17 @@ def follow_person(session, stop_event: threading.Event) -> bool:
                 # Smooth velocity (EMA)
                 vx = FOLLOW_VEL_SMOOTH * last_vx + (1 - FOLLOW_VEL_SMOOTH) * target_vx
                 v_rot = FOLLOW_VEL_SMOOTH * last_v_rot + (1 - FOLLOW_VEL_SMOOTH) * target_v_rot
+
+                # Collision pre-check (feature-flagged, fail-open). Only
+                # clamp vx — keep v_rot so the robot can still turn to
+                # keep the person in frame even when stopped.
+                if vx > 0.05:  # ignore near-zero "already holding" case
+                    blocks, reason = _forward_collision_blocks(session)
+                    if blocks:
+                        if should_log:
+                            print(f"[Follow] collision_precheck: STOP vx ({reason})")
+                        vx = 0.0
+
                 last_vx = vx
                 last_v_rot = v_rot
 
