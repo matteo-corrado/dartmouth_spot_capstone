@@ -262,25 +262,40 @@ class VoicePipelineManager:
         with self._lock:
             if not self._proc or self._proc.poll() is not None:
                 return True, "Voice pipeline not running"
+            proc = self._proc
 
         try:
-            pgid = os.getpgid(self._proc.pid)
+            try:
+                pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                # Race: child exited between the poll() check above and
+                # getpgid(). Treat as already-stopped instead of bubbling
+                # the exception up to the user.
+                self._close_log()
+                return True, "Voice pipeline stopped"
 
-            # Send SIGINT first — triggers KeyboardInterrupt in Python,
-            # which lets client_mic.py run its graceful shutdown
-            # (sit the robot down, power off cleanly).
+            # Send SIGINT first — client_mic.py's _shutdown_signal_handler
+            # converts it to KeyboardInterrupt and runs the graceful path
+            # (cancel nav, sit, power off, drain audio). 30s gives the
+            # bosdyn blocking_sit + power_off pair enough headroom for a
+            # healthy robot; the _cancel_nav step in cleanup_spot keeps
+            # them from fighting an in-progress follow_me / visual_nav
+            # daemon thread, which used to push cleanup past the old 20s
+            # window and made the stop button look broken.
             os.killpg(pgid, signal.SIGINT)
             try:
-                self._proc.wait(timeout=20)  # sit + power off can take ~15s
+                proc.wait(timeout=30)
                 self._close_log()
                 return True, "Voice pipeline stopped (robot sat down)"
             except subprocess.TimeoutExpired:
                 pass
 
-            # SIGTERM as fallback
+            # SIGTERM as fallback. client_mic.py treats this as the
+            # second signal and hard-exits via os._exit() without
+            # waiting for any wedged bosdyn calls.
             os.killpg(pgid, signal.SIGTERM)
             try:
-                self._proc.wait(timeout=5)
+                proc.wait(timeout=5)
                 self._close_log()
                 return True, "Voice pipeline stopped"
             except subprocess.TimeoutExpired:
@@ -288,7 +303,7 @@ class VoicePipelineManager:
 
             # Last resort
             os.killpg(pgid, signal.SIGKILL)
-            self._proc.wait(timeout=3)
+            proc.wait(timeout=3)
             self._close_log()
             return True, "Voice pipeline force-killed"
         except Exception as e:
