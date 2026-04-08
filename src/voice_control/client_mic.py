@@ -421,6 +421,8 @@ def main():
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
     parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
+    parser.add_argument("--volume", type=float, default=1.0,
+                        help="TTS + beep output gain (0.0-1.5, default 1.0)")
     args = parser.parse_args()
 
     # Auto-detect devices by name if not explicitly specified
@@ -492,17 +494,25 @@ def main():
     if not args.no_tts:
         print("\nInitializing TTS...")
         tts = SpotTTS(on_mute=_mute_mic, on_unmute=_unmute_mic,
-                      output_device=args.output_device)
+                      output_device=args.output_device,
+                      volume=args.volume)
         if tts.is_available():
-            print(f"[TTS] Ready (output device: {args.output_device}, mic will mute during playback)")
+            print(f"[TTS] Ready (output device: {args.output_device}, "
+                  f"volume={args.volume}, mic will mute during playback)")
         else:
             print("[TTS] Not available (install piper-tts). Continuing without speech output.")
             tts = None
+        # Register the live TTS instance as the module singleton so the LLM
+        # set_volume action (in spot_dispatch._handle_set_volume) can find it.
+        if tts is not None:
+            import src.voice_control.spot_tts as _spot_tts_mod
+            _spot_tts_mod._tts_instance = tts
     else:
         print("\n[TTS] Disabled (--no-tts flag)")
 
-    # Point audio feedback beeps at the speaker
+    # Point audio feedback beeps at the speaker and apply master volume
     beep.device = args.output_device
+    beep.set_volume(args.volume)
 
     # Initialize VAD
     vad = webrtcvad.Vad(VAD_LEVEL)

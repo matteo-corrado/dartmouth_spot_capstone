@@ -40,6 +40,8 @@ except ImportError:
 
 SAMPLE_RATE = 48000  # Standard ALSA rate — avoids underrun with short clips
 TAIL_MS = 80         # Silence padding at end — gives ALSA buffer time to drain
+DEFAULT_VOLUME = 1.0
+MAX_VOLUME = 1.5     # per-tone amplitudes are 0.15-0.25, so 1.5x stays well below clipping
 
 
 def _tone(freq: float, duration_ms: int, volume: float = 0.3) -> np.ndarray:
@@ -71,8 +73,21 @@ def _play_blocking(samples: np.ndarray, device=None):
 class AudioFeedback:
     """Audio feedback tones for voice control events."""
 
-    def __init__(self, output_device=None):
+    def __init__(self, output_device=None, volume: float = DEFAULT_VOLUME):
         self.device = output_device
+        self.volume = max(0.0, min(MAX_VOLUME, float(volume)))
+
+    def set_volume(self, volume: float) -> float:
+        """Set master gain for all beeps. Clamped to 0.0..MAX_VOLUME."""
+        self.volume = max(0.0, min(MAX_VOLUME, float(volume)))
+        return self.volume
+
+    def _play(self, samples):
+        """Apply master volume and launch playback in a daemon thread."""
+        gain = self.volume
+        if gain != 1.0:
+            samples = (samples * gain).astype(np.float32)
+        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
 
     def wake_detected(self):
         """Rising chime — wake word heard (C5 -> E5 -> G5, 210ms)."""
@@ -83,12 +98,12 @@ class AudioFeedback:
         samples = np.concatenate([c5[:-int(SAMPLE_RATE*TAIL_MS/1000)],
                                   e5[:-int(SAMPLE_RATE*TAIL_MS/1000)],
                                   g5])
-        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
+        self._play(samples)
 
     def listening(self):
         """Soft blip — ready for command (short G5, 80ms)."""
         samples = _tone(784, 80, 0.2)
-        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
+        self._play(samples)
 
     def command_ok(self):
         """Happy double-beep — command accepted (C5, C6, 150ms)."""
@@ -96,7 +111,7 @@ class AudioFeedback:
         gap = np.zeros(int(SAMPLE_RATE * 0.02), dtype=np.float32)
         c6 = _tone(1047, 60, 0.2)
         samples = np.concatenate([c5[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, c6])
-        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
+        self._play(samples)
 
     def error(self):
         """Low buzz — something failed (A3 descending, 250ms)."""
@@ -104,12 +119,12 @@ class AudioFeedback:
         gap = np.zeros(int(SAMPLE_RATE * 0.02), dtype=np.float32)
         f3 = _tone(175, 120, 0.25)
         samples = np.concatenate([a3[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, f3])
-        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
+        self._play(samples)
 
     def chain_next(self):
         """Short tick — next action in chain (E5, 60ms)."""
         samples = _tone(659, 60, 0.15)
-        threading.Thread(target=_play_blocking, args=(samples, self.device), daemon=True).start()
+        self._play(samples)
 
 
 # Module-level singleton

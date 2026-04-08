@@ -51,6 +51,17 @@ def is_follow_mode() -> bool:
     return _nav_mode == "follow" and is_navigating()
 
 
+def _current_tts_volume_percent():
+    """Read current TTS volume as a 1-100 percent integer (best-effort)."""
+    try:
+        from src.voice_control.spot_tts import _tts_instance
+        if _tts_instance is None:
+            return "unknown"
+        return int(round(min(1.0, _tts_instance.volume) * 100))
+    except Exception:
+        return "unknown"
+
+
 def get_robot_state_dict() -> dict:
     """Collect current robot state for the LLM brain context.
 
@@ -65,6 +76,7 @@ def get_robot_state_dict() -> dict:
         "current_location": "unknown",
         "saved_locations": ", ".join(_list_saved_locations().keys()) or "none",
         "estop_status": "unknown",
+        "tts_volume_percent": _current_tts_volume_percent(),
     }
 
     if _spot_session is None:
@@ -426,6 +438,35 @@ def _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=Fal
     _nav_thread.start()
 
 
+def _handle_set_volume(params):
+    """Handle set_volume action — does not require a Spot session.
+
+    Accepts {"level": 1-100} (percentage) and applies it to both the TTS
+    output gain and the audio-feedback beep gain. The percentage maps
+    linearly to internal gain 0.01..1.0 (1.0 = full volume).
+    """
+    try:
+        raw = params.get("level")
+        if raw is None:
+            print("[Spot] set_volume: missing 'level' param")
+            return False
+        pct = float(raw)
+        # Clamp 1-100 (LLM-facing range)
+        pct = max(1.0, min(100.0, pct))
+        gain = pct / 100.0
+
+        from src.voice_control.spot_tts import get_tts
+        from src.voice_control.audio_feedback import beep
+        tts = get_tts()
+        applied_tts = tts.set_volume(gain)
+        applied_beep = beep.set_volume(gain)
+        print(f"[Spot] ✓ Volume set to {int(pct)}% (tts={applied_tts:.2f}, beep={applied_beep:.2f})")
+        return True
+    except Exception as e:
+        print(f"[Spot] ✗ set_volume failed: {e}")
+        return False
+
+
 def dispatch_intent(intent):
     """Execute a Spot command based on parsed intent.
 
@@ -442,6 +483,10 @@ def dispatch_intent(intent):
 
     name = intent["intent"]
     params = intent.get("params", {})
+
+    # Volume control doesn't need a Spot session — handle before ensure_spot_session()
+    if name == "set_volume":
+        return _handle_set_volume(params)
 
     try:
         session = ensure_spot_session()

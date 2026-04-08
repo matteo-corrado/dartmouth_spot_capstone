@@ -62,6 +62,7 @@ AVAILABLE ACTIONS:
 - turn: Rotate in place. Params: {"deg": <degrees 0-360>, "dir": "left"|"right"}. Default 90 degrees. "turn around" = 180.
 - body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.
 - set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.
+- set_volume: Set your speaking volume. Params: {"level": <1-100>} as a percentage where 100=full, 50=half, 10=quiet. For "louder"/"quieter" without a number, pick a sensible delta from current (e.g. +20).
 - go_to: Navigate to saved location. Params: {"location": "<name>"}. Use lowercase_with_underscores.
 - tour: Visit locations in sequence (one pass). Params: {"locations": ["loc1", "loc2"]} for specific stops, or {"locations": "all"} to visit all. Use for "loop the map", "visit everywhere".
 - patrol: Loop through locations continuously until stopped. Params: same as tour. Use for "patrol", "keep looping", "keep patrolling".
@@ -100,7 +101,13 @@ User: "Do you see the blue chair?"
 {"actions": [{"action": "describe", "params": {"camera": "front", "query": "blue chair"}}], "response": "Let me check for the blue chair..."}
 
 User: "Go to the red chair"
-{"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}"""
+{"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}
+
+User: "Set your volume to 80 percent"
+{"actions": [{"action": "set_volume", "params": {"level": 80}}], "response": "Setting my volume to 80%."}
+
+User: "A bit louder please"
+{"actions": [{"action": "set_volume", "params": {"level": 90}}], "response": "Speaking up!"}"""
 
 
 # ---------------------------------------------------------------------------

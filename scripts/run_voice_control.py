@@ -256,6 +256,9 @@ def main():
                         help="Mic input device index (auto-detected from XVF3800)")
     parser.add_argument("--output-device", type=int, default=None,
                         help="Speaker output device index (auto-detected from UACDemoV1.0)")
+    parser.add_argument("--volume", type=float, default=1.0,
+                        help="TTS + beep output gain (0.0-1.5, default 1.0). "
+                             "Voice control accepts 1-100%% at runtime.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -319,6 +322,8 @@ def main():
         client_cmd.extend(["--device", str(args.device)])
     if args.output_device is not None:
         client_cmd.extend(["--output-device", str(args.output_device)])
+    if args.volume != 1.0:
+        client_cmd.extend(["--volume", str(args.volume)])
 
     try:
         client_proc = subprocess.run(client_cmd, cwd=str(VOICE_DIR))

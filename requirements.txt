@@ -6,7 +6,9 @@ bosdyn-orbit==5.0.1.1
 
 # Utilities
 python-dotenv==1.0.1
-numpy>=1.19.0,<2.0.0
+# numpy pinned to 1.26.4 — onnxruntime-gpu 1.23.0 (Jetson AI Lab wheel) is
+# built against numpy 1.x ABI; do NOT upgrade to numpy 2.x without rebuilding.
+numpy==1.26.4
 requests==2.26.0
 
 # Voice Control dependencies
@@ -16,8 +18,33 @@ webrtcvad>=2.0.10
 grpcio>=1.60.0
 grpcio-tools>=1.60.0
 
-# TTS — sherpa-onnx Kokoro (bundles own ONNX runtime, aarch64 wheels for Jetson)
+# TTS — Kokoro v1.0 via kokoro-onnx + onnxruntime-gpu (CUDA on Jetson AGX Orin)
+#
+# kokoro-onnx 0.4.9 is the lightest version that doesn't drag in librosa/numba
+# (which would force numpy 2.x). Install with --no-deps so its bundled deps
+# don't override our pins:
+#     pip install --no-deps kokoro-onnx==0.4.9
+#     pip install joblib   # transitive dep of phonemizer-fork, must add manually
+#
+# onnxruntime-gpu 1.23.0 must come from the Jetson AI Lab pip index
+# (built for JetPack 6 / CUDA 12.6 / aarch64; not on PyPI):
+#     pip install --no-deps --extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126 onnxruntime-gpu==1.23.0
+#
+# kokoro-onnx 0.4.9 has a bug detecting the GPU runtime — see spot_tts.py
+# docstring. We work around it by setting ONNX_PROVIDER=CUDAExecutionProvider
+# before importing the package.
+kokoro-onnx==0.4.9
+onnxruntime-gpu==1.23.0
+joblib
+
+# Wake word — sherpa-onnx KeywordSpotter (CPU streaming zipformer, ~5MB)
+# Still required even after the TTS swap; wake word stays on CPU intentionally.
 sherpa-onnx>=1.12.0
 
 # Visual navigation — YOLO object detection + person following
 ultralytics>=8.1.0
+# opencv-python pinned to the last version that accepts numpy 1.x
+# (4.12+ requires numpy>=2). Pulled in transitively by ultralytics; pinning
+# here prevents an accidental ultralytics upgrade from breaking the numpy 1.x
+# pin required by onnxruntime-gpu 1.23.0.
+opencv-python==4.11.0.86
