@@ -5,7 +5,6 @@ Automatically extracts waypoint names to locations.json.
 """
 import os
 import sys
-import json
 from pathlib import Path
 
 # Add project root to path
@@ -13,6 +12,8 @@ project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
 from src.session import spot_session
+from src.map_loader import write_last_used
+from src.location_manager import save_location
 from bosdyn.client.graph_nav import GraphNavClient
 
 
@@ -141,15 +142,20 @@ def download_map(output_dir="maps/downloaded_map"):
 
         print()
 
-    # Generate locations.json
+    # Generate locations.json (v2 namespaced format).
+    #
+    # The map we just downloaded becomes the "current map" — record that in
+    # maps/.last_used BEFORE writing locations so save_location() lands the
+    # entries under the right slice. output_dir may be relative ("maps/foo")
+    # or absolute, so take the basename either way.
+    map_name = os.path.basename(os.path.normpath(str(output_dir)))
+    write_last_used(project_root, map_name)
+    print(f"✓ Marked '{map_name}' as the current map (maps/.last_used)")
+
     if waypoint_names:
-        locations_file = project_root / "locations.json"
-
-        # Overwrite locations (don't merge - old map IDs become stale)
-        existing = waypoint_names
-
-        with open(locations_file, 'w') as f:
-            json.dump(existing, f, indent=2)
+        # Route through location_manager so the v2 namespacing is honored.
+        for name, wp_id in waypoint_names.items():
+            save_location(name, wp_id)
 
         print("✓ Generated locations.json:")
         for name, wp_id in waypoint_names.items():

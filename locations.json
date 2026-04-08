@@ -1,21 +1,26 @@
 {
-  "podium": "both-wasp-a.sMXHE6yHp34IxFXO68gA==",
-  "couch": "chief-shrew-rjQMaJqtACg0vLc8iz3ZIg==",
-  "machine_shop": "cowled-bronco-KtIl1cFSlb88B6ZDVKahbg==",
-  "jackson": "doughy-goose-h7k0OuyWyxTNZcBtO8tuZQ==",
-  "statue": "dud-grouse-T5obR+geT54lOZwtCIl1.w==",
-  "cad_lab": "fleshy-raven-iZc2EBpe6GNp67jDwdWljg==",
-  "rett's": "focal-cub-hPfxgc1xsH6NtgA6NLo9Lg==",
-  "atrium": "germy-borzoi-huJ4oQvlZKcv2m8+b624Kw==",
-  "deans_office": "graded-chick-NBujnCiNkzBj2WMQJ9QI9w==",
-  "bryce_office": "hilly-dragon-CUrNMhZjyTrjl2EjvQ2e+A==",
-  "cesc_building": "pawky-leech-+cBqLugd+SEjDl4Nf5jIPg==",
-  "student_affairs": "pied-antler-vNccjHX81Zwt3De3ArelMw==",
-  "irving_entrance": "pudgy-doe-+4p0t1a4tt9adqip0Da3tg==",
-  "spot_room": "ribald-impala-EH9Jzp6fa6yYQxczPiAahQ==",
-  "cs_building_2nd": "rimmed-skate-PXAwDU.qV+WK0rLadVH6Mw==",
-  "makerspace": "rose-cobra-bx8SV.hErZ8ksi2DFFYE5w==",
-  "end": "scotch-afghan-46DouIYI9sOMy+Q0WUzRPw==",
-  "great_hall": "upwind-mare-.TKpWBEENkr03QDPXcOxFg==",
-  "bryce_stairs": "wily-colt-NcZESPoxrzFMjN8mi6Atmw=="
+  "_format": "v2",
+  "maps": {
+    "_legacy": {
+      "podium": "both-wasp-a.sMXHE6yHp34IxFXO68gA==",
+      "couch": "chief-shrew-rjQMaJqtACg0vLc8iz3ZIg==",
+      "machine_shop": "cowled-bronco-KtIl1cFSlb88B6ZDVKahbg==",
+      "jackson": "doughy-goose-h7k0OuyWyxTNZcBtO8tuZQ==",
+      "statue": "dud-grouse-T5obR+geT54lOZwtCIl1.w==",
+      "cad_lab": "fleshy-raven-iZc2EBpe6GNp67jDwdWljg==",
+      "rett's": "focal-cub-hPfxgc1xsH6NtgA6NLo9Lg==",
+      "atrium": "germy-borzoi-huJ4oQvlZKcv2m8+b624Kw==",
+      "deans_office": "graded-chick-NBujnCiNkzBj2WMQJ9QI9w==",
+      "bryce_office": "hilly-dragon-CUrNMhZjyTrjl2EjvQ2e+A==",
+      "cesc_building": "pawky-leech-+cBqLugd+SEjDl4Nf5jIPg==",
+      "student_affairs": "pied-antler-vNccjHX81Zwt3De3ArelMw==",
+      "irving_entrance": "pudgy-doe-+4p0t1a4tt9adqip0Da3tg==",
+      "spot_room": "ribald-impala-EH9Jzp6fa6yYQxczPiAahQ==",
+      "cs_building_2nd": "rimmed-skate-PXAwDU.qV+WK0rLadVH6Mw==",
+      "makerspace": "rose-cobra-bx8SV.hErZ8ksi2DFFYE5w==",
+      "end": "scotch-afghan-46DouIYI9sOMy+Q0WUzRPw==",
+      "great_hall": "upwind-mare-.TKpWBEENkr03QDPXcOxFg==",
+      "bryce_stairs": "wily-colt-NcZESPoxrzFMjN8mi6Atmw=="
+    }
+  }
 }
