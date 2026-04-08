@@ -71,17 +71,42 @@ WATCHDOG_TIMEOUT_S = 30.0
 WATCHDOG_POLL_INTERVAL_S = 1.0
 
 
+def _safe_cb(cb: Optional[Callable[[], None]]) -> None:
+    """Invoke an optional latency-tracing callback, swallowing exceptions.
+
+    Used by the worker loop to fire on_render_start / on_render_end /
+    on_play_start / on_play_end hooks for the latency module. Catches
+    Exception only — KeyboardInterrupt still propagates so Ctrl-C works.
+    A buggy callback can never wedge the worker.
+    """
+    if cb is None:
+        return
+    try:
+        cb()
+    except Exception as e:
+        print(f"[Player] callback error: {e}")
+
+
 @dataclass
 class _Task:
     """One unit of playback work.
 
     Exactly one of ``samples`` or ``render_fn`` is set. ``rate`` is meaningful
     only for the ``samples`` case (render functions return their own rate).
+
+    The four optional ``on_*`` callbacks are latency-tracing hooks fired by
+    the worker thread inside ``_safe_cb``. They are GIL-atomic single
+    attribute writes on the latency module's Trace object — see
+    ``src/voice_control/latency.py`` for the consumer side.
     """
     label: str
     samples: Optional[np.ndarray] = None
     rate: Optional[int] = None
     render_fn: Optional[RenderFn] = None
+    on_render_start: Optional[Callable[[], None]] = None
+    on_render_end: Optional[Callable[[], None]] = None
+    on_play_start: Optional[Callable[[], None]] = None
+    on_play_end: Optional[Callable[[], None]] = None
 
 
 class AudioPlayer:
@@ -207,8 +232,22 @@ class AudioPlayer:
         with self._inflight_lock:
             return self._inflight > 0
 
-    def enqueue_raw(self, samples: np.ndarray, rate: int, label: str = "") -> None:
-        """Submit pre-rendered audio samples for playback."""
+    def enqueue_raw(
+        self,
+        samples: np.ndarray,
+        rate: int,
+        label: str = "",
+        on_render_start: Optional[Callable[[], None]] = None,
+        on_render_end: Optional[Callable[[], None]] = None,
+        on_play_start: Optional[Callable[[], None]] = None,
+        on_play_end: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Submit pre-rendered audio samples for playback.
+
+        Optional ``on_*`` callbacks fire from the worker thread for latency
+        tracing — see ``latency.py``. They run inside ``_safe_cb`` so a
+        buggy callback can never wedge the worker.
+        """
         if not self._available:
             return
         with self._inflight_lock:
@@ -216,16 +255,31 @@ class AudioPlayer:
                 return  # reset/shutdown in progress — drop silently
             self._inflight += 1
             try:
-                self._queue.put(_Task(label=label, samples=samples, rate=rate))
+                self._queue.put(_Task(
+                    label=label, samples=samples, rate=rate,
+                    on_render_start=on_render_start,
+                    on_render_end=on_render_end,
+                    on_play_start=on_play_start,
+                    on_play_end=on_play_end,
+                ))
             except Exception:
                 self._inflight -= 1
                 raise
 
-    def enqueue_render(self, render_fn: RenderFn, label: str = "") -> None:
+    def enqueue_render(
+        self,
+        render_fn: RenderFn,
+        label: str = "",
+        on_render_start: Optional[Callable[[], None]] = None,
+        on_render_end: Optional[Callable[[], None]] = None,
+        on_play_start: Optional[Callable[[], None]] = None,
+        on_play_end: Optional[Callable[[], None]] = None,
+    ) -> None:
         """Submit a render function that will be called inside the worker.
 
         Use this for TTS so Kokoro inference happens in the worker thread,
-        not on the caller's main thread.
+        not on the caller's main thread. Optional ``on_*`` callbacks fire
+        from the worker for latency tracing — see ``latency.py``.
         """
         if not self._available:
             return
@@ -234,7 +288,13 @@ class AudioPlayer:
                 return
             self._inflight += 1
             try:
-                self._queue.put(_Task(label=label, render_fn=render_fn))
+                self._queue.put(_Task(
+                    label=label, render_fn=render_fn,
+                    on_render_start=on_render_start,
+                    on_render_end=on_render_end,
+                    on_play_start=on_play_start,
+                    on_play_end=on_play_end,
+                ))
             except Exception:
                 self._inflight -= 1
                 raise
@@ -426,19 +486,27 @@ class AudioPlayer:
                     self._current_task_started_at = time.monotonic()
                     self._current_label = task.label
 
+                _safe_cb(task.on_render_start)
                 samples, rate = self._materialize(task)
                 if samples is None:
+                    _safe_cb(task.on_render_end)
                     continue
+                _safe_cb(task.on_render_end)
                 samples = self._resample(samples, rate)
                 samples = self._format_for_stream(samples)
 
                 # Chunked write so the worker can react to ``stop`` (set by
                 # force_reset/shutdown) within ~100ms instead of blocking for
                 # the full duration of the utterance.
+                played_first_chunk = False
                 for offset in range(0, len(samples), chunk_samples):
                     if stop.is_set():
                         break
+                    if not played_first_chunk:
+                        _safe_cb(task.on_play_start)
+                        played_first_chunk = True
                     self._stream.write(samples[offset:offset + chunk_samples])
+                _safe_cb(task.on_play_end)
             except Exception as e:
                 print(f"[Player] {task.label}: playback error: {e}")
             finally:
