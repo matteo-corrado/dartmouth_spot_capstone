@@ -108,8 +108,9 @@ HEARD: "Stand up"
 [Brain] Actions: stand
 [Timing] LLM: 0.82s
 
-SPOT: "Getting up now!"
+SPOT (LLM): "Getting up now!"
 >>> SUCCESS
+[Models] LLM only (action: stand)
 [Timing] Total: 1.43s
 
 [Listening...]
@@ -127,12 +128,13 @@ HEARD: "What do you see in front of you?"
 [Brain] Actions: describe
 [Timing] LLM: 1.12s
 
-SPOT: "Let me take a look..."
+SPOT (LLM): "Let me take a look..."
 [Brain] Querying VLM (qwen2.5vl:7b)...
 [Brain] VLM responded in 4.2s
 
 SPOT (VLM): "I can see a long hallway with fluorescent lighting. There are
 several doors on both sides and a whiteboard mounted on the wall to my left."
+[Models] LLM + VLM
 [Timing] Total: 6.15s
 ```
 

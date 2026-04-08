@@ -252,6 +252,11 @@ def main():
                         help="Don't auto-start Riva/Ollama (assume already running)")
     parser.add_argument("--no-wake-word", action="store_true",
                         help="Always listening (skip wake word)")
+    parser.add_argument("--debug-crash", action="store_true",
+                        help="Enable native-crash diagnostics for the client "
+                             "(MALLOC_CHECK_=3 + PYTHONFAULTHANDLER=1). Use this "
+                             "to capture 'double free / corruption' aborts with a "
+                             "Python stack trace at the moment of the abort.")
     parser.add_argument("--device", type=int, default=None,
                         help="Mic input device index (auto-detected from XVF3800)")
     parser.add_argument("--output-device", type=int, default=None,
@@ -325,8 +330,20 @@ def main():
     if args.volume != 1.0:
         client_cmd.extend(["--volume", str(args.volume)])
 
+    client_env = os.environ.copy()
+    if args.debug_crash:
+        # MALLOC_CHECK_=3 makes glibc abort *at* the bad free/corruption instead
+        # of much later, so the backtrace points at the actual culprit.
+        # PYTHONFAULTHANDLER=1 dumps the Python stack on SIGABRT/SIGSEGV so we
+        # can see which Python frame was active when the C extension blew up.
+        client_env["MALLOC_CHECK_"] = "3"
+        client_env["PYTHONFAULTHANDLER"] = "1"
+        print("[Debug] Crash diagnostics ON for client subprocess")
+        print("        MALLOC_CHECK_=3 PYTHONFAULTHANDLER=1")
+        print("        (expect a glibc 'malloc: ...' line and a Python traceback on abort)")
+
     try:
-        client_proc = subprocess.run(client_cmd, cwd=str(VOICE_DIR))
+        client_proc = subprocess.run(client_cmd, cwd=str(VOICE_DIR), env=client_env)
         return client_proc.returncode
     except KeyboardInterrupt:
         print("\n\nShutting down...")

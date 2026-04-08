@@ -958,7 +958,13 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
 
         # Show what the robot "says"
         if response:
-            print(f"\nSPOT: \"{response}\"")
+            print(f"\nSPOT (LLM): \"{response}\"")
+
+        # Track which models actually handled this utterance for the
+        # end-of-turn [Models] summary line. vlm_used flips inside the
+        # describe-action branch below.
+        vlm_used = False
+        vlm_error = False
 
         if actions:
             beep.command_ok()
@@ -978,6 +984,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
 
                 # Special VLM flow for "describe" action
                 if cmd == "describe":
+                    vlm_used = True
                     camera = params.get("camera", "front")
                     query = params.get("query", "")
                     try:
@@ -1014,16 +1021,18 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 tts.speak(vlm_response)
                         else:
                             beep.error()
+                            vlm_error = True
                             fallback = "Sorry, I couldn't capture an image right now."
-                            print(f"\nSPOT: \"{fallback}\"")
+                            print(f"\nSPOT (VLM, error): \"{fallback}\"")
                             if tts:
                                 tts.wait()
                                 tts.speak(fallback)
                     except Exception as e:
                         beep.error()
+                        vlm_error = True
                         print(f"[VLM] Error: {e}")
                         fallback = "Sorry, my vision system isn't working right now."
-                        print(f"\nSPOT: \"{fallback}\"")
+                        print(f"\nSPOT (VLM, error): \"{fallback}\"")
                         if tts:
                             tts.wait()
                             tts.speak(fallback)
@@ -1048,6 +1057,20 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if tts and response:
                 tts.speak(response)
             print("(No physical action — conversation only)")
+
+        # One-line summary of which model(s) actually handled this utterance.
+        # Makes it obvious when a "describe surroundings" prompt got
+        # hallucinated by the LLM instead of routed to the VLM.
+        if vlm_used and not vlm_error:
+            models_tag = "LLM + VLM"
+        elif vlm_used and vlm_error:
+            models_tag = "LLM + VLM (failed → fell back)"
+        elif actions:
+            models_tag = f"LLM only (action: {actions[0]['intent']})"
+        else:
+            models_tag = "LLM only (conversation)"
+        print(f"[Models] {models_tag}")
+
         print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
         return "wake_detected" if wake_activated else None
 
