@@ -107,16 +107,20 @@ User: "Go to the red chair"
 # Knowledge packs — appended to the system prompt at import time.
 #
 # Currently always-on: every LLM call carries the full knowledge pack(s).
-# Cheap on qwen2.5:7b at the current pack size (~3 KB) and removes any need
-# for a "did the user mention the tour?" trigger heuristic, which is the
-# right call for the open-house demo where any visitor question may end up
-# being tour-relevant.
+# Combined size is ~12K tokens (~55 KB of markdown), which fits comfortably
+# in qwen2.5:7b's 32K context with plenty of headroom for history and
+# response. Always-on removes any need for a "did the user mention the
+# tour?" trigger heuristic, which is the right call for the open-house
+# demo where any visitor question may end up being tour- or Thayer-relevant.
+#
+# Order matters for KV-cache prefix sharing: list the more stable / more
+# frequently consulted pack first.
 #
 # Future improvements (deliberately not implemented now):
-#   1. Gate injection on intent — only attach tour_route.md when the user
-#      mentions tour/Thayer/a known stop name, to keep the default prompt
-#      smaller. Needs a trigger heuristic that doesn't miss; not worth the
-#      risk before a live demo.
+#   1. Gate injection on intent — only attach the relevant pack when the
+#      user mentions tour/Thayer/a known stop name, to keep the default
+#      prompt smaller. Needs a trigger heuristic that doesn't miss; not
+#      worth the risk before a live demo.
 #   2. Add a dedicated `start_tour` dispatcher action that walks the full
 #      Thayer route waypoint list with narration at each stop, instead of
 #      relying on the LLM to chain the existing `tour` action with talking
@@ -124,7 +128,7 @@ User: "Go to the red chair"
 #      the demo and validate behind the existing `tour` action first.
 # ---------------------------------------------------------------------------
 _KNOWLEDGE_DIR = Path(__file__).parent / "knowledge"
-_KNOWLEDGE_FILES = ["tour_route.md"]
+_KNOWLEDGE_FILES = ["thayer_knowledge.md", "tour_route.md"]
 
 
 def _load_knowledge_packs() -> str:
@@ -332,11 +336,14 @@ class SpotBrain:
                         "num_predict": 150,
                         "num_gpu": 99,
                         # 32768 = qwen2.5:7b's native context max (no YaRN
-                        # rescaling needed). The injected knowledge pack
-                        # alone is ~4400 tokens, so 4096 silently truncates
-                        # history. Measured KV-cache cost on Jetson AGX Orin:
-                        # ~1.9 GB at this setting, against ~21 GB headroom
-                        # with both qwen2.5 + qwen2.5vl resident. warm_up()
+                        # rescaling needed). The injected knowledge packs
+                        # alone are ~12K tokens, so 4096 or 8192 silently
+                        # truncates history. Initial KV-cache cost on Jetson
+                        # AGX Orin was ~1.9 GB with tour_route.md only;
+                        # adding thayer_knowledge.md is expected to push
+                        # this to roughly ~3.5 GB, against ~21 GB headroom
+                        # with both qwen2.5 + qwen2.5vl resident. Worth
+                        # re-measuring after the next warm-up. warm_up()
                         # passes the same num_ctx so Ollama doesn't reload
                         # the model on the first real request.
                         "num_ctx": 32768,
