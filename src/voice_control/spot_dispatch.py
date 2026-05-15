@@ -140,13 +140,14 @@ def get_robot_state_dict() -> dict:
                 robot_state.estop_states[0].state, "unknown"
             )
 
-        # E-Stop holder: who currently holds the E-Stop endpoint
+        # estop_holder: names of endpoints currently asserting an e-stop cut.
+        # An empty list means no endpoint is cutting power — robot is free to move.
         try:
-            holders = []
+            cutting = []
             for entry in robot_state.estop_states:
-                if entry.state == entry.STATE_NOT_ESTOPPED:
-                    holders.append(entry.name)
-            state["estop_holder"] = ", ".join(holders) if holders else "none"
+                if entry.state != entry.STATE_NOT_ESTOPPED:
+                    cutting.append(entry.name)
+            state["estop_holder"] = ", ".join(cutting) if cutting else "none"
         except Exception:
             state["estop_holder"] = "unknown"
 

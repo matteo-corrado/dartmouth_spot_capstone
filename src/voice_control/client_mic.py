@@ -532,9 +532,9 @@ def main():
                         help="GraphNav map path to upload during session bring-up.")
     parser.add_argument(
         "--latency",
-        choices=["off", "ring", "file", "all"],
+        choices=["off", "summary", "file", "all"],
         default="off",
-        help="Latency telemetry mode: off (default), ring (in-memory only), file (write JSONL), all (both)",
+        help="Latency telemetry mode: off (default), summary (in-memory only), file (write JSONL), all (both)",
     )
     parser.add_argument(
         "--latency-out",
@@ -1291,6 +1291,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         return "wake_detected" if wake_activated else None
     finally:
         if rec is not None and trace is not None:
+            if tts is not None:
+                try:
+                    tts.wait()  # drain TTS worker so render/play marks land before serialize
+                except Exception:
+                    pass
             rec.complete(trace)
 
 
