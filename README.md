@@ -161,3 +161,18 @@ sudo screen /dev/cu.usbmodem<DEVICE_NUMBER> 115200
 
 # Exit screen: Ctrl+A, then K, then Y
 ```
+
+## Latency Metrics
+
+Per-utterance timing data is captured by `src/voice_control/latency.py` and surfaces via the `--latency` flag on `client_mic.py` (or `run_voice_control.py`):
+
+- `--latency off` (default): zero overhead, no recording
+- `--latency ring`: in-memory ring buffer (last N traces), accessible via SIGUSR1 dump
+- `--latency file`: write JSONL to `logs/latency-{timestamp}.jsonl`
+- `--latency all`: ring + file
+
+Spans captured per utterance: VAD onset/offset, ASR request/response, LLM request/response, optional VLM request/response, intent dispatch, TTS render/play start/end. Schema is documented in the `Trace` dataclass at `src/voice_control/latency.py`.
+
+To dump the in-memory ring buffer to stderr: `kill -USR1 <pid>`.
+
+Startup-phase metrics are written once per boot to `logs/startup-{timestamp}.json` when `--latency=file` or `all`.

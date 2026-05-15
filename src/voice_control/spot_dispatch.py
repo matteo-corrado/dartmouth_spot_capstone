@@ -3,6 +3,7 @@
 This module executes Spot commands based on parsed voice intents.
 Uses a persistent session connection that stays open for multiple commands.
 """
+import os
 import sys
 import pathlib
 import time
@@ -30,6 +31,9 @@ from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localizat
 # action handler (for the user-facing report) — keep the mapping in one place
 # so they can't drift.
 _ESTOP_STATE_NAMES = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
+
+# Set once at module import for uptime computation in get_robot_state_dict().
+_PROCESS_START_TS = time.time()
 
 # Camera source names for Spot's fisheye cameras
 CAMERA_SOURCES = {
@@ -95,6 +99,10 @@ def get_robot_state_dict() -> dict:
         "tts_volume_percent": _current_tts_volume_percent(),
         "available_maps": "unknown",
         "current_map": "unknown",
+        "uptime_s": int(time.time() - _PROCESS_START_TS),
+        "estop_holder": "unknown",
+        "num_saved_locations": len(saved_locs),
+        "process_pid": os.getpid(),
     }
 
     try:
@@ -131,6 +139,16 @@ def get_robot_state_dict() -> dict:
             state["estop_status"] = _ESTOP_STATE_NAMES.get(
                 robot_state.estop_states[0].state, "unknown"
             )
+
+        # E-Stop holder: who currently holds the E-Stop endpoint
+        try:
+            holders = []
+            for entry in robot_state.estop_states:
+                if entry.state == entry.STATE_NOT_ESTOPPED:
+                    holders.append(entry.name)
+            state["estop_holder"] = ", ".join(holders) if holders else "none"
+        except Exception:
+            state["estop_holder"] = "unknown"
 
     except Exception as e:
         state["state_error"] = str(e)

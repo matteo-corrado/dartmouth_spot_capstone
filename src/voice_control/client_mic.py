@@ -64,6 +64,8 @@ def _shutdown_signal_handler(signum, frame):
 signal.signal(signal.SIGINT, _shutdown_signal_handler)
 signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 
+from contextlib import nullcontext
+
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
@@ -71,6 +73,8 @@ from llm_brain import SpotBrain, DEFAULT_MODEL
 from audio_player import AudioPlayer
 from spot_tts import SpotTTS
 from audio_feedback import beep
+from latency import init_recorder, get_recorder
+from src.voice_control import startup_status  # noqa: F401 — available for later use
 
 
 # ============================================================================
@@ -526,7 +530,22 @@ def main():
                         help="TTS + beep output gain (0.0-1.5, default 1.0)")
     parser.add_argument("--map", type=str, default=None,
                         help="GraphNav map path to upload during session bring-up.")
+    parser.add_argument(
+        "--latency",
+        choices=["off", "ring", "file", "all"],
+        default="off",
+        help="Latency telemetry mode: off (default), ring (in-memory only), file (write JSONL), all (both)",
+    )
+    parser.add_argument(
+        "--latency-out",
+        type=str,
+        default=None,
+        help="Latency JSONL file path (default: logs/latency-{timestamp}.jsonl). Only used when --latency=file or all.",
+    )
     args = parser.parse_args()
+
+    # Latency telemetry — no-op when --latency=off
+    init_recorder(mode=args.latency, file_path=args.latency_out)
 
     # Auto-detect devices by name if not explicitly specified
     if args.device is None:
@@ -586,12 +605,15 @@ def main():
             # Warm both Ollama models in parallel — each is an I/O+CPU bound
             # roundtrip, and they're independent (different models on the
             # same Ollama server). Saves ~2-3s of cold-start latency.
-            brain_warm = threading.Thread(target=brain.warm_up, daemon=True)
-            vlm_warm = threading.Thread(target=brain.warm_up_vlm, daemon=True)
-            brain_warm.start()
-            vlm_warm.start()
-            brain_warm.join()
-            vlm_warm.join()
+            rec = get_recorder()
+            ctx = rec.startup_phase("brain_warmup") if rec else nullcontext()
+            with ctx:
+                brain_warm = threading.Thread(target=brain.warm_up, daemon=True)
+                vlm_warm = threading.Thread(target=brain.warm_up_vlm, daemon=True)
+                brain_warm.start()
+                vlm_warm.start()
+                brain_warm.join()
+                vlm_warm.join()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
             print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
@@ -1084,181 +1106,192 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 print(f"[Wake phrase only — no command after stripping]")
                 return None
 
-    # ------------------------------------------------------------------
-    # 2. LLM Brain mode (primary)
-    # ------------------------------------------------------------------
-    if brain is not None:
-        # Collect current robot state for context
-        state = get_spot_state()
+    rec = get_recorder()
+    trace = rec.begin_utterance() if rec else None
+    try:
+        # ------------------------------------------------------------------
+        # 2. LLM Brain mode (primary)
+        # ------------------------------------------------------------------
+        if brain is not None:
+            # Collect current robot state for context
+            state = get_spot_state()
 
-        t_llm_start = time.time()
-        result = brain.process(clean, state)
-        t_llm_end = time.time()
-        print(f"[Timing] LLM: {t_llm_end - t_llm_start:.2f}s")
+            t_llm_start = time.time()
+            result = brain.process(clean, state)
+            t_llm_end = time.time()
+            print(f"[Timing] LLM: {t_llm_end - t_llm_start:.2f}s")
 
-        response = result.get("response", "")
-        actions = result.get("actions", [])
+            response = result.get("response", "")
+            actions = result.get("actions", [])
 
-        # Backward compat: old single "action" field
-        if not actions and result.get("action"):
-            actions = [result["action"]]
+            # Backward compat: old single "action" field
+            if not actions and result.get("action"):
+                actions = [result["action"]]
 
-        # If a describe action is queued, the LLM's "response" field is
-        # often a hallucinated answer (the model can't actually see the
-        # camera). Replace it with a stock acknowledgment so we don't
-        # speak a fake description before the VLM provides the real one.
-        # Note: this only suppresses what gets spoken — the raw LLM JSON
-        # is still stored in brain.history, so the model can still see
-        # its own hallucination on the next turn (acceptable footnote).
-        describe_action = next(
-            (a for a in actions if a.get("intent") == "describe"),
-            None,
-        )
-        if describe_action:
-            query = describe_action.get("params", {}).get("query", "")
-            response = (
-                f"Let me take a look for the {query}..."
-                if query
-                else random.choice(_DESCRIBE_ACKS)
+            # If a describe action is queued, the LLM's "response" field is
+            # often a hallucinated answer (the model can't actually see the
+            # camera). Replace it with a stock acknowledgment so we don't
+            # speak a fake description before the VLM provides the real one.
+            # Note: this only suppresses what gets spoken — the raw LLM JSON
+            # is still stored in brain.history, so the model can still see
+            # its own hallucination on the next turn (acceptable footnote).
+            describe_action = next(
+                (a for a in actions if a.get("intent") == "describe"),
+                None,
             )
+            if describe_action:
+                query = describe_action.get("params", {}).get("query", "")
+                response = (
+                    f"Let me take a look for the {query}..."
+                    if query
+                    else random.choice(_DESCRIBE_ACKS)
+                )
 
-        # Show what the robot "says"
-        if response:
-            print(f"\nSPOT (LLM): \"{response}\"")
+            # Show what the robot "says"
+            if response:
+                print(f"\nSPOT (LLM): \"{response}\"")
 
-        # Track which models actually handled this utterance for the
-        # end-of-turn [Models] summary line. vlm_used flips inside the
-        # describe-action branch below.
-        vlm_used = False
-        vlm_error = False
+            # Track which models actually handled this utterance for the
+            # end-of-turn [Models] summary line. vlm_used flips inside the
+            # describe-action branch below.
+            vlm_used = False
+            vlm_error = False
 
-        if actions:
-            beep.command_ok()
+            if actions:
+                beep.command_ok()
 
-            # Speak response first, then execute actions
-            if tts and response:
-                tts.speak(response)
+                # Speak response first, then execute actions
+                if tts and response:
+                    tts.speak(response)
 
-            for i, intent in enumerate(actions):
-                cmd = intent["intent"]
-                params = intent.get("params", {})
+                if trace:
+                    trace.mark("intent_dispatch")
+                for i, intent in enumerate(actions):
+                    cmd = intent["intent"]
+                    params = intent.get("params", {})
 
-                if len(actions) > 1:
-                    print(f"[Chain] Executing {i+1}/{len(actions)}: {cmd}")
-                    if i > 0:
-                        beep.chain_next()
+                    if len(actions) > 1:
+                        print(f"[Chain] Executing {i+1}/{len(actions)}: {cmd}")
+                        if i > 0:
+                            beep.chain_next()
 
-                # Special VLM flow for "describe" action
-                if cmd == "describe":
-                    vlm_used = True
-                    camera = params.get("camera", "front")
-                    query = params.get("query", "")
-                    try:
-                        from src.voice_control.spot_dispatch import capture_frame
-                        image_bytes = capture_frame(camera)
-                        if image_bytes:
-                            # If asking about a specific object, run YOLO first
-                            yolo_hint = ""
-                            if query:
-                                try:
-                                    from src.voice_control.visual_nav import detect_in_image
-                                    det = detect_in_image(image_bytes, query)
-                                    if det["found"]:
-                                        yolo_hint = (
-                                            f"IMPORTANT: Object detection confirms a '{query}' "
-                                            f"IS visible in this image ({det['position']}, "
-                                            f"confidence {det['confidence']:.0%}). "
-                                            f"Describe it and its surroundings."
-                                        )
-                                        print(f"[YOLO] Found '{query}' — {det['position']}, "
-                                              f"conf={det['confidence']:.2f}")
-                                    else:
-                                        yolo_hint = (
-                                            f"NOTE: Object detection did NOT find '{query}' "
-                                            f"in this image. If you also don't see it, say so."
-                                        )
-                                        print(f"[YOLO] '{query}' not detected")
-                                except ImportError:
-                                    pass
-                            vlm_response = brain.query_vlm(image_bytes, clean, yolo_hint=yolo_hint)
-                            print(f"\nSPOT (VLM): \"{vlm_response}\"")
-                            if tts:
-                                tts.wait()
-                                tts.speak(vlm_response)
-                        else:
+                    # Special VLM flow for "describe" action
+                    if cmd == "describe":
+                        vlm_used = True
+                        camera = params.get("camera", "front")
+                        query = params.get("query", "")
+                        try:
+                            from src.voice_control.spot_dispatch import capture_frame
+                            image_bytes = capture_frame(camera)
+                            if image_bytes:
+                                # If asking about a specific object, run YOLO first
+                                yolo_hint = ""
+                                if query:
+                                    try:
+                                        from src.voice_control.visual_nav import detect_in_image
+                                        det = detect_in_image(image_bytes, query)
+                                        if det["found"]:
+                                            yolo_hint = (
+                                                f"IMPORTANT: Object detection confirms a '{query}' "
+                                                f"IS visible in this image ({det['position']}, "
+                                                f"confidence {det['confidence']:.0%}). "
+                                                f"Describe it and its surroundings."
+                                            )
+                                            print(f"[YOLO] Found '{query}' — {det['position']}, "
+                                                  f"conf={det['confidence']:.2f}")
+                                        else:
+                                            yolo_hint = (
+                                                f"NOTE: Object detection did NOT find '{query}' "
+                                                f"in this image. If you also don't see it, say so."
+                                            )
+                                            print(f"[YOLO] '{query}' not detected")
+                                    except ImportError:
+                                        pass
+                                with (trace.span("vlm") if trace else nullcontext()):
+                                    vlm_response = brain.query_vlm(image_bytes, clean, yolo_hint=yolo_hint)
+                                print(f"\nSPOT (VLM): \"{vlm_response}\"")
+                                if tts:
+                                    tts.wait()
+                                    tts.speak(vlm_response)
+                            else:
+                                beep.error()
+                                vlm_error = True
+                                fallback = "Sorry, I couldn't capture an image right now."
+                                print(f"\nSPOT (VLM, error): \"{fallback}\"")
+                                if tts:
+                                    tts.wait()
+                                    tts.speak(fallback)
+                        except Exception as e:
                             beep.error()
                             vlm_error = True
-                            fallback = "Sorry, I couldn't capture an image right now."
+                            print(f"[VLM] Error: {e}")
+                            fallback = "Sorry, my vision system isn't working right now."
                             print(f"\nSPOT (VLM, error): \"{fallback}\"")
                             if tts:
                                 tts.wait()
                                 tts.speak(fallback)
-                    except Exception as e:
-                        beep.error()
-                        vlm_error = True
-                        print(f"[VLM] Error: {e}")
-                        fallback = "Sorry, my vision system isn't working right now."
-                        print(f"\nSPOT (VLM, error): \"{fallback}\"")
-                        if tts:
-                            tts.wait()
-                            tts.speak(fallback)
-                else:
-                    if execute_on_spot(intent):
-                        print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
                     else:
-                        beep.error()
-                        print(f">>> FAILED" if len(actions) == 1 else f">>> {cmd} FAILED — stopping chain")
-                        break
+                        if execute_on_spot(intent):
+                            print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
+                        else:
+                            beep.error()
+                            print(f">>> FAILED" if len(actions) == 1 else f">>> {cmd} FAILED — stopping chain")
+                            break
 
-                    # Wait for movement/posture to complete before next action in chain
-                    if len(actions) > 1 and i < len(actions) - 1:
-                        if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
-                            _wait_for_nav_complete()
-                        elif cmd in ("walk", "strafe", "turn"):
-                            time.sleep(CHAIN_MOVEMENT_WAIT_S)
-                        elif cmd in ("sit", "stand", "selfright", "body_height"):
-                            time.sleep(CHAIN_POSTURE_WAIT_S)
-        else:
-            # Conversation only — speak response
-            if tts and response:
-                tts.speak(response)
-            print("(No physical action — conversation only)")
+                        # Wait for movement/posture to complete before next action in chain
+                        if len(actions) > 1 and i < len(actions) - 1:
+                            if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
+                                _wait_for_nav_complete()
+                            elif cmd in ("walk", "strafe", "turn"):
+                                time.sleep(CHAIN_MOVEMENT_WAIT_S)
+                            elif cmd in ("sit", "stand", "selfright", "body_height"):
+                                time.sleep(CHAIN_POSTURE_WAIT_S)
+                if trace:
+                    trace.mark("dispatch_complete")
+            else:
+                # Conversation only — speak response
+                if tts and response:
+                    tts.speak(response)
+                print("(No physical action — conversation only)")
 
-        # One-line summary of which model(s) actually handled this utterance.
-        # Makes it obvious when a "describe surroundings" prompt got
-        # hallucinated by the LLM instead of routed to the VLM.
-        if vlm_used and not vlm_error:
-            models_tag = "LLM + VLM"
-        elif vlm_used and vlm_error:
-            models_tag = "LLM + VLM (failed → fell back)"
-        elif actions:
-            models_tag = f"LLM only (action: {actions[0]['intent']})"
+            # One-line summary of which model(s) actually handled this utterance.
+            # Makes it obvious when a "describe surroundings" prompt got
+            # hallucinated by the LLM instead of routed to the VLM.
+            if vlm_used and not vlm_error:
+                models_tag = "LLM + VLM"
+            elif vlm_used and vlm_error:
+                models_tag = "LLM + VLM (failed → fell back)"
+            elif actions:
+                models_tag = f"LLM only (action: {actions[0]['intent']})"
+            else:
+                models_tag = "LLM only (conversation)"
+            print(f"[Models] {models_tag}")
+
+            print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
+            return "wake_detected" if wake_activated else None
+
+        # ------------------------------------------------------------------
+        # 3. Legacy regex-only fallback (--no-brain mode)
+        # ------------------------------------------------------------------
+        intent = parse_intent(clean)
+
+        if intent:
+            cmd = intent['intent']
+            params = intent.get('params', {})
+            print(f"Command: {cmd}" + (f" {params}" if params else ""))
+
+            if execute_on_spot(intent):
+                print(">>> SUCCESS")
+            else:
+                print(">>> FAILED")
         else:
-            models_tag = "LLM only (conversation)"
-        print(f"[Models] {models_tag}")
+            print("(Not recognized — try: stand, sit, stop, turn left/right, go to [location])")
 
         print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
         return "wake_detected" if wake_activated else None
-
-    # ------------------------------------------------------------------
-    # 3. Legacy regex-only fallback (--no-brain mode)
-    # ------------------------------------------------------------------
-    intent = parse_intent(clean)
-
-    if intent:
-        cmd = intent['intent']
-        params = intent.get('params', {})
-        print(f"Command: {cmd}" + (f" {params}" if params else ""))
-
-        if execute_on_spot(intent):
-            print(">>> SUCCESS")
-        else:
-            print(">>> FAILED")
-    else:
-        print("(Not recognized — try: stand, sit, stop, turn left/right, go to [location])")
-
-    print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
-    return "wake_detected" if wake_activated else None
+    finally:
+        if rec is not None and trace is not None:
+            rec.complete(trace)
 
 
 if __name__ == "__main__":

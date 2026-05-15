@@ -40,6 +40,7 @@ import numpy as np
 os.environ.setdefault("ONNX_PROVIDER", "CUDAExecutionProvider")
 
 from src.voice_control.audio_player import AudioPlayer
+from src.voice_control.latency import get_recorder
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -187,7 +188,27 @@ class SpotTTS:
                 samples = samples * gain
             return samples, rate
 
-        self._player.enqueue_render(_render, label=f"tts:{text[:40]}")
+        # Latency hooks: stamp render/play boundaries on the current trace if
+        # the latency recorder is initialized. No-op when disabled.
+        rec = get_recorder()
+        trace = rec.current() if rec else None
+        if trace is not None:
+            cb_render_start = lambda: trace.mark("tts_render_start")
+            cb_render_end = lambda: trace.mark("tts_render_end")
+            cb_play_start = lambda: trace.mark("tts_play_start")
+            cb_play_end = lambda: trace.mark("tts_play_end")
+            trace.mark("tts_enqueue")
+        else:
+            cb_render_start = cb_render_end = cb_play_start = cb_play_end = None
+
+        self._player.enqueue_render(
+            _render,
+            label=f"tts:{text[:40]}",
+            on_render_start=cb_render_start,
+            on_render_end=cb_render_end,
+            on_play_start=cb_play_start,
+            on_play_end=cb_play_end,
+        )
 
     def speak_sync(self, text: str):
         """Speak text and block until playback finishes."""
