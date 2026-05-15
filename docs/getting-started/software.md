@@ -2,33 +2,9 @@
 
 Complete software setup for a fresh Jetson. Follow these steps in order.
 
-## 1. Install Docker and NVIDIA Container Toolkit
+## 1. Docker and NVIDIA Container Toolkit (Optional)
 
-Riva ASR runs as a Docker container with GPU access. JetPack 6.2.1 may include Docker pre-installed, but the NVIDIA container runtime often needs manual setup.
-
-```bash
-# Install Docker (skip if 'docker --version' already works)
-sudo apt-get update
-sudo apt-get install -y docker.io
-
-# Install NVIDIA Container Toolkit (required for GPU access in Docker)
-sudo apt-get install -y nvidia-container-toolkit
-sudo systemctl restart docker
-
-# Allow running Docker without sudo
-sudo usermod -aG docker $USER
-```
-
-!!! warning "Log out and back in"
-    The `usermod` group change requires a new login session. Log out and SSH back in before continuing. Verify with `groups | grep docker`.
-
-Verify Docker can access the GPU:
-
-```bash
-docker run --rm --runtime=nvidia --gpus all nvidia/cuda:12.6.0-base-ubuntu22.04 nvidia-smi
-```
-
-If you see GPU info, Docker is ready. If you get `could not select device driver "nvidia"`, the nvidia-container-toolkit is not installed correctly — re-run `sudo apt-get install -y nvidia-container-toolkit && sudo systemctl restart docker`.
+Docker is not required for the current ASR backend (server.py wrapper). It is pre-installed on JetPack 6.2.1 if needed for other purposes. Skip this section unless you have a specific need for Docker.
 
 ## 2. Clone the Repository
 
@@ -97,57 +73,15 @@ pip install -r requirements.txt
 This installs:
 
 - `bosdyn-client`, `bosdyn-mission`, `bosdyn-choreography-client` (v5.0.1.1) -- Spot SDK
-- `nvidia-riva-client` -- Riva ASR Python client
 - `sounddevice`, `webrtcvad` -- audio capture and voice activity detection
 - `grpcio`, `grpcio-tools` -- gRPC for ASR bridge
 - `sherpa-onnx` -- Kokoro TTS and wake word (bundles its own ONNX runtime for aarch64)
 - `ultralytics` -- YOLO object detection
 - `python-dotenv`, `numpy`, `requests` -- utilities
 
-## 7. NVIDIA Riva ASR (Docker)
+## 7. ASR Backend
 
-Riva provides the speech-to-text engine. It runs as a Docker container with the Canary-Qwen-2.5B ASR model.
-
-### First-Time Setup
-
-```bash
-chmod +x scripts/setup_riva.sh
-./scripts/setup_riva.sh
-```
-
-This downloads the Riva quickstart scripts and configures ASR-only mode. Then initialize the models (downloads ~5GB and runs TensorRT optimization -- takes 15-30 minutes on first run):
-
-```bash
-cd ~/riva_quickstart && bash riva_init.sh
-```
-
-### Starting Riva
-
-```bash
-./scripts/setup_riva.sh start
-```
-
-Or manually:
-
-```bash
-cd ~/riva_quickstart && bash riva_start.sh
-```
-
-### Verify Riva
-
-```bash
-./scripts/setup_riva.sh test
-```
-
-Or check the Docker container:
-
-```bash
-docker ps | grep riva
-# Should show riva-speech container running
-```
-
-!!! note "Riva starts automatically"
-    `run_voice_control.py` checks if the Riva container is running and starts it automatically. You only need to do the first-time setup manually.
+The ASR backend runs as a gRPC server (`src/voice_control/server.py`) on port 50055. It is auto-started by `run_voice_control.py` — no manual setup required. A Parakeet-based replacement is planned for Stage 2.
 
 ## 8. Ollama (LLM / VLM)
 
@@ -211,8 +145,8 @@ robot.authenticate(BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD)
 print('Spot: OK')
 "
 
-# 2. Riva ASR
-./scripts/setup_riva.sh test
+# 2. ASR bridge
+python3 -c "import socket; s=socket.socket(); s.settimeout(1); print('ASR Bridge: OK' if s.connect_ex(('127.0.0.1',50055))==0 else 'ASR Bridge: DOWN (will auto-start with run_voice_control.py)'); s.close()"
 
 # 3. Ollama
 ollama list

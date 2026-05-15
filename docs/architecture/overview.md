@@ -11,8 +11,6 @@ graph LR
     MIC[Microphone<br/>XVF3800] --> VAD[WebRTC VAD<br/>+ Energy Gate]
     VAD --> KWS[Wake Word<br/>sherpa-onnx KWS]
     KWS --> ASR[ASR Bridge<br/>server.py :50055]
-    ASR --> RIVA[Riva ASR<br/>Canary-Qwen-2.5B<br/>:50051]
-    RIVA --> ASR
     ASR --> BRAIN[LLM Brain<br/>qwen2.5:7b<br/>Ollama :11434]
     BRAIN --> DISPATCH[Spot Dispatcher<br/>spot_dispatch.py]
     DISPATCH --> SPOT[Spot Robot<br/>192.168.80.3]
@@ -25,12 +23,12 @@ graph LR
     style MIC fill:#2196F3,color:#fff
     style SPOT fill:#4CAF50,color:#fff
     style BRAIN fill:#FF9800,color:#fff
-    style RIVA fill:#9C27B0,color:#fff
 ```
 
 **Data flow summary:**
 Microphone audio streams through VAD and energy gating, passes the wake word
-detector, gets transcribed by Riva ASR via a gRPC bridge, then the transcript
+detector, gets transcribed by the ASR backend (currently the existing server.py
+wrapper; Parakeet swap pending in Stage 2) via a gRPC bridge, then the transcript
 goes to the LLM Brain which returns structured JSON with actions and a spoken
 response. The dispatcher executes actions on Spot. Vision queries additionally
 invoke the VLM or YOLO models.
@@ -39,11 +37,12 @@ invoke the VLM or YOLO models.
 
 ### 1. Modular ASR Bridge
 
-`server.py` acts as a gRPC bridge between the voice client and NVIDIA Riva.
-The client speaks a custom `asr.proto` protocol on port 50055; the server
-translates to Riva's native API on port 50051. This decouples the ASR engine
-from the rest of the pipeline -- swapping Riva for Whisper, Faster-Whisper, or
-any other engine only requires changing `server.py`, not the client.
+`server.py` acts as a gRPC bridge between the voice client and the ASR backend
+(currently the existing server.py wrapper; Parakeet swap pending in Stage 2).
+The client speaks a custom `asr.proto` protocol on port 50055; the server handles
+transcription internally. This decouples the ASR engine from the rest of the
+pipeline -- swapping the backend for Whisper, Faster-Whisper, Parakeet, or any
+other engine only requires changing `server.py`, not the client.
 
 The server also handles post-processing: hallucination filtering, repetitive
 phrase detection, and minimum duration rejection.
@@ -104,7 +103,7 @@ speech at normal conversational distance.
 | Component | File | Purpose |
 |---|---|---|
 | Voice Client | `src/voice_control/client_mic.py` | Main audio loop: VAD, speech detection, ASR dispatch, LLM orchestration |
-| ASR Bridge Server | `src/voice_control/server.py` | gRPC bridge to Riva ASR with hallucination filtering |
+| ASR Bridge Server | `src/voice_control/server.py` | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
 | LLM Brain | `src/voice_control/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
 | Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision) |
 | Wake Word Detector | `src/voice_control/wake_word.py` | sherpa-onnx keyword spotter for "Hey Spot" |

@@ -8,26 +8,10 @@ it, and how to verify it is running.
 
 | Service | Port | Technology | Start Command |
 |---|---|---|---|
-| Riva ASR | 50051 | Docker (Canary-Qwen-2.5B) | `./scripts/setup_riva.sh start` |
+| ASR Bridge | 50055 | Python gRPC server (server.py wrapper) | Auto-started by `run_voice_control.py` |
 | Ollama | 11434 | systemd service | `sudo systemctl start ollama` |
-| ASR Bridge | 50055 | Python gRPC server | Auto-started by `run_voice_control.py` |
 | Spot API | 192.168.80.3 | BD SDK (robot onboard) | Always on when Spot is powered |
 | Web Panel | 8080 | Python HTTP (stdlib) | `python scripts/web_panel.py` |
-
-### Riva ASR (port 50051)
-
-NVIDIA Riva runs as a Docker container named `riva-speech`. It hosts the
-Canary-Qwen-2.5B speech recognition model, which provides high-accuracy
-English ASR with punctuation. The container uses the NVIDIA runtime for
-GPU access.
-
-First-time setup requires downloading and optimizing models (~15-30 minutes):
-
-```bash
-./scripts/setup_riva.sh          # install client + download quickstart
-cd ~/riva_quickstart && bash riva_init.sh   # download + TensorRT optimize
-./scripts/setup_riva.sh start    # start the server
-```
 
 ### Ollama (port 11434)
 
@@ -47,10 +31,11 @@ ollama pull qwen2.5vl:7b     # vision LLM (~6GB)
 
 ### ASR Bridge (port 50055)
 
-The ASR bridge server (`src/voice_control/server.py`) translates the custom
-`asr.proto` protocol to Riva's native API. It is auto-started by
+The ASR bridge server (`src/voice_control/server.py`) implements the custom
+`asr.proto` protocol on port 50055. It is auto-started by
 `run_voice_control.py` unless `--no-server` is passed. The bridge handles
-hallucination filtering and minimum duration rejection.
+hallucination filtering and minimum duration rejection. A Parakeet-based
+backend is planned for Stage 2.
 
 ### Spot API (192.168.80.3)
 
@@ -70,38 +55,31 @@ Tailscale or local network IP.
 Start services in this order:
 
 ```
-1. Riva ASR          ./scripts/setup_riva.sh start
-                     (wait for port 50051 to accept connections)
-
-2. Ollama            sudo systemctl start ollama
+1. Ollama            sudo systemctl start ollama
                      (wait for port 11434)
 
-3. E-Stop            python scripts/estop_run.py
+2. E-Stop            python scripts/estop_run.py
                      (or: python scripts/web_panel.py for phone-based E-Stop)
                      Must run in a separate terminal. Robot cannot move
                      without an active E-Stop endpoint.
 
-4. Map Upload        python scripts/setup_map.py
+3. Map Upload        python scripts/setup_map.py
    (optional)        Only needed if using GraphNav navigation.
                      Robot must see a fiducial for localization.
 
-5. Voice Control     python scripts/run_voice_control.py
-                     Auto-starts Riva, Ollama, and ASR bridge if not running.
+4. Voice Control     python scripts/run_voice_control.py
+                     Auto-starts the ASR bridge and Ollama if not running.
                      Calibrates noise floor, warms up LLM, opens mic.
 ```
 
-`run_voice_control.py` automates steps 1-2 and the ASR bridge. The only
-manual prerequisite is the E-Stop (step 3).
+`run_voice_control.py` automates step 1 and the ASR bridge. The only
+manual prerequisite is the E-Stop (step 2).
 
 ## Checking Service Status
 
 ### From the command line
 
 ```bash
-# Riva ASR
-docker ps --filter name=riva-speech
-python3 -c "import socket; s=socket.socket(); s.settimeout(1); print('OK' if s.connect_ex(('127.0.0.1',50051))==0 else 'DOWN'); s.close()"
-
 # Ollama
 systemctl is-active ollama
 curl -s http://localhost:11434/api/tags | python3 -m json.tool
@@ -119,22 +97,22 @@ curl -s http://localhost:8080/status
 ### From the web panel
 
 Open `http://<jetson-ip>:8080` in a browser. The status bar shows live
-indicators for Riva, Ollama, E-Stop, and voice pipeline status, updated
+indicators for ASR, Ollama, E-Stop, and voice pipeline status, updated
 every 2 seconds.
 
 ### From within the voice pipeline
 
 `run_voice_control.py` checks all services on startup and reports status.
-If Riva is not running, it attempts to start the Docker container. If
+If the ASR bridge is not running, it starts it automatically. If
 Ollama is not running, it attempts `sudo systemctl start ollama`. If
-either fails, it prints instructions and exits (or falls back to
-regex-only mode for Ollama).
+Ollama fails, it prints instructions and exits (or falls back to
+regex-only mode).
 
 ## Resource Usage
 
 | Service | GPU VRAM | CPU | RAM |
 |---|---|---|---|
-| Riva ASR (Canary-Qwen-2.5B) | ~3 GB | Low | ~1 GB |
+| ASR Bridge (server.py) | 0 (CPU) | Low | ~100 MB |
 | Ollama qwen2.5:7b | ~5 GB | Low | ~1 GB |
 | Ollama qwen2.5vl:7b | ~6 GB | Low | ~1 GB |
 | YOLO-World + YOLOv8n | 0 (CPU) | Moderate | ~500 MB |
@@ -142,6 +120,6 @@ regex-only mode for Ollama).
 | sherpa-onnx Kokoro TTS | 0 (CPU) | Low | ~350 MB |
 | Voice client (VAD, audio) | 0 | Low | ~50 MB |
 
-Riva and Ollama share the GPU. The text LLM and VLM models swap in/out of
-VRAM on demand (Ollama manages this automatically). Total peak VRAM usage
-is approximately 8-9 GB when both Riva and one Ollama model are loaded.
+The text LLM and VLM models share the GPU and swap in/out of VRAM on demand
+(Ollama manages this automatically). Total peak VRAM usage is approximately
+6 GB when one Ollama model is loaded.

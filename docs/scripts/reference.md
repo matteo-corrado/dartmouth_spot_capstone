@@ -8,8 +8,8 @@ working directory is the project root.
 
 ## run_voice_control.py
 
-Main entry point for the voice control system. Auto-starts Riva, Ollama, and
-the ASR bridge server, then launches the microphone client.
+Main entry point for the voice control system. Auto-starts the ASR bridge server
+and Ollama (if not running), then launches the microphone client.
 
 ```bash
 python scripts/run_voice_control.py
@@ -21,7 +21,7 @@ python scripts/run_voice_control.py --device 24 --debug-audio
 
 | Flag | Description |
 |---|---|
-| `--skip-services` | Do not auto-start Riva or Ollama (assume already running) |
+| `--skip-services` | Do not auto-start ASR bridge or Ollama (assume already running) |
 | `--no-brain` | Disable LLM brain; use regex-only intent parsing (legacy mode) |
 | `--no-tts` | Disable text-to-speech output |
 | `--no-wake-word` | Always listening (skip "Hey Spot" requirement) |
@@ -109,31 +109,6 @@ python scripts/setup_map.py --waypoint-init
 
 ---
 
-## setup_riva.sh
-
-Manage the NVIDIA Riva ASR Docker container. Handles first-time setup,
-model initialization, and server lifecycle.
-
-```bash
-./scripts/setup_riva.sh              # full setup (first time)
-./scripts/setup_riva.sh init         # download + TensorRT optimize models
-./scripts/setup_riva.sh start        # start Riva server container
-./scripts/setup_riva.sh stop         # stop Riva server container
-./scripts/setup_riva.sh restart      # restart Riva server
-./scripts/setup_riva.sh test         # test ASR connection
-```
-
-| Subcommand | Description |
-|---|---|
-| `setup` | Install nvidia-riva-client + download Riva quickstart (default) |
-| `init` | Download and optimize models with TensorRT (15-30 min first run) |
-| `start` | Start the `riva-speech` Docker container |
-| `stop` | Stop the `riva-speech` Docker container |
-| `restart` | Stop then start the container |
-| `test` | Send 1 second of silence to Riva and verify response |
-
----
-
 ## download_map_from_spot.py
 
 Fetch the current GraphNav map from Spot's onboard storage and save it
@@ -215,4 +190,4 @@ python scripts/web_panel.py --no-spot
 The web panel provides:
 - **E-Stop controls:** Claim, E-Stop (cut motors), Release
 - **Voice pipeline controls:** Start, Stop
-- **Status indicators:** Riva, Ollama, E-Stop, Voice pipeline (polled every 2s)
+- **Status indicators:** ASR, Ollama, E-Stop, Voice pipeline (polled every 2s)

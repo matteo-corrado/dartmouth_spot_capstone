@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Integrated voice control for Spot.
 
-    Mic -> VAD -> Riva ASR (Canary-Qwen-2.5B) -> LLM Brain -> Action + TTS Response
+    Mic -> VAD -> ASR (server.py backend) -> LLM Brain -> Action + TTS Response
 
-Auto-starts all required services (Riva Docker, Ollama, ASR bridge).
+Auto-starts all required services (Ollama, ASR bridge).
 Only prerequisite: E-Stop must be running separately.
 
 Usage:
     python scripts/run_voice_control.py
     python scripts/run_voice_control.py --no-tts       # silent mode
     python scripts/run_voice_control.py --server-only   # ASR server only
-    python scripts/run_voice_control.py --skip-services  # don't touch Riva/Ollama
+    python scripts/run_voice_control.py --skip-services  # don't touch Ollama
 """
 import sys
 import pathlib
@@ -28,8 +28,6 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VOICE_DIR = PROJECT_ROOT / "src" / "voice_control"
 
-RIVA_CONTAINER = "riva-speech"
-RIVA_PORT = 50051
 OLLAMA_PORT = 11434
 ASR_PORT = 50055
 
@@ -47,7 +45,7 @@ def _port_open(port, host="127.0.0.1", timeout=1):
         return ok
     except Exception as e:
         # Surface the underlying reason once instead of swallowing it.
-        # Otherwise the user gets a cryptic "Riva required for ASR" with
+        # Otherwise the user gets a cryptic service-failure message with
         # no hint that e.g. the loopback adapter is misconfigured.
         print(f"[svc] _port_open({host}:{port}) failed: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
@@ -79,7 +77,7 @@ def _docker_container_running(name):
     except Exception as e:
         # Most common cause: docker socket permission denied
         # ("permission denied while trying to connect"). The old silent
-        # except left the user staring at "Riva required for ASR" with
+        # except left the user staring at a cryptic failure message with
         # no hint that they need to add themselves to the docker group.
         print(f"[svc] docker inspect {name} (Running) failed: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
@@ -98,35 +96,6 @@ def _docker_container_exists(name):
         print(f"[svc] docker inspect {name} (Status) failed: "
               f"{type(e).__name__}: {e}", file=sys.stderr)
         return False
-
-
-def ensure_riva():
-    """Ensure Riva ASR Docker container is running."""
-    print("\n[Services] Checking Riva ASR...")
-
-    if _docker_container_running(RIVA_CONTAINER):
-        if _port_open(RIVA_PORT):
-            print("   Riva is already running on port", RIVA_PORT)
-            return True
-        # Container running but port not ready yet — wait
-        return _wait_for_port(RIVA_PORT, "Riva ASR", timeout=120)
-
-    if _docker_container_exists(RIVA_CONTAINER):
-        print("   Riva container exists but is stopped. Starting...")
-        try:
-            subprocess.run(
-                ["docker", "start", RIVA_CONTAINER],
-                capture_output=True, text=True, timeout=30
-            )
-        except Exception as e:
-            print(f"   ERROR: docker start failed: {e}")
-            return False
-        return _wait_for_port(RIVA_PORT, "Riva ASR", timeout=120)
-
-    print("   ERROR: Riva container not found.")
-    print("   Run the initial setup first:")
-    print("     cd ~/riva_quickstart_arm64_v2.17.0 && bash riva_start.sh")
-    return False
 
 
 def ensure_ollama():
@@ -262,7 +231,7 @@ def main():
     parser.add_argument("--debug-audio", action="store_true",
                         help="Print audio levels for mic diagnostics")
     parser.add_argument("--skip-services", action="store_true",
-                        help="Don't auto-start Riva/Ollama (assume already running)")
+                        help="Don't auto-start Ollama (assume already running)")
     parser.add_argument("--no-wake-word", action="store_true",
                         help="Always listening (skip wake word)")
     parser.add_argument("--debug-crash", action="store_true",
@@ -291,10 +260,6 @@ def main():
 
     # --- Auto-start services ---
     if not args.skip_services:
-        if not ensure_riva():
-            print("\n  Riva is required for ASR. Exiting.")
-            return 1
-
         if not args.no_brain:
             if not ensure_ollama():
                 print("\n  WARNING: Ollama not available. LLM brain will be disabled.")

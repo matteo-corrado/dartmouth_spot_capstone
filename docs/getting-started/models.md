@@ -12,9 +12,7 @@ All models are downloaded locally and gitignored. Nothing is fetched at runtime 
 | YOLO-World v2 (open-vocab) | ~28MB | auto-downloaded by ultralytics | first use |
 | qwen2.5:7b (text LLM) | ~4.7GB | Ollama cache (`~/.ollama/`) | `ollama pull qwen2.5:7b` |
 | qwen2.5vl:7b (vision LLM) | ~4.7GB | Ollama cache (`~/.ollama/`) | `ollama pull qwen2.5vl:7b` |
-| Riva Canary-Qwen-2.5B (ASR) | ~5GB | Riva Docker volume | `bash riva_init.sh` |
-
-Total disk usage: approximately 15GB across all models.
+Total disk usage: approximately 10GB across all models.
 
 ## TTS: Kokoro v1.0 (kokoro-onnx, GPU)
 
@@ -105,8 +103,6 @@ To check installed models:
 ollama list
 ```
 
-## Riva ASR: Docker
+## ASR Backend
 
-The Riva ASR model (Canary-Qwen-2.5B) is managed entirely through Docker. It is downloaded and optimized during `riva_init.sh` (part of the [Software Setup](software.md#6-nvidia-riva-asr-docker)). No separate model download step is needed.
-
-The optimized TensorRT engines are stored in the Riva Docker volume and persist across container restarts.
+The ASR backend (`src/voice_control/server.py`) requires no model download. It is auto-started by `run_voice_control.py`. A Parakeet-based model download step will be added in Stage 2.

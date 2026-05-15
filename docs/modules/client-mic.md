@@ -60,7 +60,7 @@ Returns `"wake_detected"` if wake phrase found via ASR fallback, `None` otherwis
 
 ### `send_to_asr(stub, pcm_bytes) -> str`
 
-Stream PCM16 audio to the Riva ASR gRPC server. Sends config first, then
+Stream PCM16 audio to the ASR gRPC server. Sends config first, then
 audio chunks. Returns the final transcript string.
 
 ### `check_safety_command(text) -> dict | None`

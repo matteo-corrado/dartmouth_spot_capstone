@@ -1,5 +1,7 @@
 # Post-Flash Setup: JetPack 6.2.1 → Full Voice Control
 
+> **Note (Stage 1, 2026-05-15):** This document is a historical migration record. Phase 3 (NVIDIA Riva ASR Docker setup) is superseded — Riva has been removed in Stage 1. For current setup, follow [Software Setup](getting-started/software.md) which reflects the current ASR backend (server.py wrapper; Parakeet swap pending Stage 2).
+
 Complete step-by-step guide from flashing the Jetson AGX Orin to having full
 voice-controlled Spot with navigation, TTS, and arm capabilities.
 
@@ -7,7 +9,7 @@ voice-controlled Spot with navigation, TTS, and arm capabilities.
 
 | Component | Technology | Runs on |
 |-----------|-----------|---------|
-| ASR (speech-to-text) | NVIDIA Riva + Canary-Qwen-2.5B | GPU (Docker) |
+| ASR (speech-to-text) | server.py wrapper (Parakeet swap pending Stage 2) | CPU |
 | LLM (intent + chat) | Ollama + qwen2.5:7b | GPU |
 | VLM (vision) | Ollama + qwen2.5-vl:7b | GPU |
 | TTS (text-to-speech) | Kokoro ONNX (82M params) | CPU |
@@ -17,7 +19,7 @@ voice-controlled Spot with navigation, TTS, and arm capabilities.
 
 | Blocker on JetPack 5.1.2 | Fixed by JetPack 6.2.1 |
 |---------------------------|------------------------|
-| CUDA 11.4 (Riva needs 12) | CUDA 12.6 |
+| CUDA 11.4 (Ollama needs 12) | CUDA 12.6 |
 | glibc 2.31 (wheels need 2.35) | glibc 2.35 |
 | Python 3.8 (EOL) | Python 3.10 |
 
@@ -103,7 +105,6 @@ pip install -r requirements.txt
 
 This installs:
 - `bosdyn-client==5.0.1.1` (BD SDK, matched to robot firmware)
-- `nvidia-riva-client>=2.17.0` (Riva ASR client)
 - `kokoro-onnx>=0.5.0` (Kokoro TTS)
 - `sounddevice`, `webrtcvad`, `grpcio`, etc.
 
@@ -112,60 +113,15 @@ This installs:
 ```bash
 python3 -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}')"
 python3 -c "import bosdyn.client; print('BD SDK OK')"
-python3 -c "import riva.client; print('Riva client OK')"
 python3 -c "import kokoro_onnx; print('Kokoro OK')"
 python3 -c "import sounddevice; print('sounddevice OK')"
 ```
 
 ---
 
-## Phase 3: Set Up NVIDIA Riva ASR
+## Phase 3: ASR Backend ~~(NVIDIA Riva — removed in Stage 1)~~
 
-Riva runs as a Docker container serving Canary-Qwen-2.5B on port 50051.
-
-### 3.1 Install Docker + NVIDIA container runtime
-
-```bash
-sudo apt-get update
-sudo apt-get install -y docker.io nvidia-container-toolkit
-sudo systemctl restart docker
-sudo usermod -aG docker $USER
-# Log out and back in for group change to take effect
-```
-
-### 3.2 Run Riva setup
-
-```bash
-chmod +x scripts/setup_riva.sh
-./scripts/setup_riva.sh
-```
-
-This downloads the Riva quickstart and configures for ASR-only with Canary.
-
-### 3.3 Initialize models (15-30 min, first time only)
-
-```bash
-./scripts/setup_riva.sh init
-```
-
-This downloads the Canary-Qwen-2.5B model and builds TensorRT engines.
-
-### 3.4 Start Riva server
-
-```bash
-./scripts/setup_riva.sh start
-```
-
-### 3.5 Test Riva
-
-```bash
-./scripts/setup_riva.sh test
-```
-
-Should print: `[TEST] Connection OK — Riva is ready for Spot voice control`
-
-> **Note:** Riva server must be running before starting voice control.
-> Add `./scripts/setup_riva.sh start` to your boot sequence or run it manually each time.
+> **Superseded:** Riva has been removed in Stage 1. The ASR backend is now `src/voice_control/server.py` auto-started by `run_voice_control.py`. No manual setup required. This section is kept as a historical record of the original Riva-based setup.
 
 ---
 
@@ -322,7 +278,6 @@ python scripts/setup_map.py --map-path maps/lab_map2
 Before starting voice control, make sure:
 
 - [ ] E-Stop is running (`python scripts/estop_run.py` in a separate terminal)
-- [ ] Riva server is running (`./scripts/setup_riva.sh start`)
 - [ ] Ollama is running (`sudo systemctl start ollama`)
 - [ ] Map is uploaded and robot is localized (Phase 7)
 - [ ] Microphone and speaker are connected
@@ -334,7 +289,7 @@ python scripts/run_voice_control.py
 ```
 
 This automatically:
-1. Checks Riva is reachable on port 50051
+1. Checks Ollama is running
 2. Starts the ASR bridge server (port 50055)
 3. Starts the mic client with VAD, LLM brain, and TTS
 
@@ -411,10 +366,10 @@ Type commands and verify JSON output:
 python src/voice_control/spot_tts.py af_heart "Testing Kokoro TTS on Spot"
 ```
 
-### Test Riva ASR
+### Test ASR Bridge
 
 ```bash
-./scripts/setup_riva.sh test
+python3 -c "import socket; s=socket.socket(); s.settimeout(1); print('ASR Bridge: OK' if s.connect_ex(('127.0.0.1',50055))==0 else 'ASR Bridge: DOWN (auto-starts with run_voice_control.py)'); s.close()"
 ```
 
 ---
@@ -423,14 +378,13 @@ python src/voice_control/spot_tts.py af_heart "Testing Kokoro TTS on Spot"
 
 | Problem | Fix |
 |---------|-----|
-| `Riva server NOT detected on port 50051` | Run `./scripts/setup_riva.sh start` |
 | `Cannot connect to Ollama` | Run `sudo systemctl start ollama` |
 | `Kokoro model files not found` | Run `python scripts/setup_kokoro.py` |
 | `E-Stop error` / robot won't move | Ensure `python scripts/estop_run.py` is running |
 | `Not localized` | Run `python scripts/setup_map.py --waypoint-init` |
 | `Location 'X' not found` | Run `python scripts/map_waypoints.py` to name waypoints |
 | `No waypoints in map` | Upload a map: `python scripts/setup_map.py --map-path ...` |
-| ASR gives empty results | Check mic is connected, device index is correct, Riva running |
+| ASR gives empty results | Check mic is connected, device index is correct, ASR bridge running (port 50055) |
 | "Stop" doesn't cancel navigation | Fixed in latest code, pull and redeploy |
 | `ModuleNotFoundError` | Activate venv: `source spot-env/bin/activate` |
 | Robot credentials error | Check `.env` has correct username and password |
@@ -439,8 +393,7 @@ python src/voice_control/spot_tts.py af_heart "Testing Kokoro TTS on Spot"
 
 | Port | Service |
 |------|---------|
-| 50051 | NVIDIA Riva ASR server (Docker) |
-| 50055 | ASR bridge server (custom proto to Riva) |
+| 50055 | ASR bridge server (server.py) |
 | 11434 | Ollama LLM/VLM API |
 
 ## Boot Sequence (Quick Reference)
@@ -452,7 +405,6 @@ cd /home/spotdog/dartmouth_spot_capstone
 source spot-env/bin/activate
 
 # 1. Start infrastructure
-./scripts/setup_riva.sh start          # Riva ASR (Docker)
 sudo systemctl start ollama            # Ollama LLM
 
 # 2. Start E-Stop (separate terminal, keep open)

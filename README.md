@@ -46,12 +46,12 @@ See [docs/getting-started/quickstart.md](docs/getting-started/quickstart.md) for
 ## Architecture
 
 ```
-Mic (XVF3800) → WebRTC VAD → Wake Word (sherpa-onnx) → ASR (Riva) → LLM Brain (qwen2.5:7b) → Spot Dispatcher → Robot
+Mic (XVF3800) → WebRTC VAD → Wake Word (sherpa-onnx) → ASR (server.py) → LLM Brain (qwen2.5:7b) → Spot Dispatcher → Robot
                                                                           ↓
                                                                     TTS (Kokoro) → Speaker
 ```
 
-The voice client captures audio, gates it through VAD and energy detection, checks for the wake word, transcribes via Riva ASR, then sends the transcript to the LLM brain. The brain returns structured JSON with actions and a spoken response. The dispatcher executes actions on Spot while TTS plays the response.
+The voice client captures audio, gates it through VAD and energy detection, checks for the wake word, transcribes via the ASR backend (currently the existing server.py wrapper; Parakeet swap pending in Stage 2), then sends the transcript to the LLM brain. The brain returns structured JSON with actions and a spoken response. The dispatcher executes actions on Spot while TTS plays the response.
 
 For the full architecture diagram and design decisions, see [docs/architecture/overview.md](docs/architecture/overview.md).
 
@@ -59,7 +59,7 @@ For the full architecture diagram and design decisions, see [docs/architecture/o
 
 | Component | Technology | Runs On |
 |-----------|-----------|---------|
-| ASR (speech-to-text) | NVIDIA Riva (Canary-Qwen-2.5B) | GPU (Docker) |
+| ASR (speech-to-text) | server.py wrapper (Parakeet swap pending Stage 2) | CPU |
 | LLM (language model) | Ollama qwen2.5:7b | GPU |
 | VLM (vision-language) | Ollama qwen2.5vl:7b | GPU |
 | TTS (text-to-speech) | kokoro-onnx Kokoro v1.0 (fp16-gpu) | GPU |
@@ -76,7 +76,6 @@ dartmouth_spot_capstone/
         run_voice_control.py            Main launcher (starts all services)
         estop_run.py                    E-Stop keepalive
         web_panel.py                    Web UI for E-Stop + pipeline control
-        setup_riva.sh                   NVIDIA Riva ASR Docker setup
         setup_kokoro.py                 Download Kokoro TTS model
         setup_kws.py                    Download wake word model
         setup_map.py                    Upload GraphNav map to Spot
@@ -90,7 +89,7 @@ dartmouth_spot_capstone/
         location_manager.py             Named location persistence
         voice_control/                  Voice pipeline modules
             client_mic.py                   Mic listener + VAD + main loop
-            server.py                       gRPC ASR bridge (Riva proxy)
+            server.py                       gRPC ASR bridge (server.py wrapper)
             llm_brain.py                    LLM/VLM inference via Ollama
             spot_dispatch.py                Intent → robot action executor
             intent.py                       Regex intent parser (fallback)
@@ -111,7 +110,7 @@ Detailed guides and reference docs live in [`docs/`](docs/):
 
 **Getting Started**
 - [Hardware Setup](docs/getting-started/hardware.md) -- Jetson, Spot, microphone, network
-- [Software Setup](docs/getting-started/software.md) -- Python env, Riva, Ollama, dependencies
+- [Software Setup](docs/getting-started/software.md) -- Python env, Ollama, dependencies
 - [Model Downloads](docs/getting-started/models.md) -- TTS, wake word, YOLO, LLM/VLM models
 - [Quick Start](docs/getting-started/quickstart.md) -- 5-minute getting-started walkthrough
 - [Daily Operations](docs/getting-started/daily-operations.md) -- Day-to-day usage

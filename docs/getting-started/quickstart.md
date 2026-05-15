@@ -10,7 +10,6 @@ Before starting, confirm:
 - [ ] Jetson is connected to Spot's WiFi (`ping 192.168.80.3` succeeds)
 - [ ] `.env` file exists with correct robot credentials
 - [ ] Python venv is set up with all dependencies installed
-- [ ] Riva Docker container has been initialized (`riva_init.sh` run at least once)
 - [ ] Ollama models are pulled (`ollama list` shows qwen2.5:7b and qwen2.5vl:7b)
 - [ ] TTS and KWS models are downloaded (`models/tts/` and `models/kws/` exist)
 - [ ] Microphone (XVF3800) is plugged into Jetson USB
@@ -57,13 +56,12 @@ python scripts/run_voice_control.py
 
 The startup sequence takes 30-60 seconds. Here is what happens:
 
-1. **Riva check** -- verifies the ASR Docker container is running (starts it if stopped)
-2. **Ollama check** -- verifies the LLM service is running
-3. **ASR bridge** -- starts the gRPC proxy server on port 50055
-4. **Noise calibration** -- records 2 seconds of silence to set the energy threshold
-5. **LLM warm-up** -- sends a throwaway prompt to pre-load the model into VRAM (~10-15s on cold start)
-6. **Wake word init** -- loads the sherpa-onnx keyword spotter
-7. **YOLO preload** -- begins loading object detection models in the background
+1. **Ollama check** -- verifies the LLM service is running
+2. **ASR bridge** -- starts the gRPC server on port 50055
+3. **Noise calibration** -- records 2 seconds of silence to set the energy threshold
+4. **LLM warm-up** -- sends a throwaway prompt to pre-load the model into VRAM (~10-15s on cold start)
+5. **Wake word init** -- loads the sherpa-onnx keyword spotter
+6. **YOLO preload** -- begins loading object detection models in the background
 
 When you see this, the system is ready:
 
@@ -156,7 +154,7 @@ python scripts/run_voice_control.py --device 10
 # Debug audio levels (shows RMS/threshold for mic troubleshooting)
 python scripts/run_voice_control.py --debug-audio
 
-# Skip auto-starting Riva/Ollama (if you manage them manually)
+# Skip auto-starting ASR bridge/Ollama (if you manage them manually)
 python scripts/run_voice_control.py --skip-services
 ```
 

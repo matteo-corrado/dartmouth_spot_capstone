@@ -55,6 +55,14 @@ Current implementation status of all features.
 
 ---
 
+## Infrastructure Changes
+
+| Change | Status | Notes |
+|--------|--------|-------|
+| Riva ASR removal | Landed (Stage 1) | nvidia-riva-client dropped from requirements; server.py wrapper retained pending Parakeet swap in Stage 2. See [disk-reclaim staging design](../superpowers/specs/2026-05-15-disk-reclaim-staging-design.md). |
+
+---
+
 ## Latency Optimizations (Applied)
 
 | Optimization | Change | Impact |

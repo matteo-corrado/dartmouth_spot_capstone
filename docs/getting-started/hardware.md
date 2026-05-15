@@ -15,14 +15,14 @@ Key specs:
 
 The Jetson runs **JetPack 6.2.1** (L4T r36.4.3, Ubuntu 22.04). This version was chosen because it provides:
 
-- **CUDA 12.6** -- required by Riva ASR and Ollama
+- **CUDA 12.6** -- required by Ollama
 - **Python 3.10** -- compatible with Boston Dynamics SDK 5.0.1.1
 - **glibc 2.35** -- required by sherpa-onnx aarch64 wheels
-- **TensorRT 10.3** -- used by Riva for optimized ASR inference
-- **Docker + NVIDIA Container Toolkit** -- pre-installed for Riva
+- **TensorRT 10.3** -- pre-installed, available for future ASR backends (Parakeet)
+- **Docker + NVIDIA Container Toolkit** -- pre-installed
 
 !!! warning "Do not upgrade to JetPack 6.3+ without testing"
-    JetPack upgrades can break CUDA/TensorRT compatibility with Riva and Ollama. Stick with 6.2.1 unless you have a specific reason to upgrade and can re-validate the full stack.
+    JetPack upgrades can break CUDA/TensorRT compatibility with Ollama and other on-device models. Stick with 6.2.1 unless you have a specific reason to upgrade and can re-validate the full stack.
 
 ## Flashing the Jetson
 
@@ -69,7 +69,7 @@ sudo docker run --rm --runtime=nvidia --gpus all nvidia/cuda:12.6.0-base-ubuntu2
 
 # Disk space
 df -h /
-# Check available space (need ~20GB for models + Riva)
+# Check available space (need ~20GB for models)
 ```
 
 ## Spot Robot Connection
@@ -189,7 +189,6 @@ sudo nvpmodel -q          # Should show "MAXN"
     | WiFi (192.168.80.x)
     |
 [Jetson AGX Orin]
-    |--- Riva ASR (Docker, localhost:50051)
     |--- Ollama LLM/VLM (localhost:11434)
     |--- ASR Bridge (localhost:50055)
     |--- Web Panel (port 8080, accessible via Tailscale or LAN)

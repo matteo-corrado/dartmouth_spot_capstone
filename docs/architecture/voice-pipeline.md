@@ -182,7 +182,7 @@ If any action in the chain fails, the chain stops immediately.
 |---|---|---|
 | Wake word detection | ~0 ms | Runs inline on every 30ms frame |
 | VAD + onset confirmation | ~90 ms | 3 frames at 30ms each |
-| ASR (Riva Canary-Qwen-2.5B) | 0.5 - 2.0 s | Depends on utterance length |
+| ASR (server.py backend) | 0.5 - 2.0 s | Depends on utterance length |
 | LLM (qwen2.5:7b warm) | 0.2 - 1.0 s | Prompt cached after warm-up |
 | LLM (cold start) | 10 - 17 s | Model loading into VRAM |
 | VLM (qwen2.5vl:7b warm) | 2 - 6 s | Image + text inference |

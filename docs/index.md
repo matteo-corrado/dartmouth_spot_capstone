@@ -49,7 +49,7 @@ See the [Quick Start guide](getting-started/quickstart.md) for a full walkthroug
 | Section | Description |
 |---------|-------------|
 | [Hardware Setup](getting-started/hardware.md) | Jetson, Spot, microphone, network |
-| [Software Setup](getting-started/software.md) | Python env, Riva, Ollama, dependencies |
+| [Software Setup](getting-started/software.md) | Python env, Ollama, dependencies |
 | [Model Downloads](getting-started/models.md) | TTS, wake word, YOLO, LLM/VLM models |
 | [Quick Start](getting-started/quickstart.md) | 5-minute getting-started walkthrough |
 
@@ -57,7 +57,7 @@ See the [Quick Start guide](getting-started/quickstart.md) for a full walkthroug
 
 | Component | Technology | Runs On |
 |-----------|-----------|---------|
-| ASR (speech-to-text) | NVIDIA Riva (Canary-Qwen-2.5B) | GPU (Docker) |
+| ASR (speech-to-text) | server.py wrapper (Parakeet swap pending Stage 2) | CPU |
 | LLM (language model) | Ollama qwen2.5:7b | GPU |
 | VLM (vision-language) | Ollama qwen2.5vl:7b | GPU |
 | TTS (text-to-speech) | kokoro-onnx Kokoro v1.0 (fp16-gpu) | GPU |
@@ -74,7 +74,6 @@ dartmouth_spot_capstone/
         run_voice_control.py    # Main entry point -- starts everything
         estop_run.py            # E-Stop keepalive (run separately)
         web_panel.py            # Web UI for E-Stop + pipeline control
-        setup_riva.sh           # NVIDIA Riva ASR Docker setup
         setup_kokoro.py         # Download Kokoro TTS model
         setup_kws.py            # Download wake word model
         setup_map.py            # Upload GraphNav map to Spot
@@ -88,7 +87,7 @@ dartmouth_spot_capstone/
         location_manager.py     # Named location persistence
         voice_control/
             client_mic.py       # Microphone listener + VAD + main loop
-            server.py           # gRPC ASR bridge (Riva proxy)
+            server.py           # gRPC ASR bridge (server.py wrapper)
             llm_brain.py        # LLM/VLM inference via Ollama
             spot_dispatch.py    # Intent-to-robot-action executor
             intent.py           # Regex intent parser (legacy fallback)

@@ -4,7 +4,7 @@ A quick-reference checklist for every session. This assumes all [software](softw
 
 ## Boot Sequence (After Jetson Reboot)
 
-When the Jetson reboots, Tailscale reconnects automatically but Riva and the voice pipeline need to be restarted. Ollama restarts automatically if you ran `sudo systemctl enable ollama` during setup.
+When the Jetson reboots, Tailscale reconnects automatically but the voice pipeline needs to be restarted. Ollama restarts automatically if you ran `sudo systemctl enable ollama` during setup.
 
 ```bash
 # SSH into the Jetson
@@ -14,14 +14,11 @@ ssh spotdog@<tailscale-ip>
 cd ~/spot/dartmouth_spot_capstone
 source spot-env/bin/activate
 
-# 1. Start Riva ASR (takes 30-60s to fully initialize)
-./scripts/setup_riva.sh start
-
-# 2. Verify Ollama is running (should auto-start via systemd)
+# 1. Verify Ollama is running (should auto-start via systemd)
 systemctl is-active ollama
 # If "inactive": sudo systemctl start ollama
 
-# 3. Start E-Stop (keep this terminal open, or use web panel)
+# 2. Start E-Stop (keep this terminal open, or use web panel)
 python scripts/estop_run.py
 ```
 
@@ -38,7 +35,7 @@ source spot-env/bin/activate
 python scripts/run_voice_control.py
 ```
 
-This auto-checks Riva and Ollama, starts the ASR bridge, calibrates the mic, warms up the LLM, and opens the microphone. When you see `LISTENING`, the system is ready.
+This auto-checks Ollama, starts the ASR bridge, calibrates the mic, warms up the LLM, and opens the microphone. When you see `LISTENING`, the system is ready.
 
 ## Pre-Flight Checklist
 
@@ -118,7 +115,6 @@ python scripts/run_voice_control.py
 
 ```bash
 # All-in-one status check
-docker ps --filter name=riva-speech --format "Riva: {{.Status}}"
 systemctl is-active ollama && echo "Ollama: OK" || echo "Ollama: DOWN"
 python3 -c "import socket; s=socket.socket(); s.settimeout(1); print('ASR Bridge: OK' if s.connect_ex(('127.0.0.1',50055))==0 else 'ASR Bridge: DOWN'); s.close()"
 ping -c 1 -W 1 192.168.80.3 > /dev/null 2>&1 && echo "Spot: OK" || echo "Spot: DOWN"

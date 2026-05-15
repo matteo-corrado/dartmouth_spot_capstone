@@ -8,13 +8,10 @@ Common issues and fixes.
 
 | Problem | Fix |
 |---------|-----|
-| `Riva server NOT detected on port 50051` | Run `./scripts/setup_riva.sh start` |
 | `Cannot connect to Ollama` | Run `sudo systemctl start ollama` |
 | `Kokoro model files not found` | Run `python scripts/setup_kokoro.py` |
 | `KWS model not found` | Run `python scripts/setup_kws.py` |
 | `ModuleNotFoundError` | Activate venv: `source spot-env/bin/activate` |
-| `docker: Error response from daemon: could not select device driver "nvidia"` | Install nvidia-container-toolkit: `sudo apt-get install -y nvidia-container-toolkit && sudo systemctl restart docker` |
-| Riva takes 60-90s to start | Normal — Docker container initialization + TensorRT model loading. Wait for port 50051 to accept connections. |
 | Ollama not running after reboot | Enable persistence: `sudo systemctl enable ollama` |
 
 ---
@@ -50,7 +47,7 @@ Common issues and fixes.
 | Problem | Fix |
 |---------|-----|
 | No speech detected | Check mic is connected, find device with `--list-devices` |
-| ASR gives empty/wrong results | Verify Riva is running, check mic device index matches |
+| ASR gives empty/wrong results | Verify ASR bridge is running (port 50055), check mic device index matches |
 | Wake word not triggering | Try speaking louder/closer, or adjust KEYWORDS_THRESHOLD in wake_word.py |
 | Wake word triggers too easily | Increase KEYWORDS_THRESHOLD (default 0.25, try 0.35) |
 | "Stop" doesn't cancel navigation | Ensure you're on the latest code (safety commands bypass LLM) |
@@ -85,7 +82,6 @@ Common issues and fixes.
 
 | Port | Service | Check Command |
 |------|---------|---------------|
-| 50051 | Riva ASR (Docker) | `curl -s localhost:50051 && echo OK` |
 | 50055 | ASR bridge (server.py) | Auto-started by run_voice_control.py |
 | 11434 | Ollama LLM/VLM | `curl -s localhost:11434/api/tags` |
 | 8080 | Web panel | `python scripts/web_panel.py` |
@@ -101,7 +97,6 @@ cd ~/spot/dartmouth_spot_capstone
 source spot-env/bin/activate
 
 # 1. Start infrastructure
-./scripts/setup_riva.sh start
 sudo systemctl start ollama    # skip if 'systemctl enable ollama' was run
 
 # 2. Start E-Stop (separate terminal, keep open)

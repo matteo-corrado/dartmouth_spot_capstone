@@ -56,7 +56,7 @@ Four live indicators update every 2 seconds:
 
 | Indicator | Green | Red | Yellow |
 |-----------|-------|-----|--------|
-| **Riva** | ASR Docker container running (port 50051) | Container stopped | — |
+| **ASR** | ASR bridge (server.py) running (port 50055) | Server stopped | — |
 | **Ollama** | LLM service running (port 11434) | Service stopped | — |
 | **E-Stop** | E-Stop claimed and active | E-Stop triggered (motors cut) | Not claimed |
 | **Voice** | Voice pipeline process running | Pipeline stopped | — |
