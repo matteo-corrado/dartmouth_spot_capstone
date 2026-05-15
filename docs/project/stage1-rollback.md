@@ -88,9 +88,13 @@ Use only if you genuinely need Riva back (Parakeet broken AND no other STT works
 # 1. Pull the Docker image (~24 GB download)
 docker pull nvcr.io/nvidia/riva/riva-speech:2.17.0-l4t-aarch64
 
-# 2. Re-download the quickstart tarball (URL captured at runbook-write time)
-cd ~ && wget "https://catalog.ngc.nvidia.com/orgs/nvidia/teams/riva/resources/riva_quickstart_arm64" -O riva_quickstart_arm64_v2.17.0.tar.gz
-<!-- TODO: Replace the URL above with the exact 2.17.0 tarball download URL from the NGC catalog; the landing-page URL is a placeholder — the real wget target is a direct .tar.gz link shown on the catalog page. -->
+# 2. Re-download the quickstart tarball.
+#    STOP: replace NGC_URL with the exact 2.17.0 .tar.gz URL from
+#      https://catalog.ngc.nvidia.com/orgs/nvidia/teams/riva/resources/riva_quickstart_arm64
+#    (The landing page above is NOT a tarball; do not wget it directly.)
+NGC_URL=""
+[ -n "$NGC_URL" ] || { echo "FAIL: NGC_URL empty — edit this block and fill it in"; exit 1; }
+cd ~ && wget "$NGC_URL" -O riva_quickstart_arm64_v2.17.0.tar.gz
 tar -xzf riva_quickstart_arm64_v2.17.0.tar.gz
 
 # 3. Re-init the model_repository (this is bind-mounted into the container)
