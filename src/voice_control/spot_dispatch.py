@@ -432,8 +432,9 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                                     print(f"[Spot] Re-localized, retrying navigation to '{name}'")
                                     nav_to_cmd_id = None
                                     continue
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                print(f"[Spot] Re-localize failed during nav-feedback recovery: "
+                                      f"{type(e).__name__}: {e}")
                             break
                         elif feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_ROBOT_IMPAIRED:
                             print(f"[Spot] Robot impaired during navigation to '{name}'")
@@ -1135,7 +1136,7 @@ def dispatch_intent(intent):
                 
         elif name == "go_to":
             # Navigate to a named location using GraphNav
-            location_name = params.get("location", "").lower()
+            location_name = _normalize_location_name(params.get("location", ""))
             if not location_name:
                 print("[Spot] No location name provided")
                 return False
@@ -1219,7 +1220,7 @@ def dispatch_intent(intent):
                     waypoint_ids = []
                     location_names = []
                     for loc_name in locations_param:
-                        loc_name = loc_name.strip().lower().replace(" ", "_")
+                        loc_name = _normalize_location_name(loc_name)
                         wid = load_location(loc_name)
                         if not wid:
                             print(f"[Spot] Location '{loc_name}' not found, skipping.")
@@ -1288,7 +1289,7 @@ def dispatch_intent(intent):
                     waypoint_ids = []
                     location_names = []
                     for loc_name in locations_param:
-                        loc_name = loc_name.strip().lower().replace(" ", "_")
+                        loc_name = _normalize_location_name(loc_name)
                         wid = load_location(loc_name)
                         if not wid:
                             print(f"[Spot] Location '{loc_name}' not found, skipping.")
