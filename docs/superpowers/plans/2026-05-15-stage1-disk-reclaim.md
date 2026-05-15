@@ -14,7 +14,9 @@
 
 ## Scope note
 
-This plan covers Stage 1 + Stage 1.5 (SSD migration when SSD is mounted). **Stage 2 is its own future plan** — written when peripherals return — because two of its picks (LiveKit Wakeword vs openWakeWord; YOLO26/YOLOE26 vs YOLO11n/YOLOE-11s) need fresh measurement before they can be reduced to bite-sized tasks.
+This plan covers Stage 1 + Stage 1.5 (SSD population, gated on the thesis plan's SSD reformat + mount). **Stage 2 is its own future plan** — written when peripherals return — because two of its picks (LiveKit Wakeword vs openWakeWord; YOLO26/YOLOE26 vs YOLO11n/YOLOE-11s) need fresh measurement before they can be reduced to bite-sized tasks.
+
+**Cross-plan dependency (Stage 1.5 only):** The destructive USB SSD reformat (exFAT → ext4), `/mnt/ssd` mount, `/etc/fstab` entry, and the three Spot placeholder subdirs `/mnt/ssd/{ollama-models,clip-cache,spot-logs}/` are owned by the thesis plan at `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md` (Tasks 1-2). Spot Tasks 1-20 (Stage 1 proper) are independent. Spot T21 must not run until thesis Tasks 0-2 are complete; thesis Task 0 in turn gates on the Spot Stage 1 exit state (eMMC ≥ 25 GB free + gemma4 pulled + Riva gone), so the natural order is: Spot T1-T20 → thesis T0-T2 → Spot T21.
 
 ## File structure (Stage 1)
 
@@ -1433,15 +1435,29 @@ Stage 1 is complete. Stage 2 fires when peripherals return.
 
 ## Task 21 (gated): Stage 1.5 — SSD migration
 
-**Precondition:** SSD is physically mounted at a known path (e.g., `/mnt/ssd`) and writable by the spotdog user. Confirm before starting:
+> **Cross-plan coordination:** The destructive SSD reformat (exFAT → ext4), `/mnt/ssd` mount, fstab entry, and the placeholder subdirs `/mnt/ssd/{ollama-models,clip-cache,spot-logs}/` are owned by the thesis plan at `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md` (Tasks 1-2). **Do not run Spot T21 until that plan's Tasks 0-2 are complete.** This task only populates the pre-created Spot subdirs.
+
+**Precondition (verify ALL — if any fails, stop and finish the thesis plan first):**
 
 ```bash
-mount | grep ssd
-df -h | grep ssd
-touch /mnt/ssd/.write-test && rm /mnt/ssd/.write-test
+# 1. Mount exists and is ext4 with the thesis-plan label
+mount | grep -E '/mnt/ssd .*ext4' || { echo "FAIL: /mnt/ssd not mounted ext4"; exit 1; }
+lsblk -f | grep jetson_ssd || { echo "FAIL: SSD label != jetson_ssd"; exit 1; }
+
+# 2. fstab entry present (so reboots survive)
+grep -q '/mnt/ssd ext4' /etc/fstab || { echo "FAIL: /mnt/ssd absent from /etc/fstab"; exit 1; }
+
+# 3. Thesis Task 2 placeholder subdirs exist
+test -d /mnt/ssd/ollama-models -a -d /mnt/ssd/clip-cache -a -d /mnt/ssd/spot-logs \
+  || { echo "FAIL: thesis Task 2 subdirs missing"; exit 1; }
+
+# 4. Mount writable by spotdog
+touch /mnt/ssd/.write-test && rm /mnt/ssd/.write-test || { echo "FAIL: /mnt/ssd not writable"; exit 1; }
+
+echo "OK — thesis Tasks 0-2 satisfied; safe to populate."
 ```
 
-If the SSD is not mounted, **stop here**. This task fires later.
+If any check fails, **stop here**. This task fires after the thesis plan reformats + mounts the SSD.
 
 **Files:**
 - Off-tree: `/usr/share/ollama/.ollama/models/` (move to SSD)
@@ -1449,12 +1465,15 @@ If the SSD is not mounted, **stop here**. This task fires later.
 - Off-tree: `~/spot/dartmouth_spot_capstone/logs` (symlink to SSD)
 - Modify: `/etc/systemd/system/ollama.service.d/override.conf` (add `OLLAMA_MODELS`)
 
-- [ ] **Step 1: Define the SSD paths**
+- [ ] **Step 1: Pin SSD root (mount path owned by thesis plan)**
 
 ```bash
-SSD_ROOT=/mnt/ssd   # adjust to the actual mount point
-mkdir -p $SSD_ROOT/ollama-models $SSD_ROOT/clip-cache $SSD_ROOT/spot-logs
+SSD_ROOT=/mnt/ssd   # fixed by thesis plan Task 1; do not change
+# subdirs already exist (thesis plan Task 2); verify rather than mkdir
+ls -la $SSD_ROOT/ollama-models $SSD_ROOT/clip-cache $SSD_ROOT/spot-logs
 ```
+
+Expected: all three dirs listed, owned by spotdog.
 
 - [ ] **Step 2: Stop Ollama and move the model store**
 
@@ -1468,13 +1487,14 @@ Expected: directory exists, contains `blobs/`, `manifests/`.
 
 - [ ] **Step 3: Add the OLLAMA_MODELS env var to the systemd override**
 
-Edit `/etc/systemd/system/ollama.service.d/override.conf` and add (or append) inside the `[Service]` block:
+Create or edit `/etc/systemd/system/ollama.service.d/override.conf`. Add (or append) inside the `[Service]` block:
 
 ```
+[Service]
 Environment="OLLAMA_MODELS=/mnt/ssd/ollama-models"
 ```
 
-Adjust the path if `$SSD_ROOT` differs.
+`/mnt/ssd` is pinned by the thesis plan; no need to adjust.
 
 - [ ] **Step 4: Reload systemd and start Ollama**
 
@@ -1489,26 +1509,39 @@ Expected: list still shows gemma4:e4b + qwen pair (running off SSD now).
 
 - [ ] **Step 5: Symlink the CLIP cache**
 
+`$SSD_ROOT/clip-cache/` already exists (thesis Task 2). Move contents in, don't nest.
+
 ```bash
-mv ~/.cache/clip $SSD_ROOT/clip-cache/
-ln -s $SSD_ROOT/clip-cache ~/.cache/clip
+if [ -d ~/.cache/clip ] && [ ! -L ~/.cache/clip ]; then
+  mv ~/.cache/clip/* $SSD_ROOT/clip-cache/ 2>/dev/null || true
+  rmdir ~/.cache/clip
+fi
+ln -sfn $SSD_ROOT/clip-cache ~/.cache/clip
 ls -la ~/.cache/clip
-du -sh ~/.cache/clip/
+du -sh -L ~/.cache/clip/
 ```
 
-Expected: symlink resolves; size ~343 MB on SSD.
+Expected: symlink resolves to `/mnt/ssd/clip-cache`; size ~343 MB on SSD. Verify YOLO-World still loads encoder:
+
+```bash
+uv run python -c "from ultralytics import YOLOWorld; m = YOLOWorld('yolov8s-world.pt'); m.set_classes(['person']); print('clip ok')"
+```
+
+Expected: prints `clip ok` (no re-download — uses cache from SSD).
 
 - [ ] **Step 6: Symlink the logs directory**
 
 ```bash
 cd /home/spotdog/spot/dartmouth_spot_capstone
-[ -d logs ] && mv logs/* $SSD_ROOT/spot-logs/ 2>/dev/null
-[ -d logs ] && rmdir logs
-ln -s $SSD_ROOT/spot-logs logs
+if [ -d logs ] && [ ! -L logs ]; then
+  mv logs/* $SSD_ROOT/spot-logs/ 2>/dev/null || true
+  rmdir logs 2>/dev/null || true
+fi
+ln -sfn $SSD_ROOT/spot-logs logs
 ls -la logs
 ```
 
-Expected: symlink resolves.
+Expected: symlink resolves to `/mnt/ssd/spot-logs`.
 
 - [ ] **Step 7: Verify reclaim on eMMC**
 
@@ -1521,12 +1554,14 @@ Expected: `/` shows ~10-15 GB MORE free than the Stage 1 end state; SSD shows th
 
 - [ ] **Step 8: Commit a note about SSD migration to docs**
 
-Update `docs/project/stage1-rollback.md` with a note: "Ollama models live on SSD at `$SSD_ROOT/ollama-models` as of Stage 1.5. Layer 3 (Ollama binary downgrade) still works; the binary on `/usr/local/bin/ollama` is unchanged. Restoring models from a backup requires symlinking `/usr/share/ollama/.ollama/models` back, OR setting `OLLAMA_MODELS` via the systemd override."
+Update `docs/project/stage1-rollback.md` with a note: "Ollama models live on SSD at `/mnt/ssd/ollama-models` as of Stage 1.5 (SSD owned by thesis plan, see `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md`). Layer 3 (Ollama binary downgrade) still works; the binary on `/usr/local/bin/ollama` is unchanged. Restoring models from a backup requires symlinking `/usr/share/ollama/.ollama/models` back, OR setting `OLLAMA_MODELS` via the systemd override. If the SSD ever fails or is unmounted, `nofail` in `/etc/fstab` lets the system boot but Ollama will fail to start until the override is removed and models are restored to eMMC."
 
 ```bash
 git add docs/project/stage1-rollback.md
 git commit -m "stage 1.5: ollama models, clip cache, logs migrated to SSD"
 git push origin tour_guide_upgrade_matteo
+git tag stage1.5-complete
+git push origin stage1.5-complete
 ```
 
 ---
