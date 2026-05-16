@@ -245,7 +245,9 @@ class SpotBrain:
                 json={
                     "model": self.model,
                     "messages": messages,
-                    "format": "json",
+                    # No "format": "json" here — warm-up discards response, and combining
+                    # it with "think": False triggers Ollama bug #15260 (json constraint
+                    # silently dropped). Plain text gen is fine for KV-cache priming.
                     "think": False,
                     "stream": False,
                     "keep_alive": -1,
