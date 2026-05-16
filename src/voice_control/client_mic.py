@@ -608,12 +608,7 @@ def main():
             rec = get_recorder()
             ctx = rec.startup_phase("brain_warmup") if rec else nullcontext()
             with ctx:
-                brain_warm = threading.Thread(target=brain.warm_up, daemon=True)
-                vlm_warm = threading.Thread(target=brain.warm_up_vlm, daemon=True)
-                brain_warm.start()
-                vlm_warm.start()
-                brain_warm.join()
-                vlm_warm.join()
+                brain.warm_up()
         else:
             print(f"[Brain] Ollama not available — falling back to regex-only mode")
             print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")

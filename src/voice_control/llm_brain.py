@@ -25,8 +25,8 @@ from typing import Optional, Dict, Any, List
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL = "qwen2.5:7b"
-VLM_MODEL = "qwen2.5vl:7b"
+DEFAULT_MODEL = "gemma4:e4b"
+VLM_MODEL = "gemma4:e4b"
 OLLAMA_URL = "http://localhost:11434"
 MAX_HISTORY = 12          # messages (6 user + 6 assistant exchanges)
 REQUEST_TIMEOUT = 30.0    # seconds per request
@@ -202,7 +202,6 @@ class SpotBrain:
         self.history: "collections.deque[Dict[str, Any]]" = collections.deque(maxlen=MAX_HISTORY)
         self._available = None  # cached availability check
         self._first_request = True
-        self._vlm_warmed = False
 
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is pulled."""
@@ -263,61 +262,10 @@ class SpotBrain:
             print(f"[Brain] Warm-up error: {e}")
 
     def warm_up_vlm(self):
-        """Pre-load VLM into memory by sending a tiny image.
-
-        Intended to be called eagerly at pipeline startup alongside warm_up().
-        Both models stay resident — Ollama is configured with
-        OLLAMA_MAX_LOADED_MODELS=2 and OLLAMA_KEEP_ALIVE=-1, and AGX Orin's
-        61 GiB unified memory has plenty of headroom for both. The lazy
-        fallback in query_vlm() remains as defense-in-depth in case eager
-        warm-up failed (e.g. Ollama not yet ready when client_mic starts).
+        """No-op since LLM and VLM are now the same model (gemma4:e4b).
+        Kept for API compatibility with callers that still invoke it.
         """
-        if self._vlm_warmed:
-            return
-        print(f"[Brain] Warming up VLM '{VLM_MODEL}'...")
-        t0 = time.time()
-        try:
-            # 1x1 white JPEG (smallest valid image)
-            tiny_jpeg = base64.b64encode(
-                b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01'
-                b'\x00\x00\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07'
-                b'\x07\x07\t\t\x08\n\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13'
-                b'\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a\x1c\x1c $.\' ",#\x1c\x1c'
-                b'(7),01444\x1f\'9=82<.342\xff\xc0\x00\x0b\x08\x00\x01\x00'
-                b'\x01\x01\x01\x11\x00\xff\xc4\x00\x1f\x00\x00\x01\x05\x01'
-                b'\x01\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x01'
-                b'\x02\x03\x04\x05\x06\x07\x08\t\n\x0b\xff\xc4\x00\xb5\x10'
-                b'\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04\x00\x00'
-                b'\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07"q'
-                b'\x142\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n'
-                b'\x16\x17\x18\x19\x1a%&\'()*456789:CDEFGHIJSTUVWXYZcdefghij'
-                b'stuvwxyz\x83\x84\x85\x86\x87\x88\x89\x8a\x92\x93\x94\x95'
-                b'\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7\xa8\xa9\xaa'
-                b'\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6'
-                b'\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1'
-                b'\xe2\xe3\xe4\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5'
-                b'\xf6\xf7\xf8\xf9\xfa\xff\xda\x00\x08\x01\x01\x00\x00?'
-                b'\x00\xfb\xd2\x8a(\x03\xff\xd9'
-            ).decode()
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": VLM_MODEL,
-                    "messages": [{"role": "user", "content": "hi", "images": [tiny_jpeg]}],
-                    "stream": False,
-                    "keep_alive": -1,
-                    "options": {"num_gpu": 99, "num_predict": 5},
-                },
-                timeout=FIRST_REQUEST_TIMEOUT,
-            )
-            elapsed = time.time() - t0
-            self._vlm_warmed = True
-            if r.status_code == 200:
-                print(f"[Brain] VLM warm in {elapsed:.1f}s")
-            else:
-                print(f"[Brain] VLM warm-up got status {r.status_code}")
-        except Exception as e:
-            print(f"[Brain] VLM warm-up error: {e}")
+        return
 
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build the message list for the Ollama chat API."""
@@ -535,10 +483,6 @@ class SpotBrain:
         Returns:
             VLM's text response describing the image.
         """
-        # On-demand VLM warm-up (first call only)
-        if not self._vlm_warmed:
-            self.warm_up_vlm()
-
         image_b64 = base64.b64encode(image_bytes).decode()
 
         vlm_prompt = (
@@ -568,6 +512,7 @@ class SpotBrain:
                     ],
                     "stream": False,
                     "keep_alive": -1,
+                    "think": False,  # disable chain-of-thought for VLM (gemma4 puts output in thinking otherwise)
                     "options": {"num_gpu": 99, "num_predict": 200},
                 },
                 timeout=VLM_TIMEOUT,
