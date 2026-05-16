@@ -22,8 +22,10 @@ ngccli_arm64.zip
 # Model weights (downloaded by setup scripts or ultralytics)
 models/tts/
 models/kws/
-yolov8n.pt
-yolov8s-worldv2.pt
+yolov8*.pt
+
+# Spot logs (symlinked to SSD as of Stage 1.5)
+logs
 
 # MkDocs build output
 site/

@@ -80,6 +80,8 @@ Expected: `ollama version is 0.16.1`.
 
 Models on disk (under `/usr/share/ollama/.ollama/models/`) survive the binary swap.
 
+> **Stage 1.5 update (2026-05-15):** Ollama models live on the SSD at `/mnt/ssd/ollama-models` (mount + ext4 filesystem owned by the thesis plan, see `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md`). The `OLLAMA_MODELS` env var is set via `/etc/systemd/system/ollama.service.d/override.conf`. The binary on `/usr/local/bin/ollama` is unchanged, so Layer 3 binary downgrade still works. Restoring models from a backup requires either symlinking `/usr/share/ollama/.ollama/models` to the backup location OR setting `OLLAMA_MODELS` via the override. If the SSD ever fails or is unmounted, `nofail` in `/etc/fstab` lets the system boot but Ollama will fail to start until the override is removed and models are restored to eMMC. The pre-Stage-1.5 override backup lives at `/etc/systemd/system/ollama.service.d/override.conf.bak`. CLIP cache (`~/.cache/clip`) and Spot logs (`logs/`) are also symlinks to `/mnt/ssd/clip-cache` and `/mnt/ssd/spot-logs` respectively.
+
 ## Layer 4 — Riva re-acquisition (slow, 30-60 minutes, requires NGC auth)
 
 Use only if you genuinely need Riva back (Parakeet broken AND no other STT works).
