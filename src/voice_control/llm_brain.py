@@ -343,10 +343,26 @@ class SpotBrain:
                 print(f"[Brain] Ollama error {r.status_code}: {r.text[:200]}")
                 return {"actions": [], "response": "", "raw_llm": ""}
 
-            message = r.json().get("message", {})
+            _resp_json = r.json()
+            message = _resp_json.get("message", {})
             content = (message.get("content") or "").strip()
             elapsed = time.time() - t0
             print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
+
+            # --- Ollama duration breakdown (Stage 2 latency instrumentation) ---
+            _total_ms   = _resp_json.get("total_duration",       0) // 1_000_000
+            _load_ms    = _resp_json.get("load_duration",         0) // 1_000_000
+            _pe_ms      = _resp_json.get("prompt_eval_duration",  0) // 1_000_000
+            _pe_tok     = _resp_json.get("prompt_eval_count",     0)
+            _eval_ms    = _resp_json.get("eval_duration",         0) // 1_000_000
+            _eval_tok   = _resp_json.get("eval_count",            0)
+            _tps = _eval_tok / (_eval_ms / 1000) if _eval_ms > 0 else 0.0
+            print(
+                f"[Brain-timing] path=text model={self.model} "
+                f"total={_total_ms}ms load={_load_ms}ms "
+                f"prompt_eval={_pe_ms}ms ({_pe_tok} tok) "
+                f"eval={_eval_ms}ms ({_eval_tok} tok @ {_tps:.1f} tok/s)"
+            )
 
             # --- Parse JSON ---
             actions = []
@@ -529,8 +545,25 @@ class SpotBrain:
                 print(f"[Brain] VLM error {r.status_code}: {r.text[:200]}")
                 return "Sorry, I couldn't process the image right now."
 
-            content = r.json().get("message", {}).get("content", "").strip()
+            _resp_json = r.json()
+            content = _resp_json.get("message", {}).get("content", "").strip()
             print(f"[Brain] VLM responded in {elapsed:.1f}s")
+
+            # --- Ollama duration breakdown (Stage 2 latency instrumentation) ---
+            _total_ms   = _resp_json.get("total_duration",       0) // 1_000_000
+            _load_ms    = _resp_json.get("load_duration",         0) // 1_000_000
+            _pe_ms      = _resp_json.get("prompt_eval_duration",  0) // 1_000_000
+            _pe_tok     = _resp_json.get("prompt_eval_count",     0)
+            _eval_ms    = _resp_json.get("eval_duration",         0) // 1_000_000
+            _eval_tok   = _resp_json.get("eval_count",            0)
+            _tps = _eval_tok / (_eval_ms / 1000) if _eval_ms > 0 else 0.0
+            print(
+                f"[Brain-timing] path=vlm model={VLM_MODEL} "
+                f"total={_total_ms}ms load={_load_ms}ms "
+                f"prompt_eval={_pe_ms}ms ({_pe_tok} tok) "
+                f"eval={_eval_ms}ms ({_eval_tok} tok @ {_tps:.1f} tok/s)"
+            )
+
             return content or "I can see the image but I'm having trouble describing it."
 
         except requests.Timeout:

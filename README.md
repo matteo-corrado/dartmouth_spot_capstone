@@ -175,3 +175,14 @@ Spans captured per utterance: VAD onset/offset, ASR request/response, LLM reques
 To dump the in-memory ring buffer to stderr: `kill -USR1 <pid>`.
 
 Startup-phase metrics are written once per boot to `logs/startup-{timestamp}.json` when `--latency=file` or `all`.
+
+### Brain timing (Ollama)
+
+Every LLM and VLM call logs an `[Brain-timing]` line with the breakdown from Ollama's response:
+- `total` — wall time end-to-end
+- `load` — model load time (0 once warm)
+- `prompt_eval` — input prompt tokenize+eval (often dominates for large system prompts)
+- `eval` — output token generation
+- output token throughput in tokens/sec
+
+Use to diagnose whether latency comes from prompt processing (large context), thinking-mode preamble, or output verbosity. Filter logs with `grep '\[Brain-timing\]' logs/voice-control.log`.
