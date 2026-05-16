@@ -602,9 +602,9 @@ def main():
         brain = SpotBrain(model=DEFAULT_MODEL)
         if brain.is_available():
             print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
-            # Warm both Ollama models in parallel — each is an I/O+CPU bound
-            # roundtrip, and they're independent (different models on the
-            # same Ollama server). Saves ~2-3s of cold-start latency.
+            # Warm the single brain model (gemma4:e4b handles both LLM and VLM after
+            # Phase 2 collapse). Cold-start ~15-20s blocks AudioPlayer + TTS init, but
+            # surfaces model-load errors before the mic opens.
             rec = get_recorder()
             ctx = rec.startup_phase("brain_warmup") if rec else nullcontext()
             with ctx:

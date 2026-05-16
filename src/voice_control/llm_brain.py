@@ -246,6 +246,7 @@ class SpotBrain:
                     "model": self.model,
                     "messages": messages,
                     "format": "json",
+                    "think": False,
                     "stream": False,
                     "keep_alive": -1,
                     "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 32768},
@@ -302,6 +303,9 @@ class SpotBrain:
                 print("[Brain] First request — loading model, this may take a moment...")
 
             t0 = time.time()
+            # Do NOT set "think": False here — combined with "format": "json" it triggers
+            # Ollama bug #15260 (json constraint silently dropped). gemma4:e4b runs in
+            # thinking mode for text dispatch; the perf cost is acceptable vs broken JSON.
             r = requests.post(
                 f"{self.ollama_url}/api/chat",
                 json={
