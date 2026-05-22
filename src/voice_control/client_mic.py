@@ -405,6 +405,9 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 # ============================================================================
 def execute_on_spot(intent: dict) -> bool:
     """Execute parsed intent on Spot robot."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        print(f"[dry-run] would dispatch: {intent}")
+        return True
     try:
         from src.voice_control.spot_dispatch import dispatch_intent
         return dispatch_intent(intent)
@@ -526,6 +529,7 @@ def main():
     parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
+    parser.add_argument("--dry-run", action="store_true", help="Skip robot dispatch (transcript+brain only; for mic-verify)")
     parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
     parser.add_argument("--volume", type=float, default=1.0,
                         help="TTS + beep output gain (0.0-1.5, default 1.0)")
@@ -544,6 +548,10 @@ def main():
         help="Latency JSONL file path (default: logs/latency-{timestamp}.jsonl). Only used when --latency=file or all.",
     )
     args = parser.parse_args()
+
+    if args.dry_run:
+        os.environ["SPOT_DRY_RUN"] = "1"
+        print("[dry-run] robot dispatch disabled (transcript + brain only)")
 
     # Latency telemetry — no-op when --latency=off
     init_recorder(mode=args.latency, file_path=args.latency_out)
