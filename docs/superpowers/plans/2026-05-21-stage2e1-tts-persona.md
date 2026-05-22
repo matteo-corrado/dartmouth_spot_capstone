@@ -369,6 +369,12 @@ Write `config/personas.yaml`:
 #   SAMPLING_PROFILES from src/voice_control/brain/llamacpp_backend.py —
 #   missing keys fall through to the global default.
 
+# ElevenLabs voice-ID note (2026-05-22): plan originally used six "Default"
+# voices (Rachel/Adam/Charlie/Daniel/Antoni/Domi). ElevenLabs help center
+# confirms all Default voices retire 2026-12-31. IDs below are Premade /
+# Library character voices instead — same-priced, no expiry. Source URLs in
+# the 2E.1 plan file's voice-audit section.
+
 tour_guide:
   prompt_prefix: >
     You are Spot, a knowledgeable and warm tour guide at Dartmouth College's
@@ -377,7 +383,7 @@ tour_guide:
     short and conversational — one or two sentences at most.
   voices:
     kokoro_v1: af_sarah
-    elevenlabs: 21m00Tcm4TlvDq8ikWAM   # Rachel
+    elevenlabs: EXAVITQu4vr4xnSDxMaL   # Sarah — female, soft (Premade)
 
 pirate:
   prompt_prefix: >
@@ -386,7 +392,7 @@ pirate:
     high seas where appropriate. Keep responses short — one or two sentences.
   voices:
     kokoro_v1: am_fenrir
-    elevenlabs: pNInz6obpgDQGcFmaJgB   # Adam
+    elevenlabs: Xq2dbIWNPChFB77imiDe   # Gideon - Pirate (Library, character)
   sampling_overrides:
     # Pirate VLM captions lean toward salty, flavored describes. Bump vlm
     # temp above the 0.5 global default. Other profiles inherit (no override).
@@ -400,7 +406,9 @@ snarky:
     Keep responses short and dry — one or two sentences.
   voices:
     kokoro_v1: am_onyx
-    elevenlabs: IKne3meq5aSn9XLyUdCD   # Charlie
+    elevenlabs: IKne3meq5aSn9XLyUdCD   # Charlie — confident Australian male; no
+                                        # public ID found for "deadpan" character.
+                                        # Review post-2E.1 if too upbeat.
 
 butler:
   prompt_prefix: >
@@ -409,7 +417,7 @@ butler:
     Keep responses short — one or two sentences.
   voices:
     kokoro_v1: bm_george
-    elevenlabs: onwK4e9ZLuTAKqWW03F9   # Daniel
+    elevenlabs: JBFqnCBsd6RMkjVDRZzb   # George — British male, narrative (Premade)
 
 shakespeare:
   prompt_prefix: >
@@ -418,7 +426,7 @@ shakespeare:
     short — one or two sentences of theatrical English.
   voices:
     kokoro_v1: bm_lewis
-    elevenlabs: ErXwobaYiN019PkySvjV   # Antoni
+    elevenlabs: NYC9WEgkq1u4jiqBseQ9   # Russell - Dramatic British TV (Library)
 
 gen_z:
   prompt_prefix: >
@@ -427,7 +435,7 @@ gen_z:
     energetic — one or two sentences.
   voices:
     kokoro_v1: af_nova
-    elevenlabs: AZnzlk1XvdvUeBnXmlld   # Domi
+    elevenlabs: uxKr2vlA4hYgXZR1oPRT   # Natasha - Valley girl (Library, character)
 ```
 
 - [ ] **Step 2: Validate YAML syntax**
@@ -444,6 +452,85 @@ Expected: `['butler', 'gen_z', 'pirate', 'shakespeare', 'snarky', 'tour_guide']`
 git add config/personas.yaml
 git commit -m "stage 2e1: 6 starter personas in config/personas.yaml"
 ```
+
+---
+
+## Task 5b: Bench-audition Kokoro voices per persona (sanity)
+
+**Files:**
+- Run only: `scripts/audition_personas.py` (temp, NOT committed)
+- Listen only: `/tmp/persona_audition/*.wav`
+
+ElevenLabs voice picks were validated via public voice library + json2video index
+(see Task 5 yaml comments). Kokoro v1.0 voice IDs are valid but no public
+per-voice character descriptions exist for `am_fenrir`, `am_onyx`, `bm_lewis`,
+etc. — only gender/region (af/am/bf/bm prefix). Audition once before shipping
+to confirm timbre matches each persona's vibe; swap any duds inside the
+54-voice catalog under `models/tts/kokoro-v1.0/voices-v1.0.bin`.
+
+- [ ] **Step 1: Generate 6 persona-flavored audition WAVs**
+
+```bash
+mkdir -p /tmp/persona_audition
+spot-env/bin/python - <<'PY'
+import wave
+import numpy as np
+from pathlib import Path
+from kokoro_onnx import Kokoro
+
+OUT = Path("/tmp/persona_audition")
+k = Kokoro(
+    model_path="models/tts/kokoro-v1.0/kokoro-v1.0.fp16-gpu.onnx",
+    voices_path="models/tts/kokoro-v1.0/voices-v1.0.bin",
+)
+
+PERSONAS = [
+    ("tour_guide",  "af_sarah",  "Welcome to Thayer School of Engineering — let me show you around."),
+    ("pirate",      "am_fenrir", "Arr, ye landlubber, set yer course for the engineering bay!"),
+    ("snarky",      "am_onyx",   "Oh fantastic. Another question. Let me drop everything and solve it."),
+    ("butler",      "bm_george", "Good afternoon, sir. Shall I escort you to the lecture hall?"),
+    ("shakespeare", "bm_lewis",  "Hark! Thou hast asked, and I shall answer, with all due flourish."),
+    ("gen_z",       "af_nova",   "Okay so like, lowkey this place is fire — no cap."),
+]
+
+for name, voice, text in PERSONAS:
+    samples, sr = k.create(text, voice=voice, speed=1.0, lang="en-us")
+    pcm = (np.asarray(samples, dtype=np.float32) * 32767).astype(np.int16)
+    path = OUT / f"{name}_{voice}.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+        w.writeframes(pcm.tobytes())
+    print(f"  wrote {path.name}  ({len(samples)/sr:.1f}s)")
+PY
+```
+
+- [ ] **Step 2: Listen and confirm vibe match**
+
+```bash
+# Use aplay or scp to a laptop. Each WAV is 2-4 seconds; budget 60 s total.
+ls /tmp/persona_audition/*.wav | xargs -I{} aplay {}
+```
+
+Pass: each voice matches persona expectation (gruff for pirate, deadpan for
+snarky, refined for butler, theatrical for shakespeare, perky for gen_z).
+Fail: swap the Kokoro voice in `config/personas.yaml` for a better-matching
+one. Catalog of 54 voices listed in Stage 2A handoff or via
+`Kokoro(...).get_voices()` at runtime.
+
+- [ ] **Step 3: Apply any swap fixes (only if Step 2 flagged any)**
+
+If Step 2 flagged a dud:
+```bash
+# Edit config/personas.yaml — change `kokoro_v1: ...` line only.
+git -C /home/spotdog/spot/dartmouth_spot_capstone add config/personas.yaml
+git -C /home/spotdog/spot/dartmouth_spot_capstone commit -m "stage 2e1: persona voice swap — <name> -> <new_voice>"
+```
+
+Skip if no swaps needed.
+
+- [ ] **Step 4: Audition artifacts are temp — do NOT commit `/tmp/persona_audition/`.**
+
+`/tmp` is the intended scratch path. No cleanup required (system-managed).
 
 ---
 
