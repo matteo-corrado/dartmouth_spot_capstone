@@ -1,8 +1,8 @@
-# Boston Dynamics SDK (pinned to match robot 5.0.1.1)
-bosdyn-client==5.0.1.1
-bosdyn-mission==5.0.1.1
-bosdyn-choreography-client==5.0.1.1
-bosdyn-orbit==5.0.1.1
+# Boston Dynamics SDK (pinned to match robot 5.1.4)
+bosdyn-client==5.1.4
+bosdyn-mission==5.1.4
+bosdyn-choreography-client==5.1.4
+bosdyn-orbit==5.1.4
 
 # Utilities
 python-dotenv==1.0.1
