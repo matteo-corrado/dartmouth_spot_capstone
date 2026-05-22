@@ -104,7 +104,7 @@ def main():
     print(f"Target: {MODEL_DIR}\n")
 
     if setup():
-        print("\nDone! Test with: python src/voice_control/wake_word.py --test-mic")
+        print("\nDone! Test with: python src/voice_control/wake/sherpa_onnx.py --test-mic")
     else:
         sys.exit(1)
 

@@ -668,10 +668,10 @@ def main():
     use_wake_word = not args.no_wake_word
     if use_wake_word:
         try:
-            from wake_word import WakeWordDetector
-            wake_detector = WakeWordDetector()
+            from src.voice_control.wake import make_wake_detector
+            wake_detector = make_wake_detector()
             if wake_detector.is_available():
-                print("[WakeWord] sherpa-onnx keyword spotter ready")
+                print("[WakeWord] keyword spotter ready")
             else:
                 print("[WakeWord] Detector not available — falling back to ASR-based")
                 wake_detector = None
