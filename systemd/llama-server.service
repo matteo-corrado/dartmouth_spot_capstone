@@ -1,0 +1,37 @@
+# systemd/llama-server.service
+# Install:
+#   sudo cp systemd/llama-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now llama-server.service
+[Unit]
+Description=llama.cpp brain server for Spot (Gemma 4 E4B)
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+ExecStartPre=-/usr/bin/docker stop llama-server
+ExecStartPre=-/usr/bin/docker rm llama-server
+ExecStart=/usr/bin/docker run --rm --name llama-server \
+    --runtime=nvidia --gpus all \
+    -v /mnt/ssd/llamacpp-models:/models:ro \
+    -v /home/spotdog/spot/dartmouth_spot_capstone/src/voice_control/grammar:/grammar:ro \
+    -p 127.0.0.1:11435:8080 \
+    ghcr.io/nvidia-ai-iot/llama_cpp:latest-jetson-orin \
+    llama-server \
+      -m /models/gemma-4-E4B-Q8_0.gguf \
+      --mmproj /models/mmproj-gemma4-e4b-Q8_0.gguf \
+      -c 8192 \
+      -ngl 99 \
+      --flash-attn on \
+      --jinja \
+      --host 0.0.0.0 --port 8080 \
+      --metrics \
+      --image-min-tokens 70 --image-max-tokens 140 \
+      --batch-size 512 --ubatch-size 512
+ExecStop=/usr/bin/docker stop llama-server
+
+[Install]
+WantedBy=multi-user.target

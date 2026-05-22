@@ -1,36 +1,29 @@
 # spot_action.gbnf — single grammar for every Stage 2A brain turn.
 # Output: {"actions": [Action, ...], "response": "<string>"}
 # Action set mirrors src/voice_control/spot_dispatch.py.
+# NOTE: alternation must stay on one line per rule — llama.cpp GBNF parser in
+# this container build silently fails on multi-line `|` continuations.
 
-root          ::= "{" ws "\"actions\":" ws actions-list "," ws "\"response\":" ws string ws "}"
+root ::= "{" ws "\"actions\":" ws actions-list "," ws "\"response\":" ws string ws "}"
 
-actions-list  ::= "[" ws ( action ( "," ws action )* )? ws "]"
+actions-list ::= "[" ws ( action ( "," ws action )* )? ws "]"
 
-action        ::= "{" ws "\"action\":" ws action-name ( "," ws "\"params\":" ws params )? ws "}"
+action ::= "{" ws "\"action\":" ws action-name ( "," ws "\"params\":" ws params )? ws "}"
 
-action-name   ::= "\"stop\"" | "\"freeze\"" | "\"estop\""
-              | "\"stand\"" | "\"sit\"" | "\"selfright\""
-              | "\"walk\"" | "\"strafe\"" | "\"turn\""
-              | "\"body_height\"" | "\"set_speed\"" | "\"set_volume\""
-              | "\"go_to\"" | "\"tour\"" | "\"patrol\""
-              | "\"come_back\"" | "\"save_location\"" | "\"list_locations\""
-              | "\"load_map\"" | "\"list_maps\""
-              | "\"go_to_object\"" | "\"follow_me\""
-              | "\"describe\"" | "\"check_obstacles\""
-              | "\"battery_status\"" | "\"status\"" | "\"power_off\""
-              | "\"set_persona\""   # Stage 2E.1 forward-compat; dispatcher handler lands in 2E.1 T16
+# set_persona = Stage 2E.1 forward-compat; dispatcher handler lands in 2E.1 T16.
+action-name ::= "\"stop\"" | "\"freeze\"" | "\"estop\"" | "\"stand\"" | "\"sit\"" | "\"selfright\"" | "\"walk\"" | "\"strafe\"" | "\"turn\"" | "\"body_height\"" | "\"set_speed\"" | "\"set_volume\"" | "\"go_to\"" | "\"tour\"" | "\"patrol\"" | "\"come_back\"" | "\"save_location\"" | "\"list_locations\"" | "\"load_map\"" | "\"list_maps\"" | "\"go_to_object\"" | "\"follow_me\"" | "\"describe\"" | "\"check_obstacles\"" | "\"battery_status\"" | "\"status\"" | "\"power_off\"" | "\"set_persona\""
 
-params        ::= "{" ws ( param ( "," ws param )* )? ws "}"
-param         ::= string ":" ws value
+params ::= "{" ws ( param ( "," ws param )* )? ws "}"
+param ::= string ":" ws value
 
 # JSON value subset
-value         ::= string | number | "true" | "false" | "null" | object | array
-object        ::= "{" ws ( pair ( "," ws pair )* )? ws "}"
-pair          ::= string ":" ws value
-array         ::= "[" ws ( value ( "," ws value )* )? ws "]"
+value ::= string | number | "true" | "false" | "null" | object | array
+object ::= "{" ws ( pair ( "," ws pair )* )? ws "}"
+pair ::= string ":" ws value
+array ::= "[" ws ( value ( "," ws value )* )? ws "]"
 
-string        ::= "\"" ( [^"\\\x00-\x1f] | "\\" ( ["\\/bfnrt] | "u" [0-9a-fA-F]{4} ) )* "\""
+string ::= "\"" ( [^"\\\x00-\x1f] | "\\" ( ["\\/bfnrt] | "u" [0-9a-fA-F]{4} ) )* "\""
 
-number        ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )? ( [eE] [-+]? [0-9]+ )?
+number ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )? ( [eE] [-+]? [0-9]+ )?
 
-ws            ::= ( " " | "\t" | "\n" | "\r" )*
+ws ::= ( " " | "\t" | "\n" | "\r" )*
