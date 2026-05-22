@@ -8,7 +8,7 @@
 
 **Architecture:** No new code paths. This is a regression matrix + safety audit + merge ceremony. The only new artifact is `scripts/run_regression_matrix.py` (operator-driven checklist runner with timing capture) and `docs/project/stage2-rollback.md` updates.
 
-**Tech Stack:** Existing voice loop (run_voice_control.py), bosdyn-client 5.0.1.1, llama.cpp HTTP @ port 11435, Nemotron Speech Streaming ASR (Parakeet kept as rollback layer), Silero VAD, LiveKit Wakeword. No new dependencies.
+**Tech Stack:** Existing voice loop entry `python3 -m src.voice_control.client_mic`, bosdyn-client 5.0.1.1, llama.cpp HTTP @ port 11435, Nemotron Speech Streaming ASR (Parakeet kept as rollback layer), Silero VAD, LiveKit Wakeword. No new dependencies.
 
 **Spec reference:** `docs/superpowers/specs/2026-05-15-stage2-design.md` section 2B.1.
 
@@ -24,6 +24,7 @@
 - A second terminal is open with `python -m src.voice_control.estop_run` ready (DO NOT skip).
 - Human operator has line of sight to Spot at all times.
 - `tegrastats` available on PATH (verify: `which tegrastats`).
+- `set_persona` is present in the Stage 2A GBNF grammar but its dispatcher handler ships in 2E.1 T16. If the LLM emits `set_persona` during 2B testing, the dispatcher logs an unknown-action warning. This is acceptable; do not block the matrix on it.
 
 ---
 
@@ -104,7 +105,7 @@ Expected: stays running, prompts for keypress. Leave it running for the duration
 mkdir -p /mnt/ssd/spot-logs/stage2b
 cd /home/spotdog/spot/dartmouth_spot_capstone && \
   ./scripts/preflight_log.sh > /mnt/ssd/spot-logs/stage2b/preflight_$(date +%Y%m%d_%H%M%S).log 2>&1 || \
-  echo "(preflight_log.sh does not exist yet; capture manually: env | grep SPOT_; ollama list; pip freeze | grep -E 'nemotron|parakeet|sherpa|kokoro|ultralytics|bosdyn')" >> /mnt/ssd/spot-logs/stage2b/preflight_manual.log
+  echo "(preflight_log.sh does not exist yet; capture manually: env | grep SPOT_; ollama list; pip freeze | grep -E 'llama|nemotron|parakeet|sherpa|kokoro|bosdyn')" >> /mnt/ssd/spot-logs/stage2b/preflight_manual.log
 ```
 (The script may not exist yet; the manual fallback captures the same data.)
 
@@ -501,7 +502,7 @@ Skip this step if no safety code was changed.
 
 - [ ] **Step 1: Append the merge-revert section**
 
-If `docs/project/stage2-rollback.md` does not exist yet (Plan 2A may not have created it), create it. Otherwise append. Add the following section:
+Append (2A T13 creates `docs/project/stage2-rollback.md`; do not duplicate the env-var rollback layers already in that doc — add only the merge-revert section):
 
 ```markdown
 ## After 2B — merge-to-main
@@ -527,13 +528,8 @@ git -C /home/spotdog/spot/dartmouth_spot_capstone push --force-with-lease origin
 ```
 Only do this if main has not been pulled by anyone else. **Confirm with user before force-pushing main.**
 
-### Runtime-only rollback (no git revert needed)
-For sub-system failures discovered after merge, flip the corresponding env var instead of reverting code:
-- Brain: `SPOT_BRAIN_BACKEND=ollama` + `DEFAULT_MODEL=qwen2.5:7b` in `.env`
-- ASR: `SPOT_ASR_BACKEND=parakeet` (rollback to batch Parakeet TDT 0.6B v3 from Nemotron Streaming; requires `/mnt/ssd/parakeet-models/` populated. Riva path was deleted in 2A.)
-- Wake word: `SPOT_WAKE_BACKEND=sherpa_onnx` in `.env`
-- Vision: env-var or path swap (covered in Stage 2C rollback)
-Restart `run_voice_control.py` after any env var flip.
+### Sub-system runtime fallbacks
+See the env-var flip ladder already documented in this file (added by Stage 2A T13). **Caveat:** the `SPOT_BRAIN_BACKEND=ollama` layer requires re-pulling the qwen2.5:7b + qwen2.5vl:7b pair (~10.7 GB) — 2A T12 removed it via `ollama rm`. The other layers (ASR=parakeet, Wake=sherpa_onnx) work as documented. Restart the voice loop (`python3 -m src.voice_control.client_mic`) after any env var flip.
 ```
 
 - [ ] **Step 2: Commit the rollback doc update**
@@ -643,7 +639,7 @@ gh pr create --title "Stage 2: voice pipeline + Spot e2e (merge-to-main)" --body
 
 Stage 2A (voice pipeline, llama.cpp brain + Nemotron Speech Streaming ASR + Silero VAD + LiveKit Wakeword) + Stage 2B (Spot e2e regression matrix) complete. All non-exploratory regression items pass on the real robot. Safety-reviewer audit clean. Ready to merge to main.
 
-Vision overhaul (2C) and smart chatbot (2D) will follow as separate PRs on top of main.
+TTS + multi-persona (2E.1) ships as a follow-up PR same week (Tuesday hard deadline). Vision overhaul (2C) and smart chatbot (2D) will follow as separate PRs on top of main.
 
 ## What's in this PR
 - llama.cpp + GBNF-grammar adaptive-thinking brain (replaces Ollama as default)
