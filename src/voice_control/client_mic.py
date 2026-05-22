@@ -69,7 +69,7 @@ from contextlib import nullcontext
 from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk
 from asr_pb2_grpc import ASRStub
 from intent import parse_intent
-from llm_brain import SpotBrain, DEFAULT_MODEL
+from llm_brain import LLMBrain, DEFAULT_MODEL
 from audio_player import AudioPlayer
 from spot_tts import SpotTTS
 from audio_feedback import beep
@@ -599,7 +599,7 @@ def main():
     brain = None
     if not args.no_brain:
         print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
-        brain = SpotBrain(model=DEFAULT_MODEL)
+        brain = LLMBrain(model=DEFAULT_MODEL)
         if brain.is_available():
             print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
             # Warm the single brain model (gemma4:e4b handles both LLM and VLM after

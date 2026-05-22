@@ -1,26 +1,51 @@
-"""LLM Brain for Spot — conversational robot control via Ollama structured JSON.
+"""LLM Brain for Spot — conversational robot control via single GBNF grammar.
 
-Uses Ollama's format="json" to guarantee valid JSON output from the model.
-The model decides which action to perform (if any) AND produces a spoken
-response, all in a single JSON object. No tool calling protocol needed —
-small models are much more reliable at filling in JSON fields.
+Architecture (Stage 2A):
+- Backend: llama.cpp (default) via SPOT_BRAIN_BACKEND=llamacpp, Ollama fallback.
+- Single grammar (src/voice_control/grammar/spot_action.gbnf) on every turn.
+- Output shape: {"actions": [...], "response": "..."}.
+  Action utterances populate actions[]; freeform utterances leave actions=[].
+- No regex intent router. Model decides per turn under grammar.
+- Streaming: set self.on_token_callback to receive token deltas (T11 wiring).
 
-Architecture inspired by Boston Dynamics' "Robots That Can Chat" demo, adapted
-for local inference on Jetson AGX Orin via Ollama.
-
-Models (recommended):
-    ollama pull qwen2.5:7b       # Good balance of speed + reasoning
-    ollama pull qwen2.5:14b      # Best quality, slower (~1-3s on Jetson)
-    ollama pull qwen2.5:3b       # Fastest, less conversational
+Architecture inspired by Boston Dynamics' Robots That Can Chat.
 """
 
 import json
+import re
 import time
 import base64
 import collections
 import requests
 from pathlib import Path
 from typing import Optional, Dict, Any, List
+
+from src.voice_control.brain import get_backend
+
+_BACKEND = None
+
+
+def _backend():
+    global _BACKEND
+    if _BACKEND is None:
+        _BACKEND = get_backend()
+    return _BACKEND
+
+
+# Cheap regex to pick the sampling profile. Hint only — GBNF still enforces
+# the {actions, response} shape regardless of the profile chosen. If the hint
+# is wrong, output is still valid; the temperature/top_p just may be
+# suboptimal for that turn.
+_ACTION_HINT_RE = re.compile(
+    r"\b(stand|sit|walk|turn|go|come|follow|stop|freeze|estop|strafe|"
+    r"tour|patrol|save|load|list|find|describe|check|battery|status|"
+    r"power|height|speed|volume|self ?right)\b",
+    re.IGNORECASE,
+)
+
+
+def _sampling_hint(transcript: str) -> str:
+    return "action" if _ACTION_HINT_RE.search(transcript) else "freeform"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -185,7 +210,7 @@ if _KNOWLEDGE_TEXT:
     )
 
 
-class SpotBrain:
+class LLMBrain:
     """Conversational LLM brain for Spot robot using Ollama structured JSON.
 
     The model receives the action catalog in the system prompt and responds
@@ -282,165 +307,66 @@ class SpotBrain:
         return messages
 
     def process(self, transcript: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Process a user utterance and return actions + response.
+        """Single-path brain call. Always returns {actions, response, raw_llm}.
 
-        Args:
-            transcript: What the user said (ASR output).
-            state: Current robot state dict (battery, location, etc.).
-
-        Returns:
-            Dict with keys:
-                "actions": list of {"intent": str, "params": dict}
-                "response": str  — what the robot says back
-                "raw_llm": str   — raw LLM output (for debugging)
+        If on_token_callback is set on self, tokens stream as they arrive.
+        Grammar emits each action with key "action"; this method renames to
+        "intent" so spot_dispatch.dispatch_intent() can consume directly.
         """
         if state is None:
             state = {}
 
         messages = self._build_messages(transcript, state)
+        system = messages[0]["content"]
+        user_history = messages[1:]
+
+        profile = _sampling_hint(transcript)
+        backend = _backend()
+        t0 = time.time()
+        raw = backend.chat(
+            system,
+            user_history,
+            on_token=getattr(self, "on_token_callback", None),
+            profile=profile,
+        )
+        elapsed_ms = int((time.time() - t0) * 1000)
 
         try:
-            timeout = FIRST_REQUEST_TIMEOUT if self._first_request else REQUEST_TIMEOUT
-            if self._first_request:
-                print("[Brain] First request — loading model, this may take a moment...")
+            parsed = json.loads(raw)
+            grammar_actions = parsed.get("actions", []) or []
+            response = parsed.get("response", "").strip()
+        except json.JSONDecodeError:
+            # Grammar guarantees valid JSON — should never hit. Defensive.
+            grammar_actions = []
+            response = raw.strip()
+            parsed = {"actions": [], "response": response}
 
-            t0 = time.time()
-            # Do NOT set "think": False here — combined with "format": "json" it triggers
-            # Ollama bug #15260 (json constraint silently dropped). gemma4:e4b runs in
-            # thinking mode for text dispatch; the perf cost is acceptable vs broken JSON.
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "format": "json",
-                    "stream": False,
-                    "keep_alive": -1,
-                    "options": {
-                        "temperature": 0.3,
-                        "top_p": 0.9,
-                        "num_predict": 150,
-                        "num_gpu": 99,
-                        # 32768 = qwen2.5:7b's native context max (no YaRN
-                        # rescaling needed). The injected knowledge packs
-                        # alone are ~12K tokens, so 4096 or 8192 silently
-                        # truncates history. Initial KV-cache cost on Jetson
-                        # AGX Orin was ~1.9 GB with tour_route.md only;
-                        # adding thayer_knowledge.md is expected to push
-                        # this to roughly ~3.5 GB, against ~21 GB headroom
-                        # with both qwen2.5 + qwen2.5vl resident. Worth
-                        # re-measuring after the next warm-up. warm_up()
-                        # passes the same num_ctx so Ollama doesn't reload
-                        # the model on the first real request.
-                        "num_ctx": 32768,
-                    },
-                },
-                timeout=timeout,
-            )
-            self._first_request = False
+        # Grammar emits {"action": "stand", ...}; dispatcher expects {"intent": "stand", ...}.
+        actions = [
+            {"intent": a["action"], "params": a.get("params", {})}
+            for a in grammar_actions
+            if isinstance(a, dict) and a.get("action")
+        ]
 
-            if r.status_code != 200:
-                print(f"[Brain] Ollama error {r.status_code}: {r.text[:200]}")
-                return {"actions": [], "response": "", "raw_llm": ""}
+        # For describe actions the LLM "response" is often hallucinated
+        # (model can't see the camera until the dispatcher runs the VLM
+        # call), so sanitize the stored assistant turn — otherwise the
+        # fake description sticks for MAX_HISTORY turns and biases later
+        # replies. Dispatcher handles the spoken side independently.
+        self.history.append({"role": "user", "content": transcript})
+        if any(a["intent"] == "describe" for a in actions):
+            parsed["response"] = "Taking a look..."
+            sanitized = json.dumps(parsed)
+            self.history.append({"role": "assistant", "content": sanitized})
+        else:
+            self.history.append({"role": "assistant", "content": raw})
 
-            _resp_json = r.json()
-            message = _resp_json.get("message", {})
-            content = (message.get("content") or "").strip()
-            elapsed = time.time() - t0
-            print(f"[Brain] LLM responded in {elapsed:.1f}s ({len(content)} chars)")
-
-            # --- Ollama duration breakdown (Stage 2 latency instrumentation) ---
-            _total_ms   = _resp_json.get("total_duration",       0) // 1_000_000
-            _load_ms    = _resp_json.get("load_duration",         0) // 1_000_000
-            _pe_ms      = _resp_json.get("prompt_eval_duration",  0) // 1_000_000
-            _pe_tok     = _resp_json.get("prompt_eval_count",     0)
-            _eval_ms    = _resp_json.get("eval_duration",         0) // 1_000_000
-            _eval_tok   = _resp_json.get("eval_count",            0)
-            _tps = _eval_tok / (_eval_ms / 1000) if _eval_ms > 0 else 0.0
-            print(
-                f"[Brain-timing] path=text model={self.model} "
-                f"total={_total_ms}ms load={_load_ms}ms "
-                f"prompt_eval={_pe_ms}ms ({_pe_tok} tok) "
-                f"eval={_eval_ms}ms ({_eval_tok} tok @ {_tps:.1f} tok/s)"
-            )
-
-            # --- Parse JSON ---
-            actions = []
-            response = ""
-
-            try:
-                data = json.loads(content)
-            except json.JSONDecodeError:
-                print(f"[Brain] Failed to parse JSON: {content[:200]}")
-                return {"actions": [], "response": content, "raw_llm": content}
-
-            response = str(data.get("response", "")).strip()
-
-            # Support new "actions" list format
-            raw_actions = data.get("actions")
-            if isinstance(raw_actions, list):
-                for item in raw_actions:
-                    if isinstance(item, dict):
-                        name = item.get("action")
-                        if name and isinstance(name, str):
-                            params = item.get("params", {})
-                            if not isinstance(params, dict):
-                                params = {}
-                            params = self._normalize_params(name, params)
-                            actions.append({"intent": name, "params": params})
-
-            # Backward compat: old single "action" field
-            if not actions:
-                action_name = data.get("action")
-                if action_name and isinstance(action_name, str) and action_name.lower() != "null":
-                    params = data.get("params", {})
-                    if not isinstance(params, dict):
-                        params = {}
-                    params = self._normalize_params(action_name, params)
-                    actions.append({"intent": action_name, "params": params})
-
-            if actions:
-                names = " -> ".join(a["intent"] for a in actions)
-                print(f"[Brain] Actions: {names}")
-            else:
-                print("[Brain] No action (conversation only)")
-
-            # Update conversation history.
-            #
-            # For describe actions the LLM's "response" field is often a
-            # hallucinated answer (the model can't actually see the camera),
-            # so we sanitize the assistant turn before storing it. Otherwise
-            # the fake description sticks around in history for up to
-            # MAX_HISTORY turns and biases future replies. The dispatcher
-            # (client_mic.process_utterance) handles the spoken side
-            # independently — this only fixes what gets remembered.
-            self.history.append({"role": "user", "content": transcript})
-            if any(a["intent"] == "describe" for a in actions):
-                data["response"] = "Taking a look..."
-                sanitized = json.dumps(data)
-                self.history.append({"role": "assistant", "content": sanitized})
-            else:
-                self.history.append({"role": "assistant", "content": content})
-
-            # history is a deque(maxlen=MAX_HISTORY) — old turns are
-            # auto-evicted on append, no manual slicing needed.
-
-            return {
-                "actions": actions,
-                "response": response,
-                "raw_llm": content,
-            }
-
-        except requests.Timeout:
-            print(f"[Brain] Timeout after {timeout}s — model may be loading")
-            return {"actions": [], "response": "", "raw_llm": ""}
-        except requests.ConnectionError:
-            print("[Brain] Cannot connect to Ollama. Is it running?")
-            self._available = False
-            return {"actions": [], "response": "", "raw_llm": ""}
-        except Exception as e:
-            print(f"[Brain] Error: {e}")
-            return {"actions": [], "response": "", "raw_llm": ""}
+        print(
+            f"[Brain-timing] backend={backend.name} profile={profile} "
+            f"actions={len(actions)} response_chars={len(response)} "
+            f"total_ms={elapsed_ms}"
+        )
+        return {"actions": actions, "response": response, "raw_llm": raw}
 
     @staticmethod
     def _normalize_params(intent: str, params: dict) -> dict:
@@ -584,14 +510,14 @@ class SpotBrain:
 # ---------------------------------------------------------------------------
 # Module-level convenience (used by client_mic.py)
 # ---------------------------------------------------------------------------
-_brain: Optional[SpotBrain] = None
+_brain: Optional[LLMBrain] = None
 
 
-def get_brain(model: str = DEFAULT_MODEL) -> SpotBrain:
-    """Get or create the singleton SpotBrain instance."""
+def get_brain(model: str = DEFAULT_MODEL) -> LLMBrain:
+    """Get or create the singleton LLMBrain instance."""
     global _brain
     if _brain is None or _brain.model != model:
-        _brain = SpotBrain(model=model)
+        _brain = LLMBrain(model=model)
     return _brain
 
 
@@ -612,7 +538,7 @@ if __name__ == "__main__":
 
     import sys
     model = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MODEL
-    brain = SpotBrain(model=model)
+    brain = LLMBrain(model=model)
 
     if not brain.is_available():
         print(f"\nOllama is not running or model '{model}' is not available.")

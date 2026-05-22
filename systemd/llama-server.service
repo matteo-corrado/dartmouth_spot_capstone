@@ -23,7 +23,7 @@ ExecStart=/usr/bin/docker run --rm --name llama-server \
     llama-server \
       -m /models/gemma-4-E4B-Q8_0.gguf \
       --mmproj /models/mmproj-gemma4-e4b-Q8_0.gguf \
-      -c 8192 \
+      -c 32768 \
       -ngl 99 \
       --flash-attn on \
       --jinja \
