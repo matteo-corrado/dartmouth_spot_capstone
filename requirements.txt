@@ -38,7 +38,16 @@ joblib
 
 # Wake word — sherpa-onnx KeywordSpotter (CPU streaming zipformer, ~5MB)
 # Still required even after the TTS swap; wake word stays on CPU intentionally.
-sherpa-onnx>=1.12.0
+# 1.12.40 adds NVIDIA Nemotron Speech Streaming support (Stage 2A T7 ASR backend).
+sherpa-onnx>=1.12.40
+# huggingface-hub bumped for Parakeet ASR model fetch via onnx-asr
+huggingface-hub>=1.0,<2.0
+# Parakeet TDT 0.6B v3 — Stage 2A ASR backend (default; uses onnxruntime-gpu
+# CUDA EP). Nemotron stays available via SPOT_ASR_BACKEND=nemotron (CPU only
+# on aarch64; sherpa-onnx PyPI wheel has no GPU build for Jetson).
+# NEVER install onnx-asr[gpu] — that extra has onnxruntime-gpu>=1.18.1 with
+# no upper bound and would upgrade past our 1.23.0 Jetson AI Lab pin.
+onnx-asr==0.11.0
 
 # Visual navigation — YOLO object detection + person following
 ultralytics>=8.1.0
