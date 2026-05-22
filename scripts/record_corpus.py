@@ -49,7 +49,7 @@ def record_one(device: int, out_path: Path, duration: float) -> None:
         w.setframerate(SAMPLE_RATE)
         w.writeframes(mono.tobytes())
     peak = float(np.abs(mono).max()) / 32768.0
-    print(f"  done — peak {peak:.2f} {'(too quiet!)' if peak < 0.05 else ''}")
+    print(f"  done — peak {peak:.2f} {'(too quiet — speak louder or move closer)' if peak < 0.02 else ''}")
 
 
 # (utterance_name, prompt_phrase, distance_label, duration_s)
