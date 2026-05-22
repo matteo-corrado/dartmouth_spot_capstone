@@ -487,6 +487,7 @@ action-name   ::= "\"stop\"" | "\"freeze\"" | "\"estop\""
               | "\"go_to_object\"" | "\"follow_me\""
               | "\"describe\"" | "\"check_obstacles\""
               | "\"battery_status\"" | "\"status\"" | "\"power_off\""
+              | "\"set_persona\""   # Stage 2E.1 forward-compat; dispatcher handler lands in 2E.1 T16
 
 params        ::= "{" ws ( param ( "," ws param )* )? ws "}"
 param         ::= string ":" ws value
@@ -521,11 +522,13 @@ Expected: validator reports the sample document is accepted. (Tool name may be `
 
 ```bash
 grep -oE '^[a-z_]+:' src/voice_control/llm_brain.py | grep -oE '^[a-z_]+' | sort -u > /tmp/dispatcher_actions.txt
-grep -oE '"[a-z_]+"' src/voice_control/grammar/spot_action.gbnf | sort -u > /tmp/grammar_actions.txt
+# Strip set_persona from grammar side: dispatcher handler is added in Stage 2E.1 T16,
+# but the grammar carries it now so llama-server won't reject the token at 2E.1 ship.
+grep -oE '"[a-z_]+"' src/voice_control/grammar/spot_action.gbnf | tr -d '"' | grep -v '^set_persona$' | sort -u > /tmp/grammar_actions.txt
 diff /tmp/dispatcher_actions.txt /tmp/grammar_actions.txt && echo "OK" || echo "DIFF — reconcile"
 ```
 
-Expected: empty diff. If the dispatcher has an action that is not in the grammar (or vice versa), patch the grammar first — never silently drop an action from the grammar.
+Expected: empty diff (set_persona is excluded from the grammar side until 2E.1 T16 lands the dispatcher handler). If any other diff appears, patch the grammar first — never silently drop an action from the grammar.
 
 - [ ] **Step 4: Commit**
 
@@ -774,9 +777,12 @@ class LlamaCppBackend:
         on_token: Optional[Callable[[str], None]] = None,
         timeout: float = 60.0,
         profile: str = "action",
+        sampling_overrides: Optional[Dict] = None,
         max_tokens: int = 512,
     ) -> str:
-        sampling = SAMPLING_PROFILES[profile]
+        # 2E.1 personas pass sampling_overrides to vary temp/top_p per persona
+        # (vlm temp is the canonical example). Default (None) preserves 2A behavior.
+        sampling = {**SAMPLING_PROFILES[profile], **(sampling_overrides or {})}
         payload: Dict = {
             "messages": [{"role": "system", "content": system}] + messages,
             "grammar": _grammar(),
@@ -889,9 +895,10 @@ class OllamaBackend:
         on_token: Optional[Callable[[str], None]] = None,
         timeout: float = 60.0,
         profile: str = "action",
+        sampling_overrides: Optional[Dict] = None,
         max_tokens: int = 512,
     ) -> str:
-        sampling = SAMPLING_PROFILES[profile]
+        sampling = {**SAMPLING_PROFILES[profile], **(sampling_overrides or {})}
         payload = {
             "model": OLLAMA_MODEL,
             "messages": [{"role": "system", "content": system}] + messages,
@@ -943,9 +950,13 @@ class OllamaBackend:
         return r.json()["message"]["content"]
 ```
 
-- [ ] **Step 4: Rewire llm_brain.py — drop the intent router**
+- [ ] **Step 4: Rewire llm_brain.py — rename class, drop the intent router**
 
-In `src/voice_control/llm_brain.py`, locate the existing `process()` method and the Ollama HTTP path. Replace with:
+In `src/voice_control/llm_brain.py`:
+
+a. **Rename the brain class.** Change `class SpotBrain:` → `class LLMBrain:`. Update the standalone helper `process_with_brain()` body if it constructs `SpotBrain()` directly. Update the import + construction in `src/voice_control/client_mic.py` (currently `from llm_brain import SpotBrain, DEFAULT_MODEL` and `brain = SpotBrain(model=DEFAULT_MODEL)`). Stage 2E.1 plans assume the new name; 2A is the consolidation point.
+
+b. **Replace the existing `process()` body.** Locate the current `process()` method (Ollama HTTP path with regex intent router). Replace with:
 
 ```python
 import re
@@ -1005,6 +1016,19 @@ def process(self, transcript: str, state=None) -> dict:
         # Grammar guarantees valid JSON — should never hit. Defensive.
         actions = []
         response = raw.strip()
+
+    # Update conversation history. For describe actions the LLM "response"
+    # is often hallucinated (model can't see the camera until the dispatcher
+    # runs the VLM call), so sanitize the stored assistant turn — otherwise
+    # the fake description sticks for MAX_HISTORY turns and biases later
+    # replies. The dispatcher handles the spoken side independently.
+    self.history.append({"role": "user", "content": transcript})
+    if any(a.get("action") == "describe" for a in actions):
+        sanitized = json.dumps({"actions": actions, "response": "Taking a look..."})
+        self.history.append({"role": "assistant", "content": sanitized})
+    else:
+        self.history.append({"role": "assistant", "content": raw})
+    # history is a deque(maxlen=MAX_HISTORY) — old turns auto-evicted.
 
     print(
         f"[Brain-timing] backend={backend.name} profile={profile} "
@@ -1083,11 +1107,27 @@ print(b.chat('You are Spot. Output JSON only.',
 
 Expected: `backend: ollama`; valid JSON with `actions: [{action: "sit"}]`.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 7: Verify history append survives the rewrite**
 
 ```bash
-git add src/voice_control/brain/ src/voice_control/llm_brain.py
-git commit -m "stage 2a t5: brain backend interface, drop intent router, single GBNF"
+spot-env/bin/python -c "
+from src.voice_control.llm_brain import LLMBrain
+b = LLMBrain()
+n0 = len(b.history)
+b.process('stand up', {'battery_percent': 85})
+n1 = len(b.history)
+assert n1 == n0 + 2, f'expected +2 turns (user+assistant), got +{n1 - n0}'
+print(f'history grew {n0} -> {n1} OK')
+"
+```
+
+Expected: `history grew 0 -> 2 OK`. If history did not grow, the process() rewrite dropped the append block — fix before commit.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/voice_control/brain/ src/voice_control/llm_brain.py src/voice_control/client_mic.py
+git commit -m "stage 2a t5: brain backend interface, drop intent router, single GBNF, rename SpotBrain -> LLMBrain"
 git push origin tour_guide_upgrade_matteo
 ```
 
@@ -2164,76 +2204,94 @@ Only applies to the `response` text. The `actions` array is parsed at the end of
 
 Plan: stream-parse the JSON incrementally. When we see `"response":"...`, start forwarding subsequent characters into the TTS chunker. Strip the closing quote at end.
 
-- [ ] **Step 1: Add `enqueue_streaming` to spot_tts.py**
+- [ ] **Step 1: Add `voice` param to `SpotTTS.speak` + add `TTSChunker` + `enqueue_streaming` to spot_tts.py**
+
+The existing `SpotTTS.speak(text)` (line ~162) already enqueues through `AudioPlayer.enqueue_render` (non-blocking, in submission order). Stage 2A reuses it — the only signature change is an optional `voice` override so Stage 2E.1 personas can swap voice per-call without mutating `self.voice`. All chunks from one streaming turn share a single voice.
+
+Edit `src/voice_control/spot_tts.py`:
+
+a. Extend the `speak` signature (~line 162) to accept `voice`:
 
 ```python
-# src/voice_control/spot_tts.py (add to existing class)
+def speak(self, text: str, voice: str | None = None):
+    """Enqueue text for synthesis. Returns immediately. If voice is None, uses self.voice."""
+    if not self.is_available():
+        print(f'[TTS] Not available — would say: "{text}"')
+        return
+    if not text or not text.strip():
+        return
 
+    gain = self.volume
+    voice = voice or self.voice   # explicit per-call wins; falls back to instance default
+    speed = self.speed
+    # ... rest of existing _render closure + self._player.enqueue_render() call unchanged ...
+```
+
+b. Add the chunker + streaming entry point (same file, after the `SpotTTS` class body):
+
+```python
 import re
-import threading
-
 
 SENTENCE_END_RE = re.compile(r"[.!?]\s")
 
 
 class TTSChunker:
-    """Buffer streaming tokens; flush a chunk on sentence boundary."""
+    """Buffer streaming tokens; flush a sentence to TTS on each boundary."""
 
-    def __init__(self, on_chunk):
+    def __init__(self, tts: "SpotTTS", voice: str | None = None):
+        self._tts = tts
+        self._voice = voice
         self.buf = []
-        self.on_chunk = on_chunk
         self.in_response = False
         self.escape = False
         self.json_buf = []
 
-    def accept(self, delta: str) -> None:
-        """Feed a token delta from the LLM stream.
+    def _emit(self, chunk: str) -> None:
+        self._tts.speak(chunk, voice=self._voice)
 
-        This parses the surrounding JSON incrementally: once we are inside
-        the "response":"..." string value, characters flow to the chunker.
+    def accept(self, delta: str) -> None:
+        """Feed a token delta from the LLM stream. Parses surrounding JSON
+        incrementally; once inside the "response":"..." string value, chars
+        flow to the sentence buffer.
         """
         for ch in delta:
             self.json_buf.append(ch)
             if not self.in_response:
-                # Crude detector: switch on when the buffer ends with '"response":"'
                 tail = "".join(self.json_buf[-20:])
-                idx = tail.rfind('"response":"')
-                if idx != -1:
-                    # Drain what we already accumulated
+                if tail.rfind('"response":"') != -1:
                     self.in_response = True
-                    continue
+                continue
+            if self.escape:
+                self.buf.append(ch)
+                self.escape = False
+            elif ch == "\\":
+                self.escape = True
+            elif ch == '"':
+                self.in_response = False
+                rest = "".join(self.buf).strip()
+                if rest:
+                    self._emit(rest)
+                self.buf = []
             else:
-                if self.escape:
-                    self.buf.append(ch)
-                    self.escape = False
-                elif ch == "\\":
-                    self.escape = True
-                elif ch == '"':
-                    # End of the response string.
-                    self.in_response = False
-                    rest = "".join(self.buf).strip()
-                    if rest:
-                        self.on_chunk(rest)
-                    self.buf = []
-                else:
-                    self.buf.append(ch)
-                    text = "".join(self.buf)
-                    if SENTENCE_END_RE.search(text):
-                        # Flush completed sentence(s).
-                        parts = SENTENCE_END_RE.split(text)
-                        complete = parts[:-1]
-                        tail = parts[-1]
-                        if complete:
-                            self.on_chunk(" ".join(s.strip() for s in complete if s.strip()))
-                        self.buf = list(tail)
+                self.buf.append(ch)
+                text = "".join(self.buf)
+                if SENTENCE_END_RE.search(text):
+                    parts = SENTENCE_END_RE.split(text)
+                    complete = parts[:-1]
+                    tail = parts[-1]
+                    if complete:
+                        self._emit(" ".join(s.strip() for s in complete if s.strip()))
+                    self.buf = list(tail)
 ```
 
-Wire `enqueue_streaming`:
+c. Wire `enqueue_streaming` as a method on `SpotTTS`:
 
 ```python
-def enqueue_streaming(self) -> "callable":
-    """Return a callable that the brain hands token deltas to."""
-    chunker = TTSChunker(on_chunk=self.enqueue_render)
+def enqueue_streaming(self, voice: str | None = None) -> "callable":
+    """Return a callable that the brain hands token deltas to; sentences
+    flush via self.speak(chunk, voice=voice).
+    """
+    chunker = TTSChunker(self, voice=voice)
     return chunker.accept
 ```
 
@@ -2242,7 +2300,7 @@ def enqueue_streaming(self) -> "callable":
 In `src/voice_control/client_mic.py`, replace the brain call in `voice_loop` with:
 
 ```python
-        on_token = tts.enqueue_streaming()
+        on_token = tts.enqueue_streaming()    # 2E.1 will pass voice=… per-persona here
         brain.on_token_callback = on_token
         try:
             result = brain.process(clean, spot_state)
@@ -2250,9 +2308,11 @@ In `src/voice_control/client_mic.py`, replace the brain call in `voice_loop` wit
             brain.on_token_callback = None
 
         dispatch(result["actions"])
-        # The TTS chunker has already emitted the response sentence-by-sentence;
-        # no need to enqueue_render(result["response"]) again.
+        # The TTS chunker already emitted the response sentence-by-sentence
+        # via tts.speak(chunk); no second tts.speak(result["response"]) call here.
 ```
+
+Also remove any pre-2A site that called `tts.speak(result["response"])` immediately after `brain.process()` (the streaming chunker now owns the spoken side).
 
 - [ ] **Step 3: End-to-end latency smoke test**
 

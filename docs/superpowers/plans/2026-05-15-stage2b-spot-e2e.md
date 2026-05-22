@@ -4,11 +4,11 @@
 
 > **HUMAN-IN-LOOP REQUIRED.** This plan validates the voice loop on the real Boston Dynamics Spot robot. Tasks 3-7 require Spot powered, E-stop in another terminal, clear lab space (≥3m × 3m), and a human operator within line of sight at all times. Robot motion is NOT delegable to a subagent.
 
-**Goal:** Validate Stage 2A voice pipeline (llama.cpp brain + Parakeet ASR + Silero VAD + LiveKit Wakeword) end-to-end on the real Spot robot. On pass, merge `tour_guide_upgrade_matteo` → `main` and tag `stage2b-e2e-complete`.
+**Goal:** Validate Stage 2A voice pipeline (llama.cpp brain + Nemotron Speech Streaming ASR + Silero VAD + LiveKit Wakeword) end-to-end on the real Spot robot. On pass, merge `tour_guide_upgrade_matteo` → `main` and tag `stage2b-e2e-complete`.
 
 **Architecture:** No new code paths. This is a regression matrix + safety audit + merge ceremony. The only new artifact is `scripts/run_regression_matrix.py` (operator-driven checklist runner with timing capture) and `docs/project/stage2-rollback.md` updates.
 
-**Tech Stack:** Existing voice loop (run_voice_control.py), bosdyn-client 5.0.1.1, llama.cpp HTTP @ port 11435, Parakeet ASR, Silero VAD, LiveKit Wakeword. No new dependencies.
+**Tech Stack:** Existing voice loop (run_voice_control.py), bosdyn-client 5.0.1.1, llama.cpp HTTP @ port 11435, Nemotron Speech Streaming ASR (Parakeet kept as rollback layer), Silero VAD, LiveKit Wakeword. No new dependencies.
 
 **Spec reference:** `docs/superpowers/specs/2026-05-15-stage2-design.md` section 2B.1.
 
@@ -18,8 +18,8 @@
 
 - Plan 2A complete: `git tag` shows `stage2a-voice-complete` exists on `tour_guide_upgrade_matteo`.
 - `llama-server` daemon running (verify: `curl -s http://localhost:11435/health` returns `{"status":"ok"}`).
-- Parakeet model downloaded to `/mnt/ssd/parakeet-models/`.
-- `SPOT_BRAIN_BACKEND=llamacpp` and `SPOT_ASR_BACKEND=parakeet` set in environment or `.env`.
+- Nemotron Speech Streaming model downloaded to `/mnt/ssd/nemotron-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/` (Parakeet rollback model in `/mnt/ssd/parakeet-models/` optional).
+- `SPOT_BRAIN_BACKEND=llamacpp` and `SPOT_ASR_BACKEND=nemotron` set in environment or `.env`.
 - Spot powered, on the floor, ≥3m clear in all directions, E-stop tested.
 - A second terminal is open with `python -m src.voice_control.estop_run` ready (DO NOT skip).
 - Human operator has line of sight to Spot at all times.
@@ -44,7 +44,7 @@
 
 **Files:**
 - Run only: shell commands
-- Read only: `scripts/setup_parakeet.py`, `scripts/setup_llamacpp_models.py`, `.env`, `~/.config/systemd/user/llama-server.service`
+- Read only: `scripts/setup_nemotron.py`, `scripts/setup_parakeet.py`, `scripts/setup_llamacpp_models.py`, `.env`, `~/.config/systemd/user/llama-server.service`
 
 - [ ] **Step 1: Verify Plan 2A tag exists**
 
@@ -61,23 +61,24 @@ systemctl --user status llama-server.service --no-pager
 curl -sf http://localhost:11435/health
 curl -sf http://localhost:11435/v1/models | python3 -m json.tool
 ```
-Expected: systemd shows `active (running)`; `/health` returns `{"status":"ok"}`; `/v1/models` lists `gemma-4-e4b-Q4_K_M.gguf`.
+Expected: systemd shows `active (running)`; `/health` returns `{"status":"ok"}`; `/v1/models` lists `gemma-4-E4B-Q6_K.gguf`.
 
-- [ ] **Step 3: Verify Parakeet + Silero models present**
+- [ ] **Step 3: Verify Nemotron + Silero (+ optional Parakeet) models present**
 
 ```bash
-ls -lh /mnt/ssd/parakeet-models/*.onnx
+ls -lh /mnt/ssd/nemotron-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-560ms-int8-2026-04-25/*.onnx
+ls -lh /mnt/ssd/parakeet-models/*.onnx 2>/dev/null || echo "(no Parakeet — rollback layer unavailable)"
 ls -lh /mnt/ssd/silero-vad/*.onnx 2>/dev/null || ls -lh $(python3 -c "import sherpa_onnx; print(sherpa_onnx.__file__)" | xargs dirname)/../../share/sherpa-onnx/ 2>/dev/null
 ```
-Expected: at least one `.onnx` in `/mnt/ssd/parakeet-models/`. Silero may live inside sherpa-onnx package — locate it.
+Expected: at least one `.onnx` in the Nemotron dir. Parakeet absence is non-fatal (rollback only). Silero may live inside sherpa-onnx package — locate it.
 
 - [ ] **Step 4: Verify env backend flags**
 
 ```bash
 grep -E '^SPOT_(BRAIN|ASR|WAKE)_BACKEND' /home/spotdog/spot/dartmouth_spot_capstone/.env || \
-  echo "MISSING — set in .env: SPOT_BRAIN_BACKEND=llamacpp SPOT_ASR_BACKEND=parakeet SPOT_WAKE_BACKEND=livekit"
+  echo "MISSING — set in .env: SPOT_BRAIN_BACKEND=llamacpp SPOT_ASR_BACKEND=nemotron SPOT_WAKE_BACKEND=livekit"
 ```
-Expected: all three vars set. If missing, append to `.env`. The pass criteria of 2B assume llama.cpp + Parakeet + LiveKit are the live paths.
+Expected: all three vars set. If missing, append to `.env`. The pass criteria of 2B assume llama.cpp + Nemotron + LiveKit are the live paths.
 
 - [ ] **Step 5: Verify Spot connection without lease**
 
@@ -103,7 +104,7 @@ Expected: stays running, prompts for keypress. Leave it running for the duration
 mkdir -p /mnt/ssd/spot-logs/stage2b
 cd /home/spotdog/spot/dartmouth_spot_capstone && \
   ./scripts/preflight_log.sh > /mnt/ssd/spot-logs/stage2b/preflight_$(date +%Y%m%d_%H%M%S).log 2>&1 || \
-  echo "(preflight_log.sh does not exist yet; capture manually: env | grep SPOT_; ollama list; pip freeze | grep -E 'parakeet|sherpa|kokoro|ultralytics|bosdyn')" >> /mnt/ssd/spot-logs/stage2b/preflight_manual.log
+  echo "(preflight_log.sh does not exist yet; capture manually: env | grep SPOT_; ollama list; pip freeze | grep -E 'nemotron|parakeet|sherpa|kokoro|ultralytics|bosdyn')" >> /mnt/ssd/spot-logs/stage2b/preflight_manual.log
 ```
 (The script may not exist yet; the manual fallback captures the same data.)
 
@@ -126,21 +127,21 @@ Create `tests/regression/stage2b_matrix.yaml` with the following content (the ru
 
 items:
   - name: stand
-    intent: '{"intent": "stand", "params": {}}'
+    intent: '{"action": "stand", "params": {}}'
     pass_criteria: 'Spot stands within 5 s; no error in [Brain-timing] log; no e-stop.'
     safety_notes: 'Operator confirms clear 1m radius before triggering.'
     timeout_s: 15
     exploratory: false
 
   - name: walk_forward_1m
-    intent: '{"intent": "walk", "params": {"distance_m": 1.0, "speed_mps": 0.4}}'
+    intent: '{"action": "walk", "params": {"distance_m": 1.0, "speed_mps": 0.4}}'
     pass_criteria: 'Spot walks forward ≈1m within 8 s; ends standing; no e-stop.'
     safety_notes: '≥1.5m clear in front; floor flat and dry.'
     timeout_s: 20
     exploratory: false
 
   - name: sit
-    intent: '{"intent": "sit", "params": {}}'
+    intent: '{"action": "sit", "params": {}}'
     pass_criteria: 'Spot sits within 5 s; no e-stop.'
     safety_notes: 'Verify legs not pinched by cables.'
     timeout_s: 15
@@ -397,7 +398,7 @@ Skip this step if no fixes were needed.
 ```bash
 cd /home/spotdog/spot/dartmouth_spot_capstone && python3 -m src.voice_control.client_mic
 ```
-Wait for `[VoiceLoop] ready` (or equivalent) message. Verify it picked up the llama.cpp backend (look for `SPOT_BRAIN_BACKEND=llamacpp` line) and Parakeet ASR.
+Wait for `[VoiceLoop] ready` (or equivalent) message. Verify it picked up the llama.cpp backend (look for `SPOT_BRAIN_BACKEND=llamacpp` line) and Nemotron ASR (`SPOT_ASR_BACKEND=nemotron`).
 
 - [ ] **Step 2: Confirm E-stop in terminal B**
 
@@ -529,7 +530,7 @@ Only do this if main has not been pulled by anyone else. **Confirm with user bef
 ### Runtime-only rollback (no git revert needed)
 For sub-system failures discovered after merge, flip the corresponding env var instead of reverting code:
 - Brain: `SPOT_BRAIN_BACKEND=ollama` + `DEFAULT_MODEL=qwen2.5:7b` in `.env`
-- ASR: `SPOT_ASR_BACKEND=riva` (only works if Riva backend code still present; deleted in 2A.4 — if so this layer is unavailable until git revert)
+- ASR: `SPOT_ASR_BACKEND=parakeet` (rollback to batch Parakeet TDT 0.6B v3 from Nemotron Streaming; requires `/mnt/ssd/parakeet-models/` populated. Riva path was deleted in 2A.)
 - Wake word: `SPOT_WAKE_BACKEND=sherpa_onnx` in `.env`
 - Vision: env-var or path swap (covered in Stage 2C rollback)
 Restart `run_voice_control.py` after any env var flip.
@@ -640,13 +641,13 @@ Cached HTTPS creds work per MEMORY.md.
 gh pr create --title "Stage 2: voice pipeline + Spot e2e (merge-to-main)" --body "$(cat <<'EOF'
 ## Summary
 
-Stage 2A (voice pipeline, llama.cpp brain + Parakeet ASR + Silero VAD + LiveKit Wakeword) + Stage 2B (Spot e2e regression matrix) complete. All non-exploratory regression items pass on the real robot. Safety-reviewer audit clean. Ready to merge to main.
+Stage 2A (voice pipeline, llama.cpp brain + Nemotron Speech Streaming ASR + Silero VAD + LiveKit Wakeword) + Stage 2B (Spot e2e regression matrix) complete. All non-exploratory regression items pass on the real robot. Safety-reviewer audit clean. Ready to merge to main.
 
 Vision overhaul (2C) and smart chatbot (2D) will follow as separate PRs on top of main.
 
 ## What's in this PR
 - llama.cpp + GBNF-grammar adaptive-thinking brain (replaces Ollama as default)
-- Parakeet TDT 0.6B v3 ASR (replaces broken Riva bridge)
+- Nemotron Speech Streaming 0.6B INT8 ASR (replaces broken Riva bridge; Parakeet TDT 0.6B v3 kept as rollback layer)
 - Silero VAD via sherpa-onnx (replaces webrtcvad)
 - LiveKit Wakeword (replaces openWakeWord plan)
 - Stage 2B regression matrix runner + matrix YAML

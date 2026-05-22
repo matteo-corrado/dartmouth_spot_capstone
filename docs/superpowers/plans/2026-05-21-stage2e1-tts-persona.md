@@ -6,7 +6,7 @@
 
 **Architecture:** New `tts/` and `chatbot/` modules added under `src/voice_control/`. `TTSBackend` Protocol with two impls. Persona registry loaded from declarative `config/personas.yaml`. `SessionState` dataclass owned by `LLMBrain`. Persona's `prompt_prefix` injected BEFORE `SYSTEM_PROMPT` in `_build_messages()`. Robot state + session state merge into single bullet-list block. New `set_persona` action dispatched same as other actions. JSONL conversation log written per turn. All swaps env-var-flippable for rollback.
 
-**Tech Stack:** Existing sherpa-onnx Kokoro infra (model swap to `kokoro-multi-lang-v1_1`), `elevenlabs>=2.0,<3.0` Python SDK (new dep), `PyYAML` (already present transitively, verify), `pytest>=8.0,<9.0` (new for testing new modules), `python-dotenv==1.0.1` (already pinned, for `ELEVENLABS_API_KEY`).
+**Tech Stack:** Existing `kokoro-onnx` v1.0 infra (no model swap — 54 voices already present under `models/tts/kokoro-v1.0/` are sufficient for the 6 starter personas), `elevenlabs>=2.0,<3.0` Python SDK (new dep), `PyYAML` (already present transitively, verify), `pytest>=8.0,<9.0` (new for testing new modules), `python-dotenv==1.0.1` (already pinned, for `ELEVENLABS_API_KEY`).
 
 **Spec:** `docs/superpowers/specs/2026-05-21-stage2e-personality-design.md` §5.
 
@@ -42,10 +42,10 @@
 | Create | `tests/voice_control/chatbot/test_conversation_log.py` | unit tests |
 | Create | `src/voice_control/tts/__init__.py` | `TTSBackend` Protocol + `get_backend()` dispatch |
 | Create | `tests/voice_control/tts/test_tts_init.py` | dispatch tests |
-| Create | `src/voice_control/tts/kokoro.py` | sherpa-onnx Kokoro wrapper |
+| Create | `src/voice_control/tts/kokoro.py` | kokoro-onnx Kokoro wrapper (v1.0, 54 voices) |
 | Create | `src/voice_control/tts/elevenlabs.py` | ElevenLabs SDK streaming wrapper |
 | Create | `tests/voice_control/tts/test_elevenlabs.py` | unit tests (mocked HTTP) |
-| Create | `scripts/setup_kokoro_v1_1.py` | download `kokoro-multi-lang-v1_1` to `/mnt/ssd/tts-models/` |
+| (none — model already present) | — | Task 11 is verification-only; `models/tts/kokoro-v1.0/` was downloaded during Stage 1 by the existing `scripts/setup_kokoro.py` |
 | Modify | `src/voice_control/llm_brain.py` | `MAX_HISTORY=24`; persona prefix injection; `SessionState` ownership; merged state rendering |
 | Modify | `src/voice_control/spot_dispatch.py` | `set_persona` action handler; optional `is_standing` + `nearby_locations` polish |
 | Modify | `src/voice_control/spot_tts.py` | route synth via `tts.get_backend()` |
@@ -66,12 +66,29 @@
 ```bash
 git status                              # clean working tree expected
 git log --oneline -1                    # confirm dee6612 spec commit at HEAD
-ls /mnt/ssd/tts-models/                 # confirm SSD mount + writable
-curl -sf http://localhost:11434/api/tags | grep -q gemma4 && echo "ollama OK"
+ls /mnt/ssd/tts-models/ 2>/dev/null || ls models/tts/    # confirm TTS model dir reachable
 grep -q ELEVENLABS_API_KEY .env && echo "key present" || echo "WARN: add ELEVENLABS_API_KEY to .env"
+
+# Brain backend health depends on which path is live:
+BRAIN=$(grep -E '^SPOT_BRAIN_BACKEND=' .env | cut -d= -f2 | tr -d '"' )
+BRAIN=${BRAIN:-llamacpp}
+if [ "$BRAIN" = "llamacpp" ]; then
+    curl -sf http://127.0.0.1:11435/health | grep -q '"status":"ok"' && echo "llamacpp OK"
+else
+    # Ollama fallback path — bug #15260 (format=json + thinking ignored silently)
+    # was fixed in PR #15678 shipped in 0.27. Older versions can corrupt JSON output.
+    curl -sf http://localhost:11434/api/tags | grep -q gemma4 && echo "ollama models OK"
+    ollama --version | awk '{print $NF}' | python3 -c "
+import sys
+raw = sys.stdin.read().strip()
+parts = [int(x) for x in raw.split('.') if x.isdigit()]
+assert tuple(parts) >= (0, 27), f'ollama {raw} < 0.27 — bug #15260 (json+think) NOT fixed; upgrade before fallback path is safe'
+print(f'ollama {raw} OK')
+"
+fi
 ```
 
-Expected: all green. If `.env` missing key, stop and add it before proceeding.
+Expected: all green. If `.env` missing key, stop and add it before proceeding. If the Ollama version check fails, either upgrade Ollama (`curl -fsSL https://ollama.com/install.sh | sh`) or set `SPOT_BRAIN_BACKEND=llamacpp` to use the llama.cpp primary path.
 
 - [ ] **Step 2: Branch off**
 
@@ -335,14 +352,22 @@ mkdir -p config
 Write `config/personas.yaml`:
 
 ```yaml
-# Spot persona registry. Each persona = prompt prefix + per-backend voice id.
-# Add new personas by appending entries. SIGHUP the voice loop to hot-reload
-# (Task 8 implements the loader; SIGHUP hook is a follow-up nice-to-have).
+# Spot persona registry. Each persona = prompt prefix + per-backend voice id
+# + optional sampling overrides. Add new personas by appending entries.
+# SIGHUP the voice loop to hot-reload (Task 8 implements the loader; SIGHUP
+# hook is a follow-up nice-to-have).
 #
 # Voice IDs:
-#   kokoro_v1: speaker slug from kokoro-multi-lang-v1_1 (103 voices total).
-#              See `python -m sherpa_onnx.kokoro list-voices` after model download.
+#   kokoro_v1: speaker slug from kokoro v1.0 (voices-v1.0.bin, 54 voices).
 #   elevenlabs: ElevenLabs voice ID (curl GET /v1/voices to list all).
+#
+# Sampling overrides (optional, per-profile):
+#   sampling_overrides:
+#     vlm: {temperature: 0.8}        # only the vlm profile is altered
+#     freeform: {temperature: 0.6}   # tighter freeform than the global 0.7
+#   Keys allowed: action | freeform | vlm. Values merge ON TOP of
+#   SAMPLING_PROFILES from src/voice_control/brain/llamacpp_backend.py —
+#   missing keys fall through to the global default.
 
 tour_guide:
   prompt_prefix: >
@@ -362,6 +387,11 @@ pirate:
   voices:
     kokoro_v1: am_fenrir
     elevenlabs: pNInz6obpgDQGcFmaJgB   # Adam
+  sampling_overrides:
+    # Pirate VLM captions lean toward salty, flavored describes. Bump vlm
+    # temp above the 0.5 global default. Other profiles inherit (no override).
+    vlm:
+      temperature: 0.8
 
 snarky:
   prompt_prefix: >
@@ -457,6 +487,9 @@ def test_persona_has_prompt_prefix_and_voices():
     assert "pirate" in pirate.prompt_prefix.lower()
     assert pirate.voices["kokoro_v1"] == "am_fenrir"
     assert pirate.voices["elevenlabs"] == "pNInz6obpgDQGcFmaJgB"
+    # Persona with no override returns empty dict; pirate carries a vlm override.
+    assert reg["butler"].sampling_overrides == {}
+    assert pirate.sampling_overrides["vlm"]["temperature"] == 0.8
 
 
 def test_get_persona_returns_default_on_unknown_name(caplog):
@@ -511,7 +544,7 @@ Loads `config/personas.yaml` at boot. Provides:
 """
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -531,6 +564,10 @@ class Persona:
     name: str
     prompt_prefix: str
     voices: dict   # backend_name -> voice_id
+    sampling_overrides: dict = field(default_factory=dict)
+    # sampling_overrides shape: {"vlm": {"temperature": 0.8}, ...}
+    # Keys: action | freeform | vlm. Values merge on top of
+    # SAMPLING_PROFILES from brain/llamacpp_backend.py.
 
 
 def load_registry(path: str = "config/personas.yaml") -> dict:
@@ -556,10 +593,16 @@ def load_registry(path: str = "config/personas.yaml") -> dict:
             continue
         prefix = entry.get("prompt_prefix", "").strip()
         voices = entry.get("voices", {}) or {}
+        sampling_overrides = entry.get("sampling_overrides", {}) or {}
         if not prefix:
             logger.warning(f"Persona {name} has empty prompt_prefix; skipping")
             continue
-        registry[name] = Persona(name=name, prompt_prefix=prefix, voices=voices)
+        registry[name] = Persona(
+            name=name,
+            prompt_prefix=prefix,
+            voices=voices,
+            sampling_overrides=sampling_overrides,
+        )
     return registry
 
 
@@ -887,224 +930,88 @@ git commit -m "stage 2e1: TTSBackend Protocol + env-var dispatch registry"
 
 ---
 
-## Task 10: Implement `KokoroBackend` wrapping existing sherpa-onnx TTS
+## Task 10: Implement `KokoroBackend` wrapping existing kokoro-onnx TTS
 
 **Files:**
 - Create: `src/voice_control/tts/kokoro.py`
 
-This task wraps existing TTS code rather than reimplementing. Read `src/voice_control/spot_tts.py` first to identify the current synth call surface.
+This task wraps the existing kokoro-onnx infra (already used by `src/voice_control/spot_tts.py`). The persona YAML voice slugs (`af_sarah`, `am_fenrir`, `am_onyx`, `bm_george`, `bm_lewis`, `af_nova`) are kokoro v1.0 slugs from `voices-v1.0.bin` (54 voices available — sufficient for 6 personas; no model download needed).
 
 - [ ] **Step 1: Inspect current TTS implementation**
 
 ```bash
-grep -nE "def |sherpa_onnx|kokoro|synthesize|model_path" src/voice_control/spot_tts.py | head -40
+grep -nE "def |sherpa_onnx|kokoro_onnx|kokoro-onnx|kokoro|MODEL_DIR|MODEL_FILE" src/voice_control/spot_tts.py | head -40
 ```
 
-Capture: model path, voice ID parameter name, synth function name, PCM sample rate, output format.
+Expected confirmation: `from kokoro_onnx import Kokoro` at ~line 121; `MODEL_DIR = ... / "models" / "tts" / "kokoro-v1.0"`; `MODEL_FILE = MODEL_DIR / "kokoro-v1.0.fp16-gpu.onnx"`; the voices file is `voices-v1.0.bin`.
 
 - [ ] **Step 2: Write `src/voice_control/tts/kokoro.py`**
 
-Adapt the import surface to mirror existing spot_tts.py constants. Skeleton (adjust constants based on Step 1 findings):
-
 ```python
-"""Kokoro TTS backend via sherpa-onnx.
+"""Kokoro TTS backend via kokoro-onnx (the same package spot_tts.py uses).
 
-Wraps the existing model loader path used by spot_tts.py. Stage 2E.1
-upgrades the model archive from kokoro-en-v0.19 (8 voices) to
-kokoro-multi-lang-v1_1 (103 voices). Model path resolved via
-SPOT_KOKORO_MODEL_DIR env var, default /mnt/ssd/tts-models/kokoro-multi-lang-v1_1/.
+KokoroBackend exposes a Protocol-compatible interface (synthesize, stream,
+list_voices) on top of kokoro-onnx so the TTS dispatch layer can treat
+Kokoro and ElevenLabs the same way. Voice slugs map directly to
+kokoro-onnx voice names (e.g. 'af_sarah') — no integer speaker-id
+resolution needed.
+
+Model directory matches the existing spot_tts.py path:
+  models/tts/kokoro-v1.0/{kokoro-v1.0.fp16-gpu.onnx, voices-v1.0.bin}
 """
 import os
 from pathlib import Path
 from typing import Iterator
 
-import sherpa_onnx
+import numpy as np
+from kokoro_onnx import Kokoro
 
 from . import register_backend
 
-DEFAULT_MODEL_DIR = Path("/mnt/ssd/tts-models/kokoro-multi-lang-v1_1")
+REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_MODEL_DIR = REPO_ROOT / "models" / "tts" / "kokoro-v1.0"
 DEFAULT_SAMPLE_RATE = 24000
 
 
 class KokoroBackend:
-    def __init__(self, model_dir: Path = None):
+    def __init__(self, model_dir: Path | None = None):
         self.model_dir = Path(model_dir) if model_dir else Path(
             os.environ.get("SPOT_KOKORO_MODEL_DIR", DEFAULT_MODEL_DIR)
         )
         self._tts = self._load()
 
-    def _load(self) -> "sherpa_onnx.OfflineTts":
-        config = sherpa_onnx.OfflineTtsConfig(
-            model=sherpa_onnx.OfflineTtsModelConfig(
-                kokoro=sherpa_onnx.OfflineTtsKokoroModelConfig(
-                    model=str(self.model_dir / "model.onnx"),
-                    voices=str(self.model_dir / "voices.bin"),
-                    tokens=str(self.model_dir / "tokens.txt"),
-                    data_dir=str(self.model_dir / "espeak-ng-data"),
-                ),
-                num_threads=2,
-                provider="cpu",
-            ),
-            max_num_sentences=1,
-        )
-        return sherpa_onnx.OfflineTts(config)
-
-    def _resolve_speaker_id(self, voice_id: str) -> int:
-        """Map voice slug (e.g. 'af_sarah') to integer speaker ID for sherpa-onnx."""
-        # The voices.bin file is keyed by slug internally; sherpa-onnx exposes
-        # them as 0..N indices in the order they were packed. Use the loader's
-        # speaker_name_to_id map if available; otherwise default to 0.
-        try:
-            sid_map = getattr(self._tts, "speaker_name_to_id", None)
-            if sid_map and voice_id in sid_map:
-                return sid_map[voice_id]
-        except Exception:
-            pass
-        return 0  # fallback to first speaker
+    def _load(self) -> "Kokoro":
+        model_file = self.model_dir / "kokoro-v1.0.fp16-gpu.onnx"
+        voices_file = self.model_dir / "voices-v1.0.bin"
+        if not model_file.exists() or not voices_file.exists():
+            raise FileNotFoundError(
+                f"Kokoro v1.0 files missing under {self.model_dir}. "
+                f"Run scripts/setup_kokoro.py first."
+            )
+        return Kokoro(str(model_file), str(voices_file))
 
     def synthesize(self, text: str, voice_id: str) -> bytes:
-        sid = self._resolve_speaker_id(voice_id)
-        audio = self._tts.generate(text, sid=sid, speed=1.0)
-        # audio.samples is a list[float] in [-1, 1]; convert to int16 PCM bytes
-        import numpy as np
-        samples = np.asarray(audio.samples, dtype=np.float32)
+        """Render text → 24 kHz int16 PCM bytes using the named voice slug."""
+        samples, _rate = self._tts.create(text, voice=voice_id, speed=1.0, lang="en-us")
+        samples = np.asarray(samples, dtype=np.float32)
         pcm_int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
         return pcm_int16.tobytes()
 
     def stream(self, text: str, voice_id: str) -> Iterator[bytes]:
-        # sherpa-onnx Kokoro is not natively streaming; yield single chunk.
-        # Future: split text into sentences and yield per sentence.
+        # kokoro-onnx 0.4.9 is not natively streaming; yield single chunk.
         yield self.synthesize(text, voice_id)
 
     def list_voices(self) -> list:
-        sid_map = getattr(self._tts, "speaker_name_to_id", {}) or {}
-        return sorted(sid_map.keys())
+        """Return all kokoro v1.0 voice slugs packed in voices-v1.0.bin."""
+        return sorted(getattr(self._tts, "voices", {}).keys())
 
 
 register_backend("kokoro", lambda: KokoroBackend())
 ```
 
-NOTE: If Step 1 reveals the current spot_tts.py uses `kokoro-onnx` (a different package) rather than sherpa-onnx for Kokoro, adapt the import + config accordingly. The CLAUDE memory says sherpa-onnx is the TTS infra; verify before writing.
+NOTE: kokoro-onnx is already installed (pin-guarded in `requirements.txt` per CLAUDE memory). No new dep. Model files at `models/tts/kokoro-v1.0/` are already downloaded via `scripts/setup_kokoro.py` (existing Stage 1 work). Task 11 is therefore a no-op verification rather than a download — see updated Task 11.
 
-- [ ] **Step 3: Manual smoke test (requires Kokoro v1.1 model — see Task 11)**
-
-Defer execution of this step until after Task 11 downloads the model. Stub the smoke test command here for later:
-
-```bash
-# Run after Task 11:
-python -c "
-import os
-os.environ['SPOT_TTS_BACKEND'] = 'kokoro'
-from src.voice_control.tts import get_backend
-b = get_backend()
-print('voices:', b.list_voices()[:5])
-pcm = b.synthesize('hello from Spot', 'af_sarah')
-print(f'pcm bytes: {len(pcm)}')
-"
-```
-
-Expected after Task 11: voices list non-empty, PCM bytes > 0.
-
-- [ ] **Step 4: Commit (without smoke test verification — gated on Task 11)**
-
-```bash
-git add src/voice_control/tts/kokoro.py
-git commit -m "stage 2e1: KokoroBackend wrapping sherpa-onnx Kokoro multi-lang v1.1"
-```
-
----
-
-## Task 11: Write `scripts/setup_kokoro_v1_1.py` to download model
-
-**Files:**
-- Create: `scripts/setup_kokoro_v1_1.py`
-
-- [ ] **Step 1: Identify download URL**
-
-Reference: https://k2-fsa.github.io/sherpa/onnx/tts/pretrained_models/kokoro.html (kokoro-multi-lang-v1_1 entry).
-
-Confirm download URL via:
-
-```bash
-curl -sI 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2'
-```
-
-Expected: HTTP 302 redirect to GitHub release asset. (URL pattern follows the v1.0 release; check the sherpa-onnx releases page if URL is stale.)
-
-- [ ] **Step 2: Write `scripts/setup_kokoro_v1_1.py`**
-
-```python
-"""Download Kokoro multi-lang v1.1 (103 voices) model archive to SSD.
-
-Idempotent: skips download if target directory exists with expected files.
-Mirrors the pattern in scripts/setup_kokoro.py for v0.19.
-"""
-import sys
-import tarfile
-import urllib.request
-from pathlib import Path
-
-TARGET_DIR = Path("/mnt/ssd/tts-models/kokoro-multi-lang-v1_1")
-ARCHIVE_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2"
-ARCHIVE_NAME = "kokoro-multi-lang-v1_1.tar.bz2"
-
-EXPECTED_FILES = [
-    "model.onnx",
-    "voices.bin",
-    "tokens.txt",
-]
-
-
-def already_installed() -> bool:
-    if not TARGET_DIR.exists():
-        return False
-    return all((TARGET_DIR / f).exists() for f in EXPECTED_FILES)
-
-
-def download() -> Path:
-    TARGET_DIR.parent.mkdir(parents=True, exist_ok=True)
-    archive_path = TARGET_DIR.parent / ARCHIVE_NAME
-    if archive_path.exists():
-        print(f"Archive already downloaded: {archive_path}")
-        return archive_path
-    print(f"Downloading {ARCHIVE_URL} -> {archive_path}")
-    urllib.request.urlretrieve(ARCHIVE_URL, archive_path)
-    print(f"Downloaded {archive_path.stat().st_size / 1024 / 1024:.1f} MB")
-    return archive_path
-
-
-def extract(archive_path: Path) -> None:
-    print(f"Extracting {archive_path} -> {TARGET_DIR.parent}")
-    with tarfile.open(archive_path, "r:bz2") as tar:
-        tar.extractall(TARGET_DIR.parent)
-    print(f"Extracted to {TARGET_DIR}")
-
-
-def main():
-    if already_installed():
-        print(f"Kokoro v1.1 already installed at {TARGET_DIR}")
-        return
-    archive = download()
-    extract(archive)
-    if not already_installed():
-        print(f"ERROR: extraction did not produce expected files in {TARGET_DIR}")
-        sys.exit(1)
-    print("Kokoro v1.1 setup complete.")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-- [ ] **Step 3: Run setup**
-
-```bash
-python scripts/setup_kokoro_v1_1.py
-```
-
-Expected: download + extract, model files in `/mnt/ssd/tts-models/kokoro-multi-lang-v1_1/`.
-
-- [ ] **Step 4: Run Task 10's deferred smoke test**
+- [ ] **Step 3: Manual smoke test (model already present)**
 
 ```bash
 python -c "
@@ -1113,20 +1020,63 @@ os.environ['SPOT_TTS_BACKEND'] = 'kokoro'
 from src.voice_control.tts import get_backend
 import src.voice_control.tts.kokoro  # trigger registration
 b = get_backend()
-print('voices:', b.list_voices()[:5])
+voices = b.list_voices()
+print('voice count:', len(voices))
+assert 'af_sarah' in voices, f'expected af_sarah in voices, got: {voices[:10]}...'
+assert 'am_fenrir' in voices, 'expected am_fenrir (pirate voice)'
 pcm = b.synthesize('hello from Spot', 'af_sarah')
 print(f'pcm bytes: {len(pcm)}')
+assert len(pcm) > 1000, 'pcm should be > 1 KB for a short utterance'
 "
 ```
 
-Expected: voices list includes `af_sarah`, PCM bytes > 0.
+Expected: voice count >= 50; `af_sarah` and `am_fenrir` present; pcm bytes > 1000. Fail if any assertion fires — the existing kokoro-v1.0 model is required at `models/tts/kokoro-v1.0/`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/setup_kokoro_v1_1.py
-git commit -m "stage 2e1: setup script for Kokoro v1.1 multi-lang (103 voices)"
+git add src/voice_control/tts/kokoro.py
+git commit -m "stage 2e1: KokoroBackend wrapping kokoro-onnx v1.0 (54 voices)"
 ```
+
+---
+
+## Task 11: Verify Kokoro v1.0 model files present (no download needed)
+
+**Files:** none (verification only)
+
+The kokoro v1.0 model (54 voices) was downloaded in Stage 1 via `scripts/setup_kokoro.py`. The 6 persona voice slugs (`af_sarah`, `am_fenrir`, `am_onyx`, `bm_george`, `bm_lewis`, `af_nova`) are all in `voices-v1.0.bin`. No new model download.
+
+- [ ] **Step 1: Verify model files exist**
+
+```bash
+ls -lh models/tts/kokoro-v1.0/
+```
+
+Expected: directory exists with `kokoro-v1.0.fp16-gpu.onnx` (~85 MB) and `voices-v1.0.bin`. If missing, run the existing `scripts/setup_kokoro.py` first (do NOT add a new download script).
+
+- [ ] **Step 2: Confirm all six persona voice slugs are packed**
+
+```bash
+python -c "
+from kokoro_onnx import Kokoro
+from pathlib import Path
+root = Path('models/tts/kokoro-v1.0')
+k = Kokoro(str(root / 'kokoro-v1.0.fp16-gpu.onnx'), str(root / 'voices-v1.0.bin'))
+needed = ['af_sarah', 'am_fenrir', 'am_onyx', 'bm_george', 'bm_lewis', 'af_nova']
+voices = set(getattr(k, 'voices', {}).keys())
+missing = [v for v in needed if v not in voices]
+print(f'voice count: {len(voices)}')
+print(f'persona voices: missing={missing}')
+assert not missing, f'persona voice(s) not in v1.0: {missing}'
+"
+```
+
+Expected: voice count >= 50; `missing=[]`. If any persona voice is missing, update `config/personas.yaml` to a slug that exists OR pin a model upgrade as a separate follow-up task.
+
+- [ ] **Step 3: No commit**
+
+Verification-only task. Next task runs Task 10's smoke test (which now executes against the already-present model).
 
 ---
 
@@ -1306,7 +1256,7 @@ git commit -m "stage 2e1: ElevenLabs Flash v2.5 backend with pcm_24000 streaming
 
 - [ ] **Step 1: Dispatch caveman:cavecrew-reviewer**
 
-Agent prompt: *"Review `src/voice_control/tts/` (init, kokoro, elevenlabs) + scripts/setup_kokoro_v1_1.py + their tests. Focus: secret handling (API key never logged), HTTP timeout absence on streams, registration side effects (module-import-time `register_backend` calls), exception surface on missing model files. One line per finding, severity tagged."*
+Agent prompt: *"Review `src/voice_control/tts/` (init, kokoro, elevenlabs) + their tests. Focus: secret handling (API key never logged), HTTP timeout absence on streams, registration side effects (module-import-time `register_backend` calls), exception surface on missing model files. One line per finding, severity tagged."*
 
 Range: `git log --oneline HEAD~5..HEAD`
 
@@ -1330,7 +1280,7 @@ git commit -m "stage 2e1: address cavecrew review findings (tts backends)"
 sed -n '195,300p' src/voice_control/llm_brain.py
 ```
 
-Confirm: `MAX_HISTORY=12` at line ~31, `_build_messages(self, transcript, state)` at line ~273, `process(self, transcript, state=None)` at line ~284.
+Confirm (post-2A T5): `MAX_HISTORY=12` at line ~31, `class LLMBrain:` (renamed from `SpotBrain` in 2A T5 step 4a) near line ~188, `_build_messages(self, transcript, state)` at line ~273, `process(self, transcript, state=None)` at line ~284 (rewritten in 2A T5 step 4b — single-path backend dispatch, history append now lives inside `process()` before the return). 2A T5 backends already accept the `sampling_overrides` kwarg on `chat()` — this task just feeds it from the persona.
 
 - [ ] **Step 2: Apply edits**
 
@@ -1382,10 +1332,25 @@ from src.voice_control.chatbot.persona import (
         return messages
 ```
 
-5. In `process()` after each successful turn, bump `turn_index`:
+5. Pass persona sampling overrides into `process()`'s `backend.chat(...)` call (post-2A T5, the call lives inside `process()` and accepts `sampling_overrides=...`). Locate the existing line `raw = backend.chat(system, user_history, on_token=..., profile=profile,)` and rewrite it as:
 
 ```python
-        # Existing code that appends to self.history follows; immediately after:
+        persona = get_persona(self.session_state.current_persona, self._persona_registry)
+        overrides = persona.sampling_overrides.get(profile) or None
+        raw = backend.chat(
+            system,
+            user_history,
+            on_token=getattr(self, "on_token_callback", None),
+            profile=profile,
+            sampling_overrides=overrides,
+        )
+```
+
+6. After the existing `self.history.append(...)` block inside `process()` (also from 2A T5), bump `turn_index`:
+
+```python
+        # Append block from 2A T5 (user turn + sanitized/normal assistant turn)
+        # already ran above; bump the SessionState turn counter immediately after:
         self.session_state.turn_index += 1
 ```
 
@@ -1404,10 +1369,18 @@ print('current persona:', b.session_state.current_persona)
 msgs = b._build_messages('hello', {'battery_percent': 85, 'current_location': 'lobby'})
 print('system message preview:')
 print(msgs[0]['content'][:500])
+
+# Verify sampling-overrides lookup compiles for both default + pirate.
+from src.voice_control.chatbot.persona import get_persona
+tg = get_persona('tour_guide', b._persona_registry)
+pirate = get_persona('pirate', b._persona_registry)
+assert tg.sampling_overrides.get('vlm') in (None, {}), 'tour_guide should have no vlm override'
+assert pirate.sampling_overrides['vlm']['temperature'] == 0.8, 'pirate vlm temp must be 0.8'
+print('sampling overrides wired OK')
 "
 ```
 
-Expected: registry size 6, persona "tour_guide", system message begins with the tour_guide prompt_prefix.
+Expected: registry size 6, persona "tour_guide", system message begins with the tour_guide prompt_prefix, `sampling overrides wired OK` printed.
 
 - [ ] **Step 5: Commit**
 
@@ -1533,22 +1506,24 @@ git commit -m "stage 2e1: set_persona action handler with fallback on unknown na
 
 ---
 
-## Task 17: Modify `spot_tts.py` — route synth through TTS backend dispatch
+## Task 17: Route `SpotTTS.speak` synth through TTS backend dispatch
 
 **Files:**
 - Modify: `src/voice_control/spot_tts.py`
 
+The `voice` parameter on `SpotTTS.speak(text, voice=None)` was added in 2A T11. This task swaps the kokoro-onnx-specific `_render` closure for one that dispatches through the backend registry, so `SPOT_TTS_BACKEND=elevenlabs` selects ElevenLabs at runtime without touching call sites. `SpotTTS.speak` remains the only public entry point — there is no `enqueue_render` module function.
+
 - [ ] **Step 1: Inspect current synth entry points**
 
 ```bash
-grep -nE "def |synthesize|generate|speak|enqueue" src/voice_control/spot_tts.py | head -30
+grep -nE "def |kokoro_onnx|self\._tts|speak\(|TTSChunker|enqueue_streaming" src/voice_control/spot_tts.py | head -40
 ```
 
-Identify the function called by the rest of the system to render speech (likely `enqueue_render`, `speak`, or similar).
+Expected: `class SpotTTS:` (~line 61), `def speak(self, text, voice=None)` (~line 162 post-2A T11), `self._tts.create(text, voice=voice, speed=speed, lang=DEFAULT_LANG)` (~line 183) — this is the call we replace.
 
 - [ ] **Step 2: Wire backend dispatch**
 
-Add the backend module-import + dispatch at the top of `spot_tts.py`:
+Add backend imports near the existing imports at the top of `spot_tts.py`:
 
 ```python
 # Stage 2E.1: route TTS synth through swappable backend registry
@@ -1557,20 +1532,30 @@ import src.voice_control.tts.elevenlabs  # noqa: F401  (registers backend)
 from src.voice_control.tts import get_backend
 ```
 
-In the synth function: instead of directly calling sherpa-onnx, resolve the backend and call `backend.synthesize(text, voice_id)`. Voice ID resolution requires knowing the current persona — accept `voice_id` as an explicit parameter (caller passes it from the persona registry lookup) OR look it up here from the brain instance's session state.
-
-Cleanest: caller (spot_dispatch's "response" branch, or client_mic) passes both `text` and `voice_id` to `enqueue_render` or equivalent. Modify the signature additively:
+Inside `SpotTTS.speak()`, replace the kokoro-onnx-specific `_render` closure with a backend-dispatched one. The wrapping logic (volume snapshot, latency hooks, `self._player.enqueue_render(_render, ...)`) is unchanged — only the closure body swaps:
 
 ```python
-def enqueue_render(text: str, voice_id: Optional[str] = None) -> None:
+def _render():
     backend = get_backend()
-    if voice_id is None:
-        voice_id = _default_voice_for_backend(backend)  # e.g. "af_sarah" for kokoro
-    pcm_bytes = backend.synthesize(text, voice_id)
-    # ... existing playback path (queue to audio player at 24kHz)
+    use_voice = voice or _default_voice_for_backend(backend)
+    pcm_bytes = backend.synthesize(text, use_voice)
+    # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
+    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+    if gain != 1.0:
+        samples = samples * gain
+    return samples, 24000
 ```
 
-If the current implementation has a different shape (e.g. streams chunks directly), adapt — use `backend.stream(...)` instead. Goal: replace the direct sherpa-onnx call with the backend abstraction without changing playback or queue semantics.
+Drop the `self._tts = ...` initialization in `SpotTTS.__init__` and the `_load()` method body — the kokoro-onnx Kokoro instance now lives inside `KokoroBackend` (T10). Replace `is_available()` to check backend registration:
+
+```python
+def is_available(self) -> bool:
+    try:
+        get_backend()
+        return True
+    except Exception:
+        return False
+```
 
 - [ ] **Step 3: Add `_default_voice_for_backend` helper**
 
@@ -1582,15 +1567,16 @@ def _default_voice_for_backend(backend) -> str:
         return "af_sarah"
     if "ElevenLabs" in name:
         return "21m00Tcm4TlvDq8ikWAM"  # Rachel
-    return ""  # backend may raise on empty — that's intended
+    return ""  # backend may raise on empty — intentional surface for bad config
 ```
 
 - [ ] **Step 4: Smoke test (Kokoro path)**
 
 ```bash
 SPOT_TTS_BACKEND=kokoro python -c "
-import src.voice_control.spot_tts as tts
-tts.enqueue_render('Hello from the Kokoro backend.', 'af_sarah')
+from src.voice_control.spot_tts import get_tts
+tts = get_tts()
+tts.speak('Hello from the Kokoro backend.', voice='af_sarah')
 import time; time.sleep(2)
 "
 ```
@@ -1601,19 +1587,36 @@ Expected: audible "Hello from the Kokoro backend." through speakers.
 
 ```bash
 SPOT_TTS_BACKEND=elevenlabs python -c "
-import src.voice_control.spot_tts as tts
-tts.enqueue_render('Hello from the ElevenLabs backend.', '21m00Tcm4TlvDq8ikWAM')
+from src.voice_control.spot_tts import get_tts
+tts = get_tts()
+tts.speak('Hello from the ElevenLabs backend.', voice='21m00Tcm4TlvDq8ikWAM')
 import time; time.sleep(3)
 "
 ```
 
 Expected: audible Rachel voice through speakers.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Smoke test (TTSChunker still works)**
+
+```bash
+SPOT_TTS_BACKEND=kokoro python -c "
+from src.voice_control.spot_tts import get_tts
+tts = get_tts()
+sink = tts.enqueue_streaming(voice='af_sarah')
+# Feed a short fake JSON delta with two sentences in 'response'.
+for delta in ['{\"actions\":[],\"', 'response\":\"Hello world. ', 'How are you?\"}']:
+    sink(delta)
+import time; time.sleep(3)
+"
+```
+
+Expected: two audible sentences. Confirms the chunker path (2A T11) still routes through `speak()` after the backend swap.
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/voice_control/spot_tts.py
-git commit -m "stage 2e1: route spot_tts synth through swappable TTSBackend dispatch"
+git commit -m "stage 2e1: route SpotTTS.speak synth through swappable TTSBackend dispatch"
 ```
 
 ---
@@ -1632,20 +1635,34 @@ grep -nE "enqueue_render|spot_tts|speak\(" src/voice_control/*.py | head -20
 
 Locate every site that hands a `response` string to TTS.
 
-- [ ] **Step 2: Add voice resolution at each call site**
+- [ ] **Step 2: Add voice resolution at each call site (streaming-aware)**
 
-At each site, before calling `enqueue_render(response)`, resolve the current voice ID:
+Post-2A T11, the streaming TTSChunker owns the spoken side — `client_mic.voice_loop` calls `tts.enqueue_streaming(voice=…)` BEFORE `brain.process()`. The voice ID must be resolved up-front so every sentence chunk from one turn shares the same voice. Pre-2A call sites that still call `tts.speak(response)` directly (e.g. the VLM describe branch) get the same voice resolution.
+
+Edit `src/voice_control/client_mic.py` voice_loop:
 
 ```python
-from src.voice_control.chatbot.persona import get_persona
-persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
+from src.voice_control.chatbot.persona import get_persona, voice_id_for
+
 backend_name = os.environ.get("SPOT_TTS_BACKEND", "kokoro")
-voice_key = "elevenlabs" if backend_name == "elevenlabs" else "kokoro_v1"
-voice_id = persona.voices.get(voice_key) or _default_voice_for_backend(get_backend())
-enqueue_render(response, voice_id=voice_id)
+persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
+voice_id = voice_id_for(persona, backend_name) or None   # None lets SpotTTS pick the default
+
+on_token = tts.enqueue_streaming(voice=voice_id)        # was: tts.enqueue_streaming() in 2A T11
+brain.on_token_callback = on_token
+try:
+    result = brain.process(clean, spot_state)
+finally:
+    brain.on_token_callback = None
+
+dispatch(result["actions"])
 ```
 
-Consider extracting this into a helper in `chatbot/persona.py` like `voice_id_for(persona, backend_name)` to avoid copy-paste.
+For any remaining `tts.speak(text)` call sites NOT in the streaming loop (VLM describe direct render, fallback paths), pass the same voice:
+
+```python
+tts.speak(text, voice=voice_id)
+```
 
 - [ ] **Step 3: Add the helper**
 
@@ -1691,7 +1708,7 @@ git commit -m "stage 2e1: resolve persona-mapped voice_id at TTS call sites"
 grep -n "self.history.append" src/voice_control/llm_brain.py
 ```
 
-The `process()` method appends to history at end of turn (~line 417-423). Best site to also write the conversation log.
+Post-2A T5, `process()` is rewritten and the append block lives inside the new `process()` body (just before the `[Brain-timing]` print and `return {...}`). Exact line numbers shifted from pre-2A (was ~417-423). The append block is the natural site for the log_turn call.
 
 - [ ] **Step 2: Add ConversationLog instance to `LLMBrain.__init__`**
 
@@ -1702,7 +1719,7 @@ The `process()` method appends to history at end of turn (~line 417-423). Best s
 
 - [ ] **Step 3: Call `log_turn` after each successful turn**
 
-In `process()`, after history appends, before return:
+In `process()`, after the history-append block (from 2A T5) and immediately before the `[Brain-timing]` print + `return`:
 
 ```python
         try:
@@ -1718,7 +1735,7 @@ In `process()`, after history appends, before return:
                 persona=self.session_state.current_persona,
                 tts_backend=backend_name,
                 voice_id=voice_id,
-                latency_ms={"llm": int(elapsed * 1000)},
+                latency_ms={"llm": elapsed_ms},   # 2A T5 already measures in ms — pass directly
             )
         except Exception as e:
             print(f"[Brain] WARN: conversation log write failed: {e}")
@@ -1766,7 +1783,7 @@ cat .env.example
 # Stage 2E.1 — TTS multi-voice + multi-persona
 # ---------------------------------------------------------------------------
 
-# TTS backend selector. Default: kokoro (local, 103 voices via sherpa-onnx).
+# TTS backend selector. Default: kokoro (local, 54 voices via kokoro-onnx v1.0).
 # Alternatives: elevenlabs (cloud, requires ELEVENLABS_API_KEY).
 # SPOT_TTS_BACKEND=kokoro
 
@@ -1778,9 +1795,9 @@ cat .env.example
 # Free tier: 10,000 chars/month.
 # ELEVENLABS_API_KEY=
 
-# Kokoro v1.1 model directory. Default: /mnt/ssd/tts-models/kokoro-multi-lang-v1_1/
+# Kokoro model directory. Default: models/tts/kokoro-v1.0/ (in-repo, kokoro-onnx).
 # Override only if model was installed elsewhere.
-# SPOT_KOKORO_MODEL_DIR=/mnt/ssd/tts-models/kokoro-multi-lang-v1_1
+# SPOT_KOKORO_MODEL_DIR=models/tts/kokoro-v1.0
 ```
 
 - [ ] **Step 3: Commit**
@@ -1820,7 +1837,7 @@ export SPOT_TTS_BACKEND=kokoro
 # restart voice loop
 ```
 
-Reverts to local sherpa-onnx Kokoro v1.1. No code change required.
+Reverts to local kokoro-onnx v1.0. No code change required.
 
 ### Layer: collapse to single persona
 
@@ -1837,7 +1854,7 @@ Brain still loads registry but treats every utterance as default persona. To ful
 Symptom: Kokoro v1.1 install corrupt OR voice quality regression.
 
 ```bash
-export SPOT_KOKORO_MODEL_DIR=/mnt/ssd/tts-models/kokoro-en-v0_19
+export SPOT_KOKORO_MODEL_DIR=models/tts/kokoro-v1.0
 ```
 
 Old model directory preserved per Stage 1.5 — does not need re-download.
@@ -1914,7 +1931,7 @@ git diff tour_guide_upgrade_matteo...HEAD --stat
 
 Walk each changed file and ask:
 
-1. ASSUMPTIONS — did any task silently assume intent, behavior, or API surface? Specifically check `KokoroBackend._resolve_speaker_id` (does sherpa-onnx really expose `speaker_name_to_id`? if not, this is a silent assumption).
+1. ASSUMPTIONS — did any task silently assume intent, behavior, or API surface? Specifically check `KokoroBackend` reads the `voices` attribute from `kokoro_onnx.Kokoro` for `list_voices()` (does kokoro-onnx 0.4.9 expose a `voices` dict on the loaded instance? verify via `help(Kokoro)` in REPL).
 2. SIMPLICITY — strip unused params, premature flexibility. Specifically check: is `_default_voice_for_backend` actually used, or did Task 17/18 always pass voice_id? If always passed, drop the helper.
 3. SURGICAL — any adjacent refactors or formatting fixes not asked for? Revert them.
 4. VERIFICATION — does every new code path have a check (test or smoke test)?
@@ -1924,11 +1941,11 @@ Walk each changed file and ask:
 ```bash
 python -c "
 import sherpa_onnx
-help(sherpa_onnx.OfflineTts.generate)
+from kokoro_onnx import Kokoro; help(Kokoro)
 "
 ```
 
-If `speaker_name_to_id` is NOT a real attribute, replace `_resolve_speaker_id` with a deterministic slug→int map loaded from `voices.bin` metadata or from a hardcoded list shipped with the v1.1 release notes. Update `tests/voice_control/tts/test_elevenlabs.py` is unaffected (mocked); but the kokoro smoke test in Task 11 must pass.
+If `Kokoro.voices` is NOT a real attribute on the loaded instance, replace `list_voices()` with a hardcoded slug list pulled from the `voices-v1.0.bin` packing manifest (or fall back to enumerating the keys returned by a small probe call). `tests/voice_control/tts/test_elevenlabs.py` is unaffected (mocked); but the kokoro smoke test in Task 11 must pass.
 
 - [ ] **Step 3: Apply fixes inline**
 
@@ -2137,7 +2154,7 @@ gh pr create --base tour_guide_upgrade_matteo --title "stage 2e1: TTS A/B + mult
 `docs/project/stage2-rollback.md` §"After 2E.1" — env-var flips revert each layer:
 - `SPOT_TTS_BACKEND=kokoro` — revert cloud TTS
 - `SPOT_PERSONA=tour_guide` — collapse to single persona
-- `SPOT_KOKORO_MODEL_DIR=/mnt/ssd/tts-models/kokoro-en-v0_19` — revert to v0.19
+- `SPOT_KOKORO_MODEL_DIR=models/tts/kokoro-v1.0` — pin to the in-repo v1.0 model (default)
 
 ## Forward compatibility
 
