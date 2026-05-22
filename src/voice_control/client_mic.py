@@ -29,7 +29,7 @@ import threading
 from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
-import webrtcvad
+from sherpa_onnx import VoiceActivityDetector, VadModelConfig, SileroVadModelConfig
 import grpc
 
 
@@ -118,7 +118,8 @@ FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
-VAD_LEVEL = 1                    # webrtcvad aggressiveness (0-3); 1 = catches softer speech at close range
+SILERO_VAD_PATH = "/mnt/ssd/vad-models/silero_vad.onnx"
+VAD_WINDOW_SAMPLES = 512         # Silero default @ 16 kHz = 32 ms; VAD buffers internally
 SILENCE_TIMEOUT_SHORT = 0.8      # Silence timeout for short utterances (< 2s)
 SILENCE_TIMEOUT_LONG = 1.5       # Silence timeout for longer utterances (> 2s, e.g. chained commands)
 SILENCE_CROSSOVER = 2.0          # Switch from short to long timeout after this much speech (seconds)
@@ -648,8 +649,19 @@ def main():
     beep.set_player(_audio_player)
     beep.set_volume(args.volume)
 
-    # Initialize VAD
-    vad = webrtcvad.Vad(VAD_LEVEL)
+    # Initialize VAD (Silero via sherpa-onnx — replaces webrtcvad 2012-era model)
+    vad_cfg = VadModelConfig(
+        silero_vad=SileroVadModelConfig(
+            model=SILERO_VAD_PATH,
+            threshold=0.5,
+            min_silence_duration=0.5,
+            min_speech_duration=0.2,
+            window_size=VAD_WINDOW_SAMPLES,
+        ),
+        sample_rate=SAMPLE_RATE,
+        debug=False,
+    )
+    vad = VoiceActivityDetector(vad_cfg, buffer_size_in_seconds=10)
 
     # Wake word detector (sherpa-onnx keyword spotter)
     wake_detector = None
@@ -780,14 +792,14 @@ def main():
 
                 if frame_rms > effective_threshold:
                     try:
-                        is_speech = vad.is_speech(frame, SAMPLE_RATE)
+                        # Silero VAD: feed float32, then check global is_speech_detected.
+                        # 480-sample frames vs 512 window is fine — VAD buffers internally.
+                        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
+                        vad.accept_waveform(samples)
+                        is_speech = vad.is_speech_detected()
                     except Exception as e:
-                        # webrtcvad rejects mismatched frame sizes / rates,
-                        # which would normally fire silently here. Rate-limit
-                        # to one log line per minute so a real bug shows up
-                        # without flooding the console at 33 frames/sec.
                         if time.time() - last_vad_error_log_time > 60.0:
-                            print(f"[VAD] is_speech failed: {type(e).__name__}: {e}")
+                            print(f"[VAD] accept_waveform failed: {type(e).__name__}: {e}")
                             last_vad_error_log_time = time.time()
                         is_speech = False
                 else:
