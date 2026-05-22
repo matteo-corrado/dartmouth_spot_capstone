@@ -1,5 +1,7 @@
 """Parakeet TDT 0.6B v3 backend via onnx-asr (CUDA EP). Rollback for Nemotron."""
 import os
+import re
+import unicodedata
 from collections import Counter
 
 import numpy as np
@@ -16,12 +18,34 @@ HALLUCINATION_PHRASES = {
     "bye", "goodbye", "you", "the end", ".", "...",
 }
 
+# Phonetic-equivalent rewrites for v3 multilingual-head leaks. onnx-asr <=0.11
+# exposes `language=` only on Canary AED (see nemo.py:232); Parakeet TDT
+# inherits transducer decoding with no language token, so cross-language
+# misfires on short utterances are unfixable at the model layer.
+# Grow empirically — only add entries verified against the lab corpus.
+PHONETIC_REWRITES = {
+    "стоп": "stop",  # ru "stop" — observed in T12 on stop_lab.wav
+    "стой": "stop",  # ru "halt"
+}
+_NON_LATIN_RE = re.compile(r"[^\x00-\x7F]")
+
 
 def _is_repetitive(text: str, threshold: float = 0.7) -> bool:
     words = text.strip().lower().split()
     if len(words) < 4:
         return False
     return Counter(words).most_common(1)[0][1] / len(words) > threshold
+
+
+def _english_post(text: str) -> str:
+    """Rewrite known phonetic equivalents; drop unrecoverable non-Latin."""
+    key = "".join(c for c in text.lower() if not unicodedata.category(c).startswith("P")).strip()
+    if key in PHONETIC_REWRITES:
+        return PHONETIC_REWRITES[key]
+    if _NON_LATIN_RE.search(text):
+        print(f"[Parakeet] dropping non-Latin transcript: {text!r}")
+        return ""
+    return text
 
 
 class ParakeetBackend:
@@ -44,6 +68,9 @@ class ParakeetBackend:
             return ""
         audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         text = self.model.recognize(audio, sample_rate=SAMPLE_RATE).strip()
+        if not text:
+            return ""
+        text = _english_post(text)
         if not text:
             return ""
         low = text.lower().strip(".,!?")
