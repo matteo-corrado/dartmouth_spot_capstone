@@ -1131,8 +1131,22 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # Collect current robot state for context
             state = get_spot_state()
 
+            # Streaming TTS: chunker emits response sentences as they arrive.
+            # Suppresses itself if a describe action appears in the action list
+            # (GBNF emits actions before response), so the LLM's hallucinated
+            # camera description never reaches the speaker — client_mic.py
+            # speaks a stock ack instead (see describe_action branch below).
+            chunker = tts.enqueue_streaming() if tts and tts.is_available() else None
+            if chunker is not None:
+                brain.on_token_callback = chunker.accept
+
             t_llm_start = time.time()
-            result = brain.process(clean, state)
+            try:
+                result = brain.process(clean, state)
+            finally:
+                if chunker is not None:
+                    chunker.flush()
+                    brain.on_token_callback = None
             t_llm_end = time.time()
             print(f"[Timing] LLM: {t_llm_end - t_llm_start:.2f}s")
 
@@ -1175,8 +1189,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if actions:
                 beep.command_ok()
 
-                # Speak response first, then execute actions
-                if tts and response:
+                # Streaming chunker already spoke response sentence-by-sentence.
+                # Only fall back to tts.speak when chunker suppressed (describe
+                # path: `response` is now a stock ack) or chunker absent.
+                chunker_played = chunker is not None and not chunker.suppressed
+                if tts and response and not chunker_played:
                     tts.speak(response)
 
                 if trace:
@@ -1264,8 +1281,10 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 if trace:
                     trace.mark("dispatch_complete")
             else:
-                # Conversation only — speak response
-                if tts and response:
+                # Conversation only — chunker already streamed sentences; speak
+                # only if no chunker (legacy) or chunker suppressed.
+                chunker_played = chunker is not None and not chunker.suppressed
+                if tts and response and not chunker_played:
                     tts.speak(response)
                 print("(No physical action — conversation only)")
 

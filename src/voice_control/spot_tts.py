@@ -159,13 +159,16 @@ class SpotTTS:
         self.volume = max(0.0, min(MAX_VOLUME, float(volume)))
         return self.volume
 
-    def speak(self, text: str):
+    def speak(self, text: str, voice: str | None = None):
         """Enqueue ``text`` for synthesis and playback. Returns immediately.
 
         Kokoro inference happens inside the AudioPlayer worker thread, so
         the caller does not pay the ~1s rendering latency on its own thread.
         Multiple ``speak`` calls play in submission order — there is no
         cancel-and-replace behavior anymore.
+
+        Pass ``voice`` to override the instance default for a single call
+        (used by Stage 2E.1 personas without mutating ``self.voice``).
         """
         if not self.is_available():
             print(f'[TTS] Not available — would say: "{text}"')
@@ -176,7 +179,7 @@ class SpotTTS:
         # Snapshot the volume at submission time so a later set_volume() does
         # not retroactively change the gain of an in-flight utterance.
         gain = self.volume
-        voice = self.voice
+        voice = voice or self.voice
         speed = self.speed
 
         def _render():
@@ -219,6 +222,99 @@ class SpotTTS:
         """Block until all queued speech (and any other player work) drains."""
         if self._player:
             self._player.wait()
+
+    def enqueue_streaming(self, voice: str | None = None):
+        """Return a callable accepting LLM token deltas. Sentences flush to
+        speak() as they complete. The callable carries ``flush()`` to emit
+        any trailing partial sentence at stream end.
+        """
+        return TTSChunker(self, voice=voice)
+
+
+# ---------------------------------------------------------------------------
+# Streaming sentence chunker
+# ---------------------------------------------------------------------------
+import re
+
+_SENTENCE_END_RE = re.compile(r"[.!?]\s")
+# Matches `"response": "` (with optional whitespace between colon and opening
+# quote of the value) — llama-server prettyprints JSON with a space after `:`.
+_RESPONSE_KEY_RE = re.compile(r'"response"\s*:\s*"')
+_DESCRIBE_ACTION_RE = re.compile(r'"action"\s*:\s*"describe"')
+
+
+class TTSChunker:
+    """Buffer streaming LLM tokens; flush a sentence to TTS on each boundary.
+
+    Parses surrounding GBNF JSON incrementally: once inside the
+    ``"response":"…"`` string value, characters flow to a sentence buffer
+    that drains on each `.`/`!`/`?` followed by whitespace.
+
+    Instance is callable: ``chunker(delta)`` is shorthand for ``chunker.accept(delta)``.
+    """
+
+    def __init__(self, tts: "SpotTTS", voice: str | None = None):
+        self._tts = tts
+        self._voice = voice
+        self.buf: list[str] = []
+        self.in_response = False
+        self.escape = False
+        self.json_buf: list[str] = []
+        self.suppressed = False
+
+    def __call__(self, delta: str) -> None:
+        self.accept(delta)
+
+    def _emit(self, chunk: str) -> None:
+        if self.suppressed:
+            return
+        self._tts.speak(chunk, voice=self._voice)
+
+    def accept(self, delta: str) -> None:
+        for ch in delta:
+            self.json_buf.append(ch)
+            if not self.in_response:
+                tail = "".join(self.json_buf[-25:])
+                if _RESPONSE_KEY_RE.search(tail):
+                    # GBNF emits actions before response, so json_buf already
+                    # has all actions. If a describe is queued, suppress
+                    # response streaming — the LLM is hallucinating about a
+                    # camera view it can't actually see; client_mic.py will
+                    # speak a stock ack ("Let me take a look...") instead.
+                    full = "".join(self.json_buf)
+                    if _DESCRIBE_ACTION_RE.search(full):
+                        self.suppressed = True
+                    self.in_response = True
+                continue
+            if self.escape:
+                self.buf.append(ch)
+                self.escape = False
+            elif ch == "\\":
+                self.escape = True
+            elif ch == '"':
+                self.in_response = False
+                rest = "".join(self.buf).strip()
+                if rest:
+                    self._emit(rest)
+                self.buf = []
+            else:
+                self.buf.append(ch)
+                text = "".join(self.buf)
+                if _SENTENCE_END_RE.search(text):
+                    parts = _SENTENCE_END_RE.split(text)
+                    complete = parts[:-1]
+                    tail = parts[-1]
+                    if complete:
+                        self._emit(" ".join(s.strip() for s in complete if s.strip()))
+                    self.buf = list(tail)
+
+    def flush(self) -> None:
+        """Emit any trailing partial sentence (called at end of stream)."""
+        if self.in_response:
+            rest = "".join(self.buf).strip()
+            if rest:
+                self._emit(rest)
+        self.buf = []
 
 
 # ---------------------------------------------------------------------------
