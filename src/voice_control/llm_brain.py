@@ -21,6 +21,11 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 from src.voice_control.brain import get_backend
+from src.voice_control.chatbot.session_state import SessionState
+from src.voice_control.chatbot.persona import (
+    Persona, load_registry, get_persona, default_persona_name,
+    PersonaRegistryError,
+)
 
 _BACKEND = None
 
@@ -53,7 +58,7 @@ def _sampling_hint(transcript: str) -> str:
 DEFAULT_MODEL = "gemma4:e4b"
 VLM_MODEL = "gemma4:e4b"
 OLLAMA_URL = "http://localhost:11434"
-MAX_HISTORY = 12          # messages (6 user + 6 assistant exchanges)
+MAX_HISTORY = 24          # messages (12 user + 12 assistant exchanges) — 2E.1 bump
 REQUEST_TIMEOUT = 30.0    # seconds per request
 FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
 VLM_TIMEOUT = 60.0       # seconds — VLM inference is slower
@@ -228,6 +233,14 @@ class LLMBrain:
         self._available = None  # cached availability check
         self._first_request = True
 
+        # Stage 2E.1: persona registry + cross-turn session state.
+        try:
+            self._persona_registry = load_registry()
+        except PersonaRegistryError as e:
+            print(f"[Brain] WARN: persona registry load failed: {e}; using empty registry")
+            self._persona_registry = {}
+        self.session_state = SessionState(current_persona=default_persona_name())
+
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is pulled."""
         if self._available is not None:
@@ -296,14 +309,21 @@ class LLMBrain:
         return
 
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Build the message list for the Ollama chat API."""
-        state_lines = "\n".join(f"- {k}: {v}" for k, v in state.items())
-        system_content = SYSTEM_PROMPT + f"\n\nCurrent robot state:\n{state_lines}"
-
+        """Build message list. State is the live robot snapshot from
+        get_robot_state_dict(); session state is owned by self.session_state.
+        Persona prefix prepended BEFORE SYSTEM_PROMPT.
+        """
+        persona = get_persona(self.session_state.current_persona, self._persona_registry)
+        merged = {**state, **self.session_state.as_dict()}
+        state_lines = "\n".join(f"- {k}: {v}" for k, v in merged.items())
+        system_content = (
+            f"{persona.prompt_prefix}\n\n"
+            f"{SYSTEM_PROMPT}\n\n"
+            f"Current robot state:\n{state_lines}"
+        )
         messages = [{"role": "system", "content": system_content}]
         messages.extend(self.history)
         messages.append({"role": "user", "content": transcript})
-
         return messages
 
     def process(self, transcript: str, state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -322,12 +342,15 @@ class LLMBrain:
 
         profile = _sampling_hint(transcript)
         backend = _backend()
+        persona = get_persona(self.session_state.current_persona, self._persona_registry)
+        overrides = persona.sampling_overrides.get(profile) or None
         t0 = time.time()
         raw = backend.chat(
             system,
             user_history,
             on_token=getattr(self, "on_token_callback", None),
             profile=profile,
+            sampling_overrides=overrides,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
 
@@ -360,6 +383,8 @@ class LLMBrain:
             self.history.append({"role": "assistant", "content": sanitized})
         else:
             self.history.append({"role": "assistant", "content": raw})
+
+        self.session_state.turn_index += 1
 
         print(
             f"[Brain-timing] backend={backend.name} profile={profile} "
