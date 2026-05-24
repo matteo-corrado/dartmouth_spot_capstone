@@ -42,6 +42,21 @@ os.environ.setdefault("ONNX_PROVIDER", "CUDAExecutionProvider")
 from src.voice_control.audio_player import AudioPlayer
 from src.voice_control.latency import get_recorder
 
+# Stage 2E.1: route TTS synth through swappable backend registry.
+import src.voice_control.tts.kokoro      # noqa: F401  (registers backend)
+import src.voice_control.tts.elevenlabs  # noqa: F401  (registers backend)
+from src.voice_control.tts import get_backend
+
+
+def _default_voice_for_backend(backend) -> str:
+    """Pick a sensible default voice when caller didn't specify one."""
+    name = type(backend).__name__
+    if "Kokoro" in name:
+        return "af_sarah"
+    if "ElevenLabs" in name:
+        return "EXAVITQu4vr4xnSDxMaL"  # Sarah (Premade; Rachel Default retires 2026-12-31)
+    return ""  # backend may raise on empty — intentional surface for bad config
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -100,58 +115,30 @@ class SpotTTS:
         self._load_model()
 
     def _load_model(self):
-        """Load kokoro-onnx Kokoro TTS model on the CUDA Execution Provider."""
+        """Stage 2E.1: backend lives in the TTS registry (KokoroBackend or
+        ElevenLabsBackend). We just smoke-check the active backend here so
+        cold init still fails loud if kokoro-onnx/elevenlabs is misconfigured.
+        """
         if not self._player.is_available():
             print("[TTS] AudioPlayer unavailable — no audio playback")
             self._available = False
             return
 
-        if not MODEL_FILE.exists():
-            print(f"[TTS] Model not found: {MODEL_FILE}")
-            print(f"[TTS] Run: python scripts/setup_kokoro.py")
-            self._available = False
-            return
-        if not VOICES_FILE.exists():
-            print(f"[TTS] Voices file not found: {VOICES_FILE}")
-            print(f"[TTS] Run: python scripts/setup_kokoro.py")
-            self._available = False
-            return
-
         try:
-            from kokoro_onnx import Kokoro
-        except ImportError:
-            print("[TTS] kokoro-onnx not installed.")
-            print("[TTS] Install with: pip install --no-deps kokoro-onnx==0.4.9")
-            self._available = False
-            return
-
-        try:
-            print(f"[TTS] Loading kokoro-onnx Kokoro from: {MODEL_DIR}")
-            self._tts = Kokoro(model_path=str(MODEL_FILE), voices_path=str(VOICES_FILE))
+            backend = get_backend()
         except Exception as e:
-            print(f"[TTS] Failed to load model: {e}")
+            print(f"[TTS] Backend init failed: {e}")
+            print(f"[TTS] Check SPOT_TTS_BACKEND env (kokoro|elevenlabs)")
             self._available = False
             return
 
-        # Verify which provider the loaded session is actually using. If
-        # ONNX_PROVIDER didn't take effect (e.g. onnxruntime-gpu missing or
-        # CUDA init failed), this will silently fall back to CPU.
-        try:
-            active_providers = self._tts.sess.get_providers()
-            active = active_providers[0] if active_providers else "unknown"
-        except Exception:
-            active = "unknown"
-
+        backend_name = type(backend).__name__
         self._available = True
-        print(f"[TTS] Ready — voice={self.voice}, speed={self.speed}, "
-              f"provider={active}, sample_rate=24000Hz")
-        if active != "CUDAExecutionProvider":
-            print(f"[TTS] WARNING: not using CUDA — got '{active}'. "
-                  f"Check that onnxruntime-gpu 1.23.0 is installed and that "
-                  f"the ONNX_PROVIDER env var is set before module import.")
+        print(f"[TTS] Ready — backend={backend_name}, voice={self.voice}, "
+              f"speed={self.speed}, sample_rate=24000Hz")
 
     def is_available(self) -> bool:
-        """Check if TTS is ready (model loaded AND player ready)."""
+        """Check if TTS is ready (backend resolved AND player ready)."""
         return self._available is True
 
     def set_volume(self, volume: float) -> float:
@@ -179,17 +166,16 @@ class SpotTTS:
         # Snapshot the volume at submission time so a later set_volume() does
         # not retroactively change the gain of an in-flight utterance.
         gain = self.volume
-        voice = voice or self.voice
-        speed = self.speed
 
         def _render():
-            samples, rate = self._tts.create(
-                text, voice=voice, speed=speed, lang=DEFAULT_LANG
-            )
-            samples = np.asarray(samples, dtype=np.float32)
+            backend = get_backend()
+            use_voice = voice or self.voice or _default_voice_for_backend(backend)
+            pcm_bytes = backend.synthesize(text, use_voice)
+            # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
+            samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if gain != 1.0:
                 samples = samples * gain
-            return samples, rate
+            return samples, 24000
 
         # Latency hooks: stamp render/play boundaries on the current trace if
         # the latency recorder is initialized. No-op when disabled.
