@@ -60,3 +60,8 @@ ultralytics>=8.1.0
 # here prevents an accidental ultralytics upgrade from breaking the numpy 1.x
 # pin required by onnxruntime-gpu 1.23.0.
 opencv-python==4.11.0.86
+
+# Test-only — used by tests/ for new chatbot/tts modules. Safe runtime
+# isolation: never imported by production code paths. pin-guardian PASS
+# (2026-05-22): zero numpy/onnx/opencv transitive deps.
+pytest>=8.0,<9.0
