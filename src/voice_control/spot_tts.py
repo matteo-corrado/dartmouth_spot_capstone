@@ -169,7 +169,10 @@ class SpotTTS:
 
         def _render():
             backend = get_backend()
-            use_voice = voice or self.voice or _default_voice_for_backend(backend)
+            # self.voice is a Kokoro slug by default (e.g. af_sarah). Passing it
+            # to ElevenLabs yields a 404 voice_not_found. Backend default wins
+            # over self.voice; self.voice is last-resort only.
+            use_voice = voice or _default_voice_for_backend(backend) or self.voice
             pcm_bytes = backend.synthesize(text, use_voice)
             # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
