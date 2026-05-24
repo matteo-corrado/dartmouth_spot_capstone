@@ -14,11 +14,11 @@
 
 ## Pre-conditions
 
-- Branch off current `tour_guide_upgrade_matteo` HEAD (`stage1.5-complete` tag at `966a96d`).
+- Branch off `tour_guide_upgrade_matteo` HEAD post-Stage-2A (tag `stage2a-voice-complete` ≈ commit `d9b927b`; current HEAD `6851061` adds the 2E.1 voice-ID swap commit on top).
 - ElevenLabs API key obtained (free tier 10k chars/month sufficient for Tuesday demo). Store in `.env` as `ELEVENLABS_API_KEY=...`.
 - `/mnt/ssd/tts-models/` directory exists and is writable (created by Stage 1.5).
-- Current Ollama gemma4:e4b brain warm (smoke test: `curl -s http://localhost:11434/api/tags | grep gemma4`).
-- No `tests/` directory currently exists in repo — Task 1 sets it up.
+- Primary brain is llama.cpp at `:11435` (Gemma 4 E4B Q8_0, Stage 2A T4 systemd unit `llama-server.service`). Smoke test: `curl -sf http://127.0.0.1:11435/health | grep -q '"status":"ok"'`. Ollama is fallback-only via `SPOT_BRAIN_BACKEND=ollama`.
+- `tests/audio/` already exists (Stage 2A lab corpus). Task 2 only adds `tests/__init__.py`, `tests/conftest.py`, `tests/voice_control/...` subtree.
 
 ---
 
@@ -65,7 +65,7 @@
 
 ```bash
 git status                              # clean working tree expected
-git log --oneline -1                    # confirm dee6612 spec commit at HEAD
+git log --oneline -1                    # confirm post-Stage-2A HEAD (6851061 or later on tour_guide_upgrade_matteo)
 ls /mnt/ssd/tts-models/ 2>/dev/null || ls models/tts/    # confirm TTS model dir reachable
 grep -q ELEVENLABS_API_KEY .env && echo "key present" || echo "WARN: add ELEVENLABS_API_KEY to .env"
 
@@ -470,6 +470,8 @@ to confirm timbre matches each persona's vibe; swap any duds inside the
 
 - [ ] **Step 1: Generate 6 persona-flavored audition WAVs**
 
+> **NOTE (2026-05-22):** This step was pre-run during the voice-ID swap commit `6851061`. Six WAVs already sit in `/tmp/persona_audition/` (tour_guide_af_sarah, pirate_am_fenrir, snarky_am_onyx, butler_bm_george, shakespeare_bm_lewis, gen_z_af_nova). If `/tmp` has not been cleared since, skip directly to Step 2. Otherwise re-run the snippet.
+
 ```bash
 mkdir -p /tmp/persona_audition
 spot-env/bin/python - <<'PY'
@@ -573,7 +575,7 @@ def test_persona_has_prompt_prefix_and_voices():
     assert isinstance(pirate, Persona)
     assert "pirate" in pirate.prompt_prefix.lower()
     assert pirate.voices["kokoro_v1"] == "am_fenrir"
-    assert pirate.voices["elevenlabs"] == "pNInz6obpgDQGcFmaJgB"
+    assert pirate.voices["elevenlabs"] == "Xq2dbIWNPChFB77imiDe"
     # Persona with no override returns empty dict; pirate carries a vlm override.
     assert reg["butler"].sampling_overrides == {}
     assert pirate.sampling_overrides["vlm"]["temperature"] == 0.8
@@ -795,7 +797,7 @@ def test_log_appends_multiple_turns(tmp_path):
         log.log_turn(
             transcript=f"turn {i}", response=f"resp {i}",
             actions=[], persona="pirate", tts_backend="elevenlabs",
-            voice_id="pNInz6obpgDQGcFmaJgB", latency_ms={},
+            voice_id="Xq2dbIWNPChFB77imiDe", latency_ms={},
         )
     today = time.strftime("%Y-%m-%d")
     log_file = tmp_path / f"{today}.jsonl"
@@ -881,24 +883,9 @@ git commit -m "stage 2e1: conversation log JSONL writer with daily rotation"
 
 ---
 
-## Task 8: Mid-plan checkpoint #1 — caveman:cavecrew-reviewer on Tasks 4-7
+## Task 8: RETIRED — folded into Task 13
 
-- [ ] **Step 1: Dispatch caveman:cavecrew-reviewer**
-
-Agent prompt: *"Review the new code in commits since branch creation. Focus: `src/voice_control/chatbot/` (session_state.py, persona.py, conversation_log.py) and their tests. Check for: silent error swallowing, missing type hints on public APIs, unsafe YAML loading (must use safe_load), file-write race conditions, naming consistency with existing codebase patterns. One line per finding, severity tagged."*
-
-Range: `git log --oneline tour_guide_upgrade_matteo..HEAD`
-
-- [ ] **Step 2: Address findings**
-
-Apply fixes inline for each BLOCKER / HIGH finding. MEDIUM/LOW: triage — fix if cheap, defer to follow-up task otherwise.
-
-- [ ] **Step 3: Commit fixes**
-
-```bash
-git add -A
-git commit -m "stage 2e1: address cavecrew review findings"
-```
+> **Plan-trim 2026-05-22:** Two mid-plan reviewer gates collapsed to one. Task 13 now covers both `chatbot/` (Tasks 4-7) and `tts/` (Tasks 9-12) in a single combined cavecrew pass. Skip directly to Task 9.
 
 ---
 
@@ -1128,42 +1115,11 @@ git commit -m "stage 2e1: KokoroBackend wrapping kokoro-onnx v1.0 (54 voices)"
 
 ---
 
-## Task 11: Verify Kokoro v1.0 model files present (no download needed)
+## Task 11: RETIRED — rolled into Task 10 Step 3
 
-**Files:** none (verification only)
+> **Plan-trim 2026-05-22:** Task 10 Step 3's smoke test already asserts `voice count >= 50`, `'af_sarah' in voices`, `'am_fenrir' in voices`, and `len(pcm) > 1000` — which fully covers the file-presence + voice-packing checks this task duplicated. Skip directly to Task 12.
 
-The kokoro v1.0 model (54 voices) was downloaded in Stage 1 via `scripts/setup_kokoro.py`. The 6 persona voice slugs (`af_sarah`, `am_fenrir`, `am_onyx`, `bm_george`, `bm_lewis`, `af_nova`) are all in `voices-v1.0.bin`. No new model download.
-
-- [ ] **Step 1: Verify model files exist**
-
-```bash
-ls -lh models/tts/kokoro-v1.0/
-```
-
-Expected: directory exists with `kokoro-v1.0.fp16-gpu.onnx` (~85 MB) and `voices-v1.0.bin`. If missing, run the existing `scripts/setup_kokoro.py` first (do NOT add a new download script).
-
-- [ ] **Step 2: Confirm all six persona voice slugs are packed**
-
-```bash
-python -c "
-from kokoro_onnx import Kokoro
-from pathlib import Path
-root = Path('models/tts/kokoro-v1.0')
-k = Kokoro(str(root / 'kokoro-v1.0.fp16-gpu.onnx'), str(root / 'voices-v1.0.bin'))
-needed = ['af_sarah', 'am_fenrir', 'am_onyx', 'bm_george', 'bm_lewis', 'af_nova']
-voices = set(getattr(k, 'voices', {}).keys())
-missing = [v for v in needed if v not in voices]
-print(f'voice count: {len(voices)}')
-print(f'persona voices: missing={missing}')
-assert not missing, f'persona voice(s) not in v1.0: {missing}'
-"
-```
-
-Expected: voice count >= 50; `missing=[]`. If any persona voice is missing, update `config/personas.yaml` to a slug that exists OR pin a model upgrade as a separate follow-up task.
-
-- [ ] **Step 3: No commit**
-
-Verification-only task. Next task runs Task 10's smoke test (which now executes against the already-present model).
+If the smoke test in Task 10 Step 3 fails, run `ls -lh models/tts/kokoro-v1.0/` to confirm both `kokoro-v1.0.fp16-gpu.onnx` and `voices-v1.0.bin` are present; if not, run `scripts/setup_kokoro.py`.
 
 ---
 
@@ -1323,7 +1279,7 @@ ELEVENLABS_API_KEY=<your_key> SPOT_TTS_BACKEND=elevenlabs python -c "
 import src.voice_control.tts.elevenlabs  # trigger registration
 from src.voice_control.tts import get_backend
 b = get_backend()
-pcm = b.synthesize('Hello from Spot, this is the cloud voice test.', '21m00Tcm4TlvDq8ikWAM')
+pcm = b.synthesize('Hello from Spot, this is the cloud voice test.', 'EXAVITQu4vr4xnSDxMaL')  # Sarah (Premade; Rachel retires 2026-12-31)
 print(f'pcm bytes: {len(pcm)}')
 "
 ```
@@ -1339,19 +1295,23 @@ git commit -m "stage 2e1: ElevenLabs Flash v2.5 backend with pcm_24000 streaming
 
 ---
 
-## Task 13: Mid-plan checkpoint #2 — caveman:cavecrew-reviewer on Tasks 9-12
+## Task 13: Combined mid-plan checkpoint — caveman:cavecrew-reviewer on Tasks 4-12 (chatbot/ + tts/)
+
+> **Plan-trim 2026-05-22:** Combines original Task 8 (chatbot/ review) and Task 13 (tts/ review) into one pass. Run after both module trees ship, before integration begins in Task 14.
 
 - [ ] **Step 1: Dispatch caveman:cavecrew-reviewer**
 
-Agent prompt: *"Review `src/voice_control/tts/` (init, kokoro, elevenlabs) + their tests. Focus: secret handling (API key never logged), HTTP timeout absence on streams, registration side effects (module-import-time `register_backend` calls), exception surface on missing model files. One line per finding, severity tagged."*
+Agent prompt: *"Review the full Stage 2E.1 diff to date. Scope: `src/voice_control/chatbot/` (session_state.py, persona.py, conversation_log.py) AND `src/voice_control/tts/` (init, kokoro, elevenlabs), plus their tests. Check for: (1) silent error swallowing, (2) missing type hints on public APIs, (3) unsafe YAML loading (must use safe_load), (4) file-write race conditions, (5) secret handling (ELEVENLABS_API_KEY never logged), (6) HTTP timeout absence on streams, (7) registration side effects (module-import-time register_backend calls), (8) exception surface on missing model files, (9) naming consistency with existing codebase patterns. One line per finding, severity tagged."*
 
-Range: `git log --oneline HEAD~5..HEAD`
+Range: `git log --oneline tour_guide_upgrade_matteo..HEAD`
 
 - [ ] **Step 2: Address findings; commit fixes**
 
+Apply fixes inline for each BLOCKER / HIGH finding. MEDIUM/LOW: triage — fix if cheap, defer to follow-up task otherwise.
+
 ```bash
 git add -A
-git commit -m "stage 2e1: address cavecrew review findings (tts backends)"
+git diff --cached --quiet && echo "no fixes needed" || git commit -m "stage 2e1: address cavecrew review findings (chatbot/ + tts/)"
 ```
 
 ---
@@ -1364,16 +1324,16 @@ git commit -m "stage 2e1: address cavecrew review findings (tts backends)"
 - [ ] **Step 1: Read existing `_build_messages` and bracketing context**
 
 ```bash
-sed -n '195,300p' src/voice_control/llm_brain.py
+sed -n '50,370p' src/voice_control/llm_brain.py
 ```
 
-Confirm (post-2A T5): `MAX_HISTORY=12` at line ~31, `class LLMBrain:` (renamed from `SpotBrain` in 2A T5 step 4a) near line ~188, `_build_messages(self, transcript, state)` at line ~273, `process(self, transcript, state=None)` at line ~284 (rewritten in 2A T5 step 4b — single-path backend dispatch, history append now lives inside `process()` before the return). 2A T5 backends already accept the `sampling_overrides` kwarg on `chat()` — this task just feeds it from the persona.
+Confirm (post-2A T5/T12, verified 2026-05-22): `MAX_HISTORY=12` at line 56, `class LLMBrain:` (renamed from `SpotBrain` in 2A T5 step 4a) at line 213, `_build_messages(self, transcript, state)` at line 298, `process(self, transcript, state=None)` at line 309 (rewritten in 2A T5 step 4b — single-path backend dispatch, history append at lines 356/360/362 inside `process()` before the return). Line numbers may have drifted again if other 2A patches landed since 2026-05-22; re-confirm with the `grep -nE` audit before editing. 2A T5 backends already accept the `sampling_overrides` kwarg on `chat()` — this task just feeds it from the persona.
 
 - [ ] **Step 2: Apply edits**
 
 Edits to `src/voice_control/llm_brain.py`:
 
-1. Change `MAX_HISTORY = 12` → `MAX_HISTORY = 24` (line ~31).
+1. Change `MAX_HISTORY = 12` → `MAX_HISTORY = 24` (line 56 as of 2026-05-22).
 
 2. Add imports near the top (after existing imports):
 
@@ -1653,7 +1613,7 @@ def _default_voice_for_backend(backend) -> str:
     if "Kokoro" in name:
         return "af_sarah"
     if "ElevenLabs" in name:
-        return "21m00Tcm4TlvDq8ikWAM"  # Rachel
+        return "EXAVITQu4vr4xnSDxMaL"  # Sarah (Premade; Rachel Default retires 2026-12-31)
     return ""  # backend may raise on empty — intentional surface for bad config
 ```
 
@@ -1676,7 +1636,7 @@ Expected: audible "Hello from the Kokoro backend." through speakers.
 SPOT_TTS_BACKEND=elevenlabs python -c "
 from src.voice_control.spot_tts import get_tts
 tts = get_tts()
-tts.speak('Hello from the ElevenLabs backend.', voice='21m00Tcm4TlvDq8ikWAM')
+tts.speak('Hello from the ElevenLabs backend.', voice='EXAVITQu4vr4xnSDxMaL')  # Sarah (Premade)
 import time; time.sleep(3)
 "
 ```
@@ -1770,7 +1730,7 @@ def test_voice_id_for():
     reg = load_registry(REGISTRY_PATH)
     pirate = reg["pirate"]
     assert voice_id_for(pirate, "kokoro") == "am_fenrir"
-    assert voice_id_for(pirate, "elevenlabs") == "pNInz6obpgDQGcFmaJgB"
+    assert voice_id_for(pirate, "elevenlabs") == "Xq2dbIWNPChFB77imiDe"
 ```
 
 Run: `python -m pytest tests/voice_control/chatbot/test_persona.py::test_voice_id_for -v`. Expected: pass.
@@ -1848,6 +1808,544 @@ Expected: a single JSONL line with the turn's transcript + response + persona + 
 ```bash
 git add src/voice_control/llm_brain.py
 git commit -m "stage 2e1: write per-turn JSONL conversation log"
+```
+
+---
+
+## Task 19a: Voice-controlled `add_persona` action — ElevenLabs Library discovery + claim + in-character ACK (TDD)
+
+**Files:**
+- Create: `src/voice_control/chatbot/voice_discovery.py`
+- Create: `tests/voice_control/chatbot/test_voice_discovery.py`
+- Create: `scripts/prewarm_personas.py`
+- Modify: `src/voice_control/chatbot/persona.py` (add `ack_template` field)
+- Modify: `tests/voice_control/chatbot/test_persona.py` (assert new field)
+- Modify: `src/voice_control/spot_dispatch.py` (add `do_add_persona` handler)
+- Modify: `src/voice_control/llm_brain.py` (SYSTEM_PROMPT add `add_persona` bullet + dynamic persona-list rebuild)
+- Modify: `config/personas.yaml` (add `ack_template` per existing persona; pre-warm script appends 8 new)
+
+**Design rationale (research-driven 2026-05-22; see chat transcripts for full source URLs):**
+
+Optimization stack:
+1. **Two-tier persona cache.** Pre-warm 8 stock personas (cowboy/robot/wizard/surfer/drill_sergeant/narrator/scientist/news_anchor) at install via `scripts/prewarm_personas.py` — zero API calls per-turn for common requests. Cold tier hits Library on miss.
+2. **Library search FIRST** (~700ms total): `voices.get_shared(search=description, sort="popularity", page_size=5)` → `voices.share(public_user_id=, voice_id=, new_name=)` → flip persona. Note `share()` is singular, NOT `add_sharing()` — Context7-verified Python SDK method.
+3. **Voice Design SKIPPED for v1.** API takes 1-2s+ for generation + second materialize call. Exceeds the latency budget. Documented as not real-time-suitable by ElevenLabs. Reserve as post-Tuesday admin-only tool.
+4. **In-character ACK** in outgoing persona ("Hold yer horses, partner, swappin' hats...") via `tts.speak()` — spoken WHILE the claim worker thread runs in parallel. Gaps >800ms erode trust (Cresta/Sierra/LiveKit benchmarks). Each persona carries an `ack_template` string in yaml.
+5. **Persistent module-level ElevenLabs client** — HTTP/2 connection reuse, saves ~100-300ms TLS handshake per call.
+6. **LRU eviction** on `voices.share()` quota fail: delete oldest `spot_`-prefixed custom voice, retry once. Quota = 10 free / 30 Creator / 160 Pro. Whether Library claims actually consume slots is contested (research conflict); eviction is harmless safety net either way and is live-verified in Step 6.
+7. **LLM disambiguation `add_persona` vs `set_persona`** via SYSTEM_PROMPT examples + dynamic persona-list rebuild from `self._persona_registry.keys()` — pre-warmed personas appear in the known-list, so LLM uses `set_persona`; truly novel personas trigger `add_persona`.
+
+Out of scope (deferred — see Follow-up tasks section at end of plan): yaml persistence of runtime-added personas, LLM-generated prompt_prefix, voice preview/pick UI, Voice Design fallback admin tool, WS streaming migration, SIGHUP hot-reload.
+
+- [ ] **Step 1: Write failing test for `voice_discovery.find_and_claim`**
+
+`tests/voice_control/chatbot/test_voice_discovery.py`:
+
+```python
+import os
+from unittest.mock import MagicMock, patch
+import pytest
+
+
+def test_find_and_claim_returns_voice_id_on_match(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
+    # Reset module-level client singleton between tests
+    import src.voice_control.chatbot.voice_discovery as vd
+    vd._client = None
+    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+        instance = MagicMock()
+        MockClient.return_value = instance
+        mock_voice = MagicMock(voice_id="library_voice_abc",
+                                public_owner_id="owner_xyz",
+                                name="Cowboy Joe")
+        instance.voices.get_shared.return_value = MagicMock(voices=[mock_voice])
+        instance.voices.share.return_value = MagicMock(voice_id="claimed_voice_123")
+
+        result = vd.find_and_claim("deep gravelly cowboy", "cowboy")
+        assert result == "claimed_voice_123"
+        instance.voices.get_shared.assert_called_once()
+        instance.voices.share.assert_called_once_with(
+            public_user_id="owner_xyz",
+            voice_id="library_voice_abc",
+            new_name="spot_cowboy",
+        )
+
+
+def test_find_and_claim_returns_none_on_no_match(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
+    import src.voice_control.chatbot.voice_discovery as vd
+    vd._client = None
+    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+        instance = MagicMock()
+        MockClient.return_value = instance
+        instance.voices.get_shared.return_value = MagicMock(voices=[])
+        result = vd.find_and_claim("wholly nonsensical persona", "weird")
+        assert result is None
+        instance.voices.share.assert_not_called()
+
+
+def test_find_and_claim_returns_none_on_api_failure(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
+    import src.voice_control.chatbot.voice_discovery as vd
+    vd._client = None
+    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+        instance = MagicMock()
+        MockClient.return_value = instance
+        instance.voices.get_shared.side_effect = Exception("network error")
+        result = vd.find_and_claim("cowboy", "cowboy")
+        assert result is None
+
+
+def test_lru_eviction_retries_on_quota_fail(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
+    import src.voice_control.chatbot.voice_discovery as vd
+    vd._client = None
+    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+        instance = MagicMock()
+        MockClient.return_value = instance
+        mock_voice = MagicMock(voice_id="lib_v", public_owner_id="own", name="V")
+        instance.voices.get_shared.return_value = MagicMock(voices=[mock_voice])
+        # First share raises quota error; eviction succeeds; retry succeeds
+        instance.voices.share.side_effect = [
+            Exception("quota_exceeded"),
+            MagicMock(voice_id="post_evict_id"),
+        ]
+        old_voice = MagicMock(voice_id="old_v", name="spot_old")
+        instance.voices.search.return_value = MagicMock(voices=[old_voice])
+
+        result = vd.find_and_claim("cowboy", "cowboy")
+        assert result == "post_evict_id"
+        instance.voices.delete.assert_called_once_with(voice_id="old_v")
+```
+
+- [ ] **Step 2: Run test (expect failure — module missing)**
+
+```bash
+python -m pytest tests/voice_control/chatbot/test_voice_discovery.py -v
+```
+
+Expected: import error.
+
+- [ ] **Step 3: Write `src/voice_control/chatbot/voice_discovery.py`**
+
+```python
+"""Runtime ElevenLabs Library voice discovery + claim.
+
+Library search first (voices.get_shared) — fast (~300ms), library claims may
+or may not consume voice slots (research conflict; live-verified at install).
+voices.share() to claim into account — returns permanent voice_id.
+LRU eviction on quota fail: delete oldest spot_-prefixed custom voice, retry once.
+Persistent module-level ElevenLabs client = HTTP/2 reuse (saves ~100ms TLS/call).
+Voice Design API NOT used — too slow (1-2s+ gen, two-step) for live demo.
+"""
+import logging
+import os
+import threading
+from typing import Optional
+
+from elevenlabs.client import ElevenLabs
+
+logger = logging.getLogger(__name__)
+
+_CLIENT_LOCK = threading.Lock()
+_client: Optional[ElevenLabs] = None
+
+
+def _get_client() -> ElevenLabs:
+    global _client
+    with _CLIENT_LOCK:
+        if _client is None:
+            api_key = os.environ.get("ELEVENLABS_API_KEY")
+            if not api_key:
+                raise RuntimeError("ELEVENLABS_API_KEY not set")
+            _client = ElevenLabs(api_key=api_key)
+        return _client
+
+
+def _evict_oldest_spot_voice(client: ElevenLabs) -> bool:
+    try:
+        existing = client.voices.search()
+    except Exception as e:
+        logger.warning(f"[VoiceDiscovery] voices.search() for eviction failed: {e}")
+        return False
+    candidates = [v for v in existing.voices if (v.name or "").startswith("spot_")]
+    if not candidates:
+        return False
+    victim = candidates[0]
+    try:
+        client.voices.delete(voice_id=victim.voice_id)
+        logger.info(f"[VoiceDiscovery] evicted {victim.name} ({victim.voice_id})")
+        return True
+    except Exception as e:
+        logger.warning(f"[VoiceDiscovery] delete failed: {e}")
+        return False
+
+
+def find_and_claim(description: str, persona_name: str) -> Optional[str]:
+    """Search ElevenLabs Library, claim top match, return new voice_id.
+    Returns None on miss / network error / quota exhaustion (after eviction)."""
+    try:
+        client = _get_client()
+    except RuntimeError as e:
+        logger.warning(f"[VoiceDiscovery] {e}")
+        return None
+
+    try:
+        result = client.voices.get_shared(
+            search=description,
+            sort="popularity",
+            page_size=5,
+        )
+    except Exception as e:
+        logger.warning(f"[VoiceDiscovery] get_shared failed: {e}")
+        return None
+    if not result.voices:
+        logger.info(f"[VoiceDiscovery] no library match for '{description}'")
+        return None
+
+    top = result.voices[0]
+    new_name = f"spot_{persona_name}"
+    try:
+        added = client.voices.share(
+            public_user_id=top.public_owner_id,
+            voice_id=top.voice_id,
+            new_name=new_name,
+        )
+        return added.voice_id
+    except Exception as e:
+        msg = str(e).lower()
+        if "quota" not in msg and "limit" not in msg:
+            logger.warning(f"[VoiceDiscovery] share failed (non-quota): {e}")
+            return None
+        if not _evict_oldest_spot_voice(client):
+            logger.warning("[VoiceDiscovery] eviction failed; cannot retry share")
+            return None
+        try:
+            added = client.voices.share(
+                public_user_id=top.public_owner_id,
+                voice_id=top.voice_id,
+                new_name=new_name,
+            )
+            return added.voice_id
+        except Exception as e2:
+            logger.warning(f"[VoiceDiscovery] share retry failed: {e2}")
+            return None
+```
+
+- [ ] **Step 4: Run test (expect pass)**
+
+```bash
+python -m pytest tests/voice_control/chatbot/test_voice_discovery.py -v
+```
+
+Expected: 4 passed.
+
+- [ ] **Step 5: Add `ack_template` field to `Persona` + update yaml + test**
+
+Append `ack_template` field to `Persona` dataclass in `src/voice_control/chatbot/persona.py` (added in Task 6):
+
+```python
+@dataclass
+class Persona:
+    name: str
+    prompt_prefix: str
+    voices: dict
+    sampling_overrides: dict = field(default_factory=dict)
+    ack_template: str = "Give me a second."  # NEW — spoken in CURRENT persona while add_persona runs
+```
+
+Update `load_registry()` body to read it:
+```python
+registry[name] = Persona(
+    name=name,
+    prompt_prefix=prefix,
+    voices=voices,
+    sampling_overrides=sampling_overrides,
+    ack_template=entry.get("ack_template", "Give me a second."),
+)
+```
+
+Append an `ack_template:` line per persona in `config/personas.yaml`. Examples:
+
+```yaml
+tour_guide:
+  prompt_prefix: ...
+  voices: ...
+  ack_template: "Just a moment while I sort that out."
+
+pirate:
+  prompt_prefix: ...
+  voices: ...
+  ack_template: "Aye, hold fast while I do the thing, matey!"
+
+snarky:
+  ack_template: "Oh, this'll take a moment. Try to contain your excitement."
+
+butler:
+  ack_template: "One moment, please."
+
+shakespeare:
+  ack_template: "Hark! Pray grant me but a moment's pause."
+
+gen_z:
+  ack_template: "K give me one sec, no cap."
+```
+
+Update `tests/voice_control/chatbot/test_persona.py::test_persona_has_prompt_prefix_and_voices` to assert non-empty:
+
+```python
+    assert pirate.ack_template  # non-empty in-character ACK
+```
+
+Run: `python -m pytest tests/voice_control/chatbot/test_persona.py -v`. Expected: all pass.
+
+- [ ] **Step 6: Live-verify the slot-quota conflict (one-time, manual)**
+
+Two research agents disagreed on whether Library claims consume voice slots. Verify before shipping:
+
+```bash
+python -c "
+import os
+from elevenlabs.client import ElevenLabs
+c = ElevenLabs(api_key=os.environ['ELEVENLABS_API_KEY'])
+sub = c.user.subscription.get()
+print('voice slots used:', getattr(sub, 'voice_slots_used', '?'),
+      '/', getattr(sub, 'voice_limit', '?'))
+r = c.voices.get_shared(search='cowboy', page_size=1)
+v = r.voices[0]
+added = c.voices.share(public_user_id=v.public_owner_id,
+                        voice_id=v.voice_id, new_name='quota_test')
+print('claimed voice:', added.voice_id)
+sub2 = c.user.subscription.get()
+print('voice slots used AFTER:', getattr(sub2, 'voice_slots_used', '?'),
+      '/', getattr(sub2, 'voice_limit', '?'))
+c.voices.delete(voice_id=added.voice_id)
+print('cleaned up')
+"
+```
+
+Record result in commit message. If slots increment: LRU is REQUIRED (already implemented). If not: LRU is dead-code-but-harmless safety net for Voice-Designed / Cloned voices.
+
+- [ ] **Step 7: Add `do_add_persona` handler in `spot_dispatch.py`**
+
+Locate the dispatch table (next to `do_set_persona` from Task 16). Add:
+
+```python
+import threading
+
+KOKORO_GENDER_FALLBACK = {"male": "am_fenrir", "female": "af_sarah"}
+
+PROMPT_PREFIX_TEMPLATE = (
+    "You are Spot, but in {name} mode. Speak like {description}. "
+    "Keep responses short — one or two sentences."
+)
+
+
+def do_add_persona(params: dict, brain, tts) -> dict:
+    """Discover + claim ElevenLabs voice matching description, register as persona.
+    ACK plays in CURRENT voice; claim runs in parallel worker thread."""
+    name = (params.get("name") or "").strip().lower()
+    description = (params.get("description") or "").strip()
+    if not name or not description:
+        return {"ok": False, "error": "add_persona needs name + description"}
+
+    # Cache hit — flip without API call
+    if name in brain._persona_registry:
+        brain.session_state.current_persona = name
+        return {"ok": True, "persona": name, "cached": True}
+
+    from src.voice_control.chatbot.persona import get_persona
+    outgoing = get_persona(brain.session_state.current_persona, brain._persona_registry)
+    ack_text = (outgoing.ack_template or "Give me a second.").format(name=name)
+
+    from src.voice_control.chatbot.voice_discovery import find_and_claim
+    from src.voice_control.chatbot.persona import Persona
+
+    result_box = {"voice_id": None}
+    def worker():
+        result_box["voice_id"] = find_and_claim(description, name)
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    tts.speak(ack_text)  # ACK plays through speakers; claim happens in parallel
+    t.join(timeout=8.0)  # hard budget; beyond which user thinks it failed
+
+    new_voice_id = result_box["voice_id"]
+    if not new_voice_id:
+        tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
+        return {"ok": False, "error": "no voice match or timeout"}
+
+    gender = "male" if any(w in description.lower() for w in ["male", "man", "guy", "boy"]) else "female"
+    kokoro_slug = KOKORO_GENDER_FALLBACK.get(gender, "af_sarah")
+
+    persona = Persona(
+        name=name,
+        prompt_prefix=PROMPT_PREFIX_TEMPLATE.format(name=name, description=description),
+        voices={"elevenlabs": new_voice_id, "kokoro_v1": kokoro_slug},
+        sampling_overrides={},
+        ack_template=f"One moment as I become a {name}...",
+    )
+    brain._persona_registry[name] = persona
+    brain.session_state.current_persona = name
+    print(f"[Dispatch] Persona '{name}' added (voice={new_voice_id}, kokoro={kokoro_slug})")
+    return {"ok": True, "persona": name, "voice_id": new_voice_id}
+```
+
+Wire into dispatch loop the same way `do_set_persona` was wired in Task 16. Brain + tts must be in scope at the call site.
+
+- [ ] **Step 8: Add `add_persona` bullet to SYSTEM_PROMPT + dynamic persona-list rebuild**
+
+Append to the action catalog in `src/voice_control/llm_brain.py` (after the `set_persona` bullet from Task 15):
+
+```
+- add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
+  • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
+  • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
+  Use set_persona for known personas (listed in the set_persona bullet above); add_persona only for new ones.
+```
+
+Make the `set_persona` bullet's persona-list dynamic by rebuilding from registry in `_build_messages()`:
+
+```python
+def _build_messages(self, transcript, state):
+    persona = get_persona(self.session_state.current_persona, self._persona_registry)
+    merged = {**state, **self.session_state.as_dict()}
+    state_lines = "\n".join(f"- {k}: {v}" for k, v in merged.items())
+    # Dynamic persona-list — pre-warmed + runtime-added personas all appear as "known"
+    known = ", ".join(sorted(self._persona_registry.keys()))
+    system_content = (
+        f"{persona.prompt_prefix}\n\n"
+        f"{SYSTEM_PROMPT.replace('{{KNOWN_PERSONAS}}', known)}\n\n"
+        f"Current robot state:\n{state_lines}"
+    )
+    ...
+```
+
+In `SYSTEM_PROMPT` constant, replace the hardcoded list in the `set_persona` bullet with `{{KNOWN_PERSONAS}}` placeholder.
+
+Verification:
+
+```bash
+python -c "
+from src.voice_control.llm_brain import LLMBrain
+b = LLMBrain()
+m = b._build_messages('hi', {})
+content = m[0]['content']
+assert 'add_persona' in content, 'add_persona bullet missing from system prompt'
+assert 'tour_guide' in content, 'known-persona list should include tour_guide'
+print('OK')
+"
+```
+
+- [ ] **Step 9: Write `scripts/prewarm_personas.py` — install-time pre-warm**
+
+```python
+"""Pre-warm 8 stock personas at install: search ElevenLabs Library, claim, append to yaml.
+Run ONCE at setup (or whenever stock catalog is refreshed). Idempotent: skips
+entries already in personas.yaml. Result: 'be a cowboy' hits in-memory registry
+(zero API calls per-turn)."""
+import sys
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from src.voice_control.chatbot.voice_discovery import find_and_claim  # noqa: E402
+
+STOCK = [
+    ("cowboy",         "deep gravelly American male cowboy"),
+    ("robot",          "monotone synthetic robotic male"),
+    ("wizard",         "deep wise older British male wizard"),
+    ("surfer",         "laid-back young American male surfer"),
+    ("drill_sergeant", "loud commanding American male military drill sergeant"),
+    ("narrator",       "warm authoritative middle-aged male documentary narrator"),
+    ("scientist",      "thoughtful precise older male scientist"),
+    ("news_anchor",    "professional neutral American female news anchor"),
+]
+
+KOKORO_BY_GENDER = {"male": "am_fenrir", "female": "af_sarah"}
+
+
+def main():
+    yaml_path = ROOT / "config" / "personas.yaml"
+    data = yaml.safe_load(yaml_path.read_text()) or {}
+    added_count = 0
+
+    for name, description in STOCK:
+        if name in data:
+            print(f"[prewarm] {name}: already in yaml, skipping")
+            continue
+        print(f"[prewarm] {name}: searching ElevenLabs Library for '{description}'...")
+        voice_id = find_and_claim(description, name)
+        if not voice_id:
+            print(f"[prewarm] {name}: NO MATCH — skipping")
+            continue
+        gender = "male" if any(w in description for w in ["male", "man"]) else "female"
+        kokoro_slug = KOKORO_BY_GENDER[gender]
+        data[name] = {
+            "prompt_prefix": (
+                f"You are Spot, but in {name} mode. Speak like {description}. "
+                "Keep responses short — one or two sentences."
+            ),
+            "voices": {"kokoro_v1": kokoro_slug, "elevenlabs": voice_id},
+            "ack_template": f"One moment as I become a {name}...",
+        }
+        added_count += 1
+        print(f"[prewarm] {name}: added (voice={voice_id})")
+
+    if added_count:
+        yaml_path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
+        print(f"[prewarm] wrote {added_count} new personas to {yaml_path}")
+    else:
+        print("[prewarm] no new personas added (all already present or all failed)")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Run once at install (NOT in CI; one-time setup):
+
+```bash
+ELEVENLABS_API_KEY=<key> python scripts/prewarm_personas.py
+```
+
+Expected: 8 personas added (or N with M failures noted). Yaml grows from 6 starter → 6+N total.
+
+- [ ] **Step 10: Cold-path e2e smoke test (one persona NOT in registry)**
+
+```bash
+python -c "
+from src.voice_control.llm_brain import LLMBrain
+from src.voice_control.spot_dispatch import do_add_persona
+from src.voice_control.spot_tts import get_tts
+b = LLMBrain()
+tts = get_tts()
+print('before:', b.session_state.current_persona)
+result = do_add_persona(
+    {'name':'yodeler', 'description':'high-pitched alpine male yodeler'},
+    b, tts,
+)
+print('result:', result)
+print('after:', b.session_state.current_persona)
+"
+```
+
+Expected: ACK plays through speakers (in outgoing persona's voice), within ~5s persona flips to 'yodeler' with a Library-claimed voice_id. Subsequent `brain.process(...)` synthesizes in the new voice.
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add src/voice_control/chatbot/voice_discovery.py \
+        src/voice_control/chatbot/persona.py \
+        src/voice_control/spot_dispatch.py \
+        src/voice_control/llm_brain.py \
+        scripts/prewarm_personas.py \
+        config/personas.yaml \
+        tests/voice_control/chatbot/test_voice_discovery.py \
+        tests/voice_control/chatbot/test_persona.py
+git commit -m "stage 2e1: add_persona action via ElevenLabs Library + pre-warm script + in-character ACKs"
 ```
 
 ---
@@ -1936,15 +2434,15 @@ export SPOT_PERSONA=tour_guide
 
 Brain still loads registry but treats every utterance as default persona. To fully disable runtime swap, comment out the `set_persona` bullet in `SYSTEM_PROMPT` (llm_brain.py) so the LLM stops emitting the action.
 
-### Layer: revert to Kokoro v0.19 (8 voices)
+### Layer: pin to Kokoro v1.0 directory (default)
 
-Symptom: Kokoro v1.1 install corrupt OR voice quality regression.
+Symptom: alternate Kokoro install attempted (e.g. future v1.1) corrupt OR voice quality regression.
 
 ```bash
 export SPOT_KOKORO_MODEL_DIR=models/tts/kokoro-v1.0
 ```
 
-Old model directory preserved per Stage 1.5 — does not need re-download.
+`models/tts/kokoro-v1.0/` (54 voices, fp16-gpu ONNX) is the in-repo default; this env var just makes the pin explicit when an override was set.
 
 ### Hard rollback (full 2E.1 revert)
 
@@ -1966,43 +2464,36 @@ git commit -m "stage 2e1: document rollback layers for TTS + persona"
 
 ---
 
-## Task 22: Mid-plan checkpoint #3 — safety-reviewer on dispatcher changes
+## Task 22: Combined late-plan checkpoint — safety-reviewer + feature-dev:code-reviewer in parallel
 
-- [ ] **Step 1: Dispatch safety-reviewer agent**
+> **Plan-trim 2026-05-22:** Combines original Task 22 (safety audit) and Task 23 (quality audit) into one checkpoint with two agents dispatched in parallel. Same wall-time, single fix-commit.
 
-Agent prompt: *"Stage 2E.1 added a `set_persona` action to spot_dispatch.py and modified its dispatch loop. Audit: (a) does the new action add any motion path? (b) does it bypass any existing e-stop / freeze / stop coverage? (c) does it change graceful shutdown? (d) does it touch any other action's safety properties? Focus on `src/voice_control/spot_dispatch.py` and `src/voice_control/intent.py` if touched. Report BLOCKER/HIGH/MEDIUM/LOW findings."*
+- [ ] **Step 1: Dispatch both agents in parallel (single Agent-tool message, two tool calls)**
 
-- [ ] **Step 2: Address findings**
+**Agent A — safety-reviewer** (narrow motion/estop scope):
+*"Stage 2E.1 added a `set_persona` action to spot_dispatch.py and modified its dispatch loop. Audit: (a) does the new action add any motion path? (b) does it bypass any existing e-stop / freeze / stop coverage? (c) does it change graceful shutdown? (d) does it touch any other action's safety properties? Focus on `src/voice_control/spot_dispatch.py` and `src/voice_control/intent.py` if touched. Report BLOCKER/HIGH/MEDIUM/LOW findings."*
 
-set_persona is text-only — should yield no safety BLOCKER. If reviewer flags something, fix inline.
-
-- [ ] **Step 3: Commit fixes (if any)**
-
-```bash
-git add -A
-git diff --cached --quiet && echo "no fixes needed" || git commit -m "stage 2e1: address safety-reviewer findings"
-```
-
----
-
-## Task 23: Mid-plan checkpoint #4 — feature-dev:code-reviewer quality audit
-
-- [ ] **Step 1: Dispatch feature-dev:code-reviewer**
-
-Agent prompt: *"Quality audit of the full Stage 2E.1 diff. Scope: all files in `src/voice_control/chatbot/`, `src/voice_control/tts/`, `tests/voice_control/`, plus modifications to `llm_brain.py`, `spot_dispatch.py`, `spot_tts.py`, `client_mic.py`. Check: bug risk, logic errors, project convention adherence, missing test coverage, unhandled exception paths. Use confidence-based filtering — only report high-confidence findings."*
+**Agent B — feature-dev:code-reviewer** (full quality audit):
+*"Quality audit of the full Stage 2E.1 diff. Scope: all files in `src/voice_control/chatbot/`, `src/voice_control/tts/`, `tests/voice_control/`, plus modifications to `llm_brain.py`, `spot_dispatch.py`, `spot_tts.py`, `client_mic.py`. Check: bug risk, logic errors, project convention adherence, missing test coverage, unhandled exception paths. Use confidence-based filtering — only report high-confidence findings."*
 
 Range: `git log --oneline tour_guide_upgrade_matteo..HEAD`
 
 - [ ] **Step 2: Address findings**
 
-Fix high-confidence findings inline.
+set_persona is text-only — safety-reviewer should yield no BLOCKER. Apply quality findings inline for BLOCKER/HIGH; triage MEDIUM/LOW.
 
-- [ ] **Step 3: Commit fixes**
+- [ ] **Step 3: Commit fixes (if any)**
 
 ```bash
 git add -A
-git diff --cached --quiet && echo "no fixes" || git commit -m "stage 2e1: address feature-dev review findings"
+git diff --cached --quiet && echo "no fixes needed" || git commit -m "stage 2e1: address safety + code review findings"
 ```
+
+---
+
+## Task 23: RETIRED — folded into Task 22
+
+> **Plan-trim 2026-05-22:** feature-dev:code-reviewer now dispatched in parallel with safety-reviewer from Task 22. Skip directly to Task 24.
 
 ---
 
@@ -2023,12 +2514,12 @@ Walk each changed file and ask:
 3. SURGICAL — any adjacent refactors or formatting fixes not asked for? Revert them.
 4. VERIFICATION — does every new code path have a check (test or smoke test)?
 
-- [ ] **Step 2: Verify sherpa-onnx speaker mapping claim**
+- [ ] **Step 2: Verify Kokoro voice attribute claim**
 
 ```bash
 python -c "
-import sherpa_onnx
-from kokoro_onnx import Kokoro; help(Kokoro)
+from kokoro_onnx import Kokoro
+help(Kokoro)
 "
 ```
 
@@ -2152,6 +2643,8 @@ Speak (or type) in sequence:
 4. *"Switch to butler"* → expect butler voice + formal ack.
 5. *"What's around here?"* → expect butler-flavored response referencing robot state (location).
 6. *"Be yourself"* → expect reset to tour_guide voice + ack.
+7. *"Be a cowboy"* → expect in-character ACK from tour_guide, then within ~5s persona flips to cowboy with a Library-claimed voice. Subsequent self-description in cowboy voice. (Hot-add path from Task 19a — pre-warmed if `scripts/prewarm_personas.py` was run at install, else cold Library path.)
+8. *"Now be a wholly-original-test-persona named 'gremlin'"* → forces cold Library path (no pre-warm match guaranteed). Expect ACK + ~5-7s + voice flip. If Library miss: expect "could not find" fallback and persona stays cowboy.
 
 Record audio + console logs.
 
@@ -2189,10 +2682,11 @@ Save audio recordings + log excerpt to `logs/stage2e1/demo_<timestamp>/`. This i
 - [ ] Pytest passes (Task 25 Step 2).
 - [ ] Both TTS backends smoke-test passing (Task 25 Steps 3–4).
 - [ ] Persona swap mid-session verified (Task 25 Step 5).
+- [ ] `add_persona` hot-add cold-path smoke verified (Task 19a Step 10).
+- [ ] ElevenLabs slot-quota live-verify result recorded in commit (Task 19a Step 6).
 - [ ] Conversation log writes correctly (Task 25 Step 6).
 - [ ] Live demo on Spot passed both Kokoro + ElevenLabs tracks (Task 27).
-- [ ] safety-reviewer audit clean (Task 22).
-- [ ] feature-dev:code-reviewer high-confidence findings addressed (Task 23).
+- [ ] safety-reviewer + feature-dev:code-reviewer combined audit clean (Task 22).
 - [ ] caveman:cavecrew-reviewer final pass clean (Task 26).
 - [ ] karpathy-guidelines pass clean (Task 24).
 - [ ] Rollback runbook updated (Task 21).
@@ -2216,7 +2710,7 @@ git push -u origin stage2e1-tts-persona
 gh pr create --base tour_guide_upgrade_matteo --title "stage 2e1: TTS A/B + multi-persona routing" --body "$(cat <<'EOF'
 ## Summary
 
-- Two TTS backends (Kokoro v1.1 multi-lang local, ElevenLabs Flash v2.5 cloud) behind `SPOT_TTS_BACKEND` env var.
+- Two TTS backends (Kokoro v1.0 local, 54 voices via kokoro-onnx; ElevenLabs Flash v2.5 cloud) behind `SPOT_TTS_BACKEND` env var.
 - Persona registry with 6 starter personas in `config/personas.yaml`; runtime swap via new `set_persona` action.
 - `SessionState` dataclass introduced as second state layer for across-turn conversational memory (persona, turn index, last action, last comment timestamp).
 - `MAX_HISTORY` bumped 12 → 24 for persona consistency across longer conversations.
@@ -2277,4 +2771,21 @@ git push origin stage2e1-complete
 
 **Type consistency:** `Persona` named consistently across persona.py, llm_brain.py, spot_dispatch.py. `SessionState` consistent. `TTSBackend` consistent. Action name `set_persona` consistent across system prompt (Task 15), dispatch handler (Task 16), and tests (none — set_persona dispatch tested only via integration smoke in Task 25 Step 5).
 
-**Schedule realism:** 29 tasks, 5 calendar days (Wed–Tue). At 1–2 hours per task plus the live demo, this is tight but achievable for an engineer with project context. If pushed, parallelize: Task 11 (model download) can run while Tasks 12 (ElevenLabs) is implemented; Tasks 22/23/24/26 (review agents) can fire concurrently in the same checkpoint message.
+**Schedule realism:** 29 tasks (Task 8, 11, 23 retired into folds/dedup; Task 19a added for hot-add), 5 calendar days (Wed–Tue). At 1–2 hours per task plus the live demo, this is tight but achievable for an engineer with project context. If pushed, parallelize: Task 22 (combined safety + quality agents) and Task 24 (karpathy self-check) + Task 26 (final caveman) can fire concurrently in the same checkpoint message.
+
+---
+
+## Follow-up tasks (post-2E.1, deferred from Tuesday ship)
+
+These were scoped OUT of Stage 2E.1 to keep Tuesday's ship-line clean. File individually as separate plans after `stage2e1-complete` tag lands.
+
+- **Voice Design fallback admin tool.** When Library search misses (e.g. "be Yoda"), fall back to `POST /v1/text-to-voice/design` (eleven_ttv_v3, `should_enhance: true`, `stream_previews: true`). ~3-6s gen; not real-time-safe. Build as `scripts/design_voice.py` CLI — operator-only, not exposed to LLM action catalog. Output voice_id appended to yaml.
+- **Voice preview-pick UI.** Currently `find_and_claim()` auto-picks top match. Add operator-confirm flow: search → speak previews of top 3 via spot_tts → user says "second one" → claim. Eliminates "wrong cowboy" demo risk.
+- **LLM-generated `prompt_prefix`.** Current template is bland (`"Speak like {description}. Keep responses short."`). Add brain call that generates a richer prompt_prefix from the description (1.5s extra latency — fine post-ACK). Hand-tuned pirate prefix is still better; bench against template-generated to decide if worth it.
+- **Yaml persistence of runtime-added personas.** Currently `do_add_persona` mutates only `brain._persona_registry` in memory. Runtime-added personas die on restart. Add atomic-write yaml append (`config/personas.yaml.new` + rename) so personas persist across sessions.
+- **SIGHUP hot-reload of persona registry.** `signal.signal(signal.SIGHUP, lambda *_: self._persona_registry = load_registry())` — lets operator edit yaml without restart. ~10 lines. Pairs with persistence above.
+- **Voice-slot quota tracking + auto-cleanup cron.** When `voices.share()` slot quota hits ~80%, background job deletes least-recently-used `spot_*` voices (based on conversation log usage stats). Prevents free-tier 10-slot exhaustion across multiple demo days.
+- **WebSocket streaming for ElevenLabs synth.** Current HTTP path is fine (~135ms TTFA per Flash v2.5 docs). Future migration to WS unlocks lower latency but pays ~200-400ms reconnect tax on voice change (Pipecat issue #1861). Net benefit unclear; benchmark before migrating.
+- **In-character ACK generation from LLM.** Currently `ack_template` is hardcoded per persona in yaml. Could ask brain to generate one fresh ACK per turn for variety. Latency cost = 1 extra LLM call before TTS; trade-off not obviously worth it.
+- **Speculative voice prefetch.** When LLM detects user is steering toward a persona ("I love cowboys..."), pre-fetch likely cowboy voice in background before the actual `add_persona` command. Aggressive optimization; defer until needed.
+- **LiveKit-style supervisor pattern.** Each persona = own brain instance + own TTS state; handoff via `chat_ctx.copy(exclude_instructions=True)`. Overkill for current single-Brain architecture but unlocks future per-persona memory partitioning.
