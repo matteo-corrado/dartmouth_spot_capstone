@@ -12,6 +12,7 @@ Architecture inspired by Boston Dynamics' Robots That Can Chat.
 """
 
 import json
+import os
 import re
 import time
 import base64
@@ -26,6 +27,7 @@ from src.voice_control.chatbot.persona import (
     Persona, load_registry, get_persona, default_persona_name,
     PersonaRegistryError,
 )
+from src.voice_control.chatbot.conversation_log import ConversationLog
 
 _BACKEND = None
 
@@ -241,6 +243,7 @@ class LLMBrain:
             print(f"[Brain] WARN: persona registry load failed: {e}; using empty registry")
             self._persona_registry = {}
         self.session_state = SessionState(current_persona=default_persona_name())
+        self._conversation_log = ConversationLog()  # writes to logs/conversations/
 
     def is_available(self) -> bool:
         """Check if Ollama is running and the model is pulled."""
@@ -386,6 +389,24 @@ class LLMBrain:
             self.history.append({"role": "assistant", "content": raw})
 
         self.session_state.turn_index += 1
+
+        try:
+            backend_name = os.environ.get("SPOT_TTS_BACKEND", "kokoro")
+            persona_obj = get_persona(self.session_state.current_persona, self._persona_registry)
+            voice_id = persona_obj.voices.get(
+                "elevenlabs" if backend_name == "elevenlabs" else "kokoro_v1", ""
+            )
+            self._conversation_log.log_turn(
+                transcript=transcript,
+                response=response,
+                actions=actions,
+                persona=self.session_state.current_persona,
+                tts_backend=backend_name,
+                voice_id=voice_id,
+                latency_ms={"llm": elapsed_ms},
+            )
+        except Exception as e:
+            print(f"[Brain] WARN: conversation log write failed: {e}")
 
         print(
             f"[Brain-timing] backend={backend.name} profile={profile} "
