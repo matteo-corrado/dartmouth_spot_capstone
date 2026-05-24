@@ -111,7 +111,11 @@ AVAILABLE ACTIONS:
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
-- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: tour_guide, pirate, snarky, butler, shakespeare, gen_z. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to tour_guide), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to tour_guide), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
+  • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
+  • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
+  Use set_persona for known personas (listed in the set_persona bullet above); add_persona only for new ones.
 
 RULES:
 - When the user asks you to do something physical, put action(s) in the "actions" list.
@@ -320,9 +324,11 @@ class LLMBrain:
         persona = get_persona(self.session_state.current_persona, self._persona_registry)
         merged = {**state, **self.session_state.as_dict()}
         state_lines = "\n".join(f"- {k}: {v}" for k, v in merged.items())
+        # Dynamic persona-list — pre-warmed + runtime-added personas all appear as "known"
+        known = ", ".join(sorted(self._persona_registry.keys()))
         system_content = (
             f"{persona.prompt_prefix}\n\n"
-            f"{SYSTEM_PROMPT}\n\n"
+            f"{SYSTEM_PROMPT.replace('{{KNOWN_PERSONAS}}', known)}\n\n"
             f"Current robot state:\n{state_lines}"
         )
         messages = [{"role": "system", "content": system_content}]

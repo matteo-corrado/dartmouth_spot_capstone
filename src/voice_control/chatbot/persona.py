@@ -32,6 +32,7 @@ class Persona:
     # sampling_overrides shape: {"vlm": {"temperature": 0.8}, ...}
     # Keys: action | freeform | vlm. Values merge on top of
     # SAMPLING_PROFILES from brain/llamacpp_backend.py.
+    ack_template: str = "Give me a second."  # spoken in CURRENT persona while add_persona runs
 
 
 def load_registry(path: str = "config/personas.yaml") -> dict:
@@ -66,6 +67,7 @@ def load_registry(path: str = "config/personas.yaml") -> dict:
             prompt_prefix=prefix,
             voices=voices,
             sampling_overrides=sampling_overrides,
+            ack_template=entry.get("ack_template", "Give me a second."),
         )
     return registry
 

@@ -30,6 +30,7 @@ def test_persona_has_prompt_prefix_and_voices():
     # Persona with no override returns empty dict; pirate carries a vlm override.
     assert reg["butler"].sampling_overrides == {}
     assert pirate.sampling_overrides["vlm"]["temperature"] == 0.8
+    assert pirate.ack_template  # non-empty in-character ACK
 
 
 def test_get_persona_returns_default_on_unknown_name(caplog):

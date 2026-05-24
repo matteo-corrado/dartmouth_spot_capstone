@@ -30,6 +30,7 @@ tour_guide:
   voices:
     kokoro_v1: af_sarah
     elevenlabs: EXAVITQu4vr4xnSDxMaL   # Sarah — female, soft (Premade)
+  ack_template: "Just a moment while I sort that out."
 
 pirate:
   prompt_prefix: >
@@ -44,6 +45,7 @@ pirate:
     # temp above the 0.5 global default. Other profiles inherit (no override).
     vlm:
       temperature: 0.8
+  ack_template: "Aye, hold fast while I do the thing, matey!"
 
 snarky:
   prompt_prefix: >
@@ -55,6 +57,7 @@ snarky:
     elevenlabs: IKne3meq5aSn9XLyUdCD   # Charlie — confident Australian male; no
                                         # public ID found for "deadpan" character.
                                         # Review post-2E.1 if too upbeat.
+  ack_template: "Oh, this'll take a moment. Try to contain your excitement."
 
 butler:
   prompt_prefix: >
@@ -64,6 +67,7 @@ butler:
   voices:
     kokoro_v1: bm_george
     elevenlabs: JBFqnCBsd6RMkjVDRZzb   # George — British male, narrative (Premade)
+  ack_template: "One moment, please."
 
 shakespeare:
   prompt_prefix: >
@@ -73,6 +77,7 @@ shakespeare:
   voices:
     kokoro_v1: bm_lewis
     elevenlabs: NYC9WEgkq1u4jiqBseQ9   # Russell - Dramatic British TV (Library)
+  ack_template: "Hark! Pray grant me but a moment's pause."
 
 gen_z:
   prompt_prefix: >
@@ -82,3 +87,4 @@ gen_z:
   voices:
     kokoro_v1: af_nova
     elevenlabs: uxKr2vlA4hYgXZR1oPRT   # Natasha - Valley girl (Library, character)
+  ack_template: "K give me one sec, no cap."

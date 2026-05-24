@@ -570,6 +570,69 @@ def do_set_persona(params: dict, brain) -> dict:
     return {"ok": True, "persona": persona.name}
 
 
+KOKORO_GENDER_FALLBACK = {"male": "am_fenrir", "female": "af_sarah"}
+
+PROMPT_PREFIX_TEMPLATE = (
+    "You are Spot, but in {name} mode. Speak like {description}. "
+    "Keep responses short — one or two sentences."
+)
+
+
+def do_add_persona(params: dict, brain) -> dict:
+    """Discover + claim ElevenLabs voice matching description, register as persona.
+    ACK plays in CURRENT voice; claim runs in parallel worker thread."""
+    name = (params.get("name") or "").strip().lower()
+    description = (params.get("description") or "").strip()
+    if not name or not description:
+        return {"ok": False, "error": "add_persona needs name + description"}
+    if brain is None:
+        return {"ok": False, "error": "add_persona requires a brain instance"}
+
+    # Cache hit — flip without API call
+    if name in brain._persona_registry:
+        brain.session_state.current_persona = name
+        return {"ok": True, "persona": name, "cached": True}
+
+    from src.voice_control.chatbot.persona import get_persona, Persona
+    from src.voice_control.chatbot.voice_discovery import find_and_claim
+    from src.voice_control.spot_tts import get_tts
+
+    outgoing = get_persona(brain.session_state.current_persona, brain._persona_registry)
+    ack_text = (outgoing.ack_template or "Give me a second.").format(name=name)
+
+    tts = get_tts()
+
+    result_box = {"voice_id": None}
+    def worker():
+        result_box["voice_id"] = find_and_claim(description, name)
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    if tts is not None:
+        tts.speak(ack_text)  # ACK plays through speakers; claim happens in parallel
+    t.join(timeout=8.0)  # hard budget; beyond which user thinks it failed
+
+    new_voice_id = result_box["voice_id"]
+    if not new_voice_id:
+        if tts is not None:
+            tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
+        return {"ok": False, "error": "no voice match or timeout"}
+
+    gender = "male" if any(w in description.lower() for w in ["male", "man", "guy", "boy"]) else "female"
+    kokoro_slug = KOKORO_GENDER_FALLBACK.get(gender, "af_sarah")
+
+    persona = Persona(
+        name=name,
+        prompt_prefix=PROMPT_PREFIX_TEMPLATE.format(name=name, description=description),
+        voices={"elevenlabs": new_voice_id, "kokoro_v1": kokoro_slug},
+        sampling_overrides={},
+        ack_template=f"One moment as I become a {name}...",
+    )
+    brain._persona_registry[name] = persona
+    brain.session_state.current_persona = name
+    print(f"[Dispatch] Persona '{name}' added (voice={new_voice_id}, kokoro={kokoro_slug})")
+    return {"ok": True, "persona": name, "voice_id": new_voice_id}
+
+
 def dispatch_intent(intent, brain=None):
     """Execute a Spot command based on parsed intent.
 
@@ -588,9 +651,11 @@ def dispatch_intent(intent, brain=None):
     name = intent["intent"]
     params = intent.get("params", {})
 
-    # set_persona + set_volume don't need a Spot session — handle before ensure_spot_session()
+    # set_persona + add_persona + set_volume don't need a Spot session — handle before ensure_spot_session()
     if name == "set_persona":
         return do_set_persona(params, brain).get("ok", False)
+    if name == "add_persona":
+        return do_add_persona(params, brain).get("ok", False)
     if name == "set_volume":
         return _handle_set_volume(params)
 
