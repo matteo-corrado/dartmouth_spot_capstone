@@ -8,6 +8,8 @@ Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
 """
 import os
+
+from src.voice_control.chatbot.persona import get_persona, voice_id_for
 import sys
 import pathlib
 
@@ -1136,12 +1138,21 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # Collect current robot state for context
             state = get_spot_state()
 
+            # Stage 2E.1: resolve persona-mapped voice ID once per turn so
+            # every sentence chunk (and any fallback tts.speak below) shares
+            # the same voice. Persona swaps that fire mid-turn don't apply
+            # until the next turn — UX is "switch to pirate" spoken in the
+            # current voice, then pirate voice from the next response on.
+            backend_name = os.environ.get("SPOT_TTS_BACKEND", "kokoro")
+            persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
+            voice_id = voice_id_for(persona, backend_name) or None
+
             # Streaming TTS: chunker emits response sentences as they arrive.
             # Suppresses itself if a describe action appears in the action list
             # (GBNF emits actions before response), so the LLM's hallucinated
             # camera description never reaches the speaker — client_mic.py
             # speaks a stock ack instead (see describe_action branch below).
-            chunker = tts.enqueue_streaming() if tts and tts.is_available() else None
+            chunker = tts.enqueue_streaming(voice=voice_id) if tts and tts.is_available() else None
             if chunker is not None:
                 brain.on_token_callback = chunker.accept
 
@@ -1199,7 +1210,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 # path: `response` is now a stock ack) or chunker absent.
                 chunker_played = chunker is not None and not chunker.suppressed
                 if tts and response and not chunker_played:
-                    tts.speak(response)
+                    tts.speak(response, voice=voice_id)
 
                 if trace:
                     trace.mark("intent_dispatch")
@@ -1249,7 +1260,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 print(f"\nSPOT (VLM): \"{vlm_response}\"")
                                 if tts:
                                     tts.wait()
-                                    tts.speak(vlm_response)
+                                    tts.speak(vlm_response, voice=voice_id)
                             else:
                                 beep.error()
                                 vlm_error = True
@@ -1257,7 +1268,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 print(f"\nSPOT (VLM, error): \"{fallback}\"")
                                 if tts:
                                     tts.wait()
-                                    tts.speak(fallback)
+                                    tts.speak(fallback, voice=voice_id)
                         except Exception as e:
                             beep.error()
                             vlm_error = True
@@ -1290,7 +1301,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 # only if no chunker (legacy) or chunker suppressed.
                 chunker_played = chunker is not None and not chunker.suppressed
                 if tts and response and not chunker_played:
-                    tts.speak(response)
+                    tts.speak(response, voice=voice_id)
                 print("(No physical action — conversation only)")
 
             # One-line summary of which model(s) actually handled this utterance.

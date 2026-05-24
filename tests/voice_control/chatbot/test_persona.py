@@ -60,3 +60,11 @@ def test_default_persona_name_fallback(monkeypatch):
 def test_load_registry_missing_file_raises():
     with pytest.raises(PersonaRegistryError):
         load_registry("nonexistent/path.yaml")
+
+
+def test_voice_id_for():
+    from src.voice_control.chatbot.persona import voice_id_for
+    reg = load_registry(REGISTRY_PATH)
+    pirate = reg["pirate"]
+    assert voice_id_for(pirate, "kokoro") == "am_fenrir"
+    assert voice_id_for(pirate, "elevenlabs") == "Xq2dbIWNPChFB77imiDe"

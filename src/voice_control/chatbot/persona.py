@@ -94,3 +94,9 @@ def list_personas(registry: dict) -> list:
 def default_persona_name() -> str:
     """Return boot-time default persona from SPOT_PERSONA env or hardcoded fallback."""
     return os.environ.get("SPOT_PERSONA", DEFAULT_PERSONA)
+
+
+def voice_id_for(persona: Persona, backend_name: str) -> str:
+    """Resolve the voice ID to use for this persona under the given backend."""
+    key = "elevenlabs" if backend_name == "elevenlabs" else "kokoro_v1"
+    return persona.voices.get(key, "")
