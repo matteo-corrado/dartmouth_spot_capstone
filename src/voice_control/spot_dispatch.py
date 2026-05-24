@@ -4,6 +4,7 @@ This module executes Spot commands based on parsed voice intents.
 Uses a persistent session connection that stays open for multiple commands.
 """
 import os
+import re
 import sys
 import pathlib
 import time
@@ -617,7 +618,9 @@ def do_add_persona(params: dict, brain) -> dict:
             tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
         return {"ok": False, "error": "no voice match or timeout"}
 
-    gender = "male" if any(w in description.lower() for w in ["male", "man", "guy", "boy"]) else "female"
+    # Word-boundary match — substring would misfire ("female" contains "male").
+    desc_words = set(re.findall(r"\b\w+\b", description.lower()))
+    gender = "male" if desc_words & {"male", "man", "guy", "boy", "men"} else "female"
     kokoro_slug = KOKORO_GENDER_FALLBACK.get(gender, "af_sarah")
 
     persona = Persona(
