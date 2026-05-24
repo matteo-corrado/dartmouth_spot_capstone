@@ -70,8 +70,21 @@ def load_registry(path: str = "config/personas.yaml") -> dict:
     return registry
 
 
+_EMERGENCY_PERSONA = Persona(
+    name="emergency",
+    prompt_prefix="You are Spot, a Boston Dynamics quadruped robot.",
+    voices={},
+    sampling_overrides={},
+)
+
+
 def get_persona(name: str, registry: dict) -> Persona:
-    """Look up persona by name. Falls back to default + logs warning on miss."""
+    """Look up persona by name. Falls back to default + logs warning on miss.
+
+    On an empty registry (yaml load failure upstream), returns a hardcoded
+    emergency persona so the voice loop keeps running rather than dying
+    on StopIteration mid-demo.
+    """
     if name in registry:
         return registry[name]
     fallback = default_persona_name()
@@ -80,6 +93,9 @@ def get_persona(name: str, registry: dict) -> Persona:
     )
     if fallback in registry:
         return registry[fallback]
+    if not registry:
+        logger.warning("Persona registry is empty; using emergency persona")
+        return _EMERGENCY_PERSONA
     # Last-resort: return first available persona
     first = next(iter(registry.values()))
     logger.warning(f"Default '{fallback}' also missing; using '{first.name}'")

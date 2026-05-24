@@ -24,6 +24,7 @@ class TTSBackend(Protocol):
 
 
 _REGISTRY: dict = {}
+_INSTANCES: dict = {}  # name -> singleton TTSBackend (lazily constructed)
 DEFAULT_BACKEND = "kokoro"
 
 
@@ -33,10 +34,16 @@ def register_backend(name: str, factory) -> None:
 
 
 def get_backend() -> TTSBackend:
-    """Resolve and instantiate the backend named by SPOT_TTS_BACKEND env var."""
+    """Resolve the backend named by SPOT_TTS_BACKEND env var. Memoized per
+    backend name so the underlying model loads ONCE — spot_tts._render
+    calls this per sentence chunk and Kokoro init re-loads ~85MB of
+    ONNX weights + allocates a CUDA context every time without the cache.
+    """
     name = os.environ.get("SPOT_TTS_BACKEND", DEFAULT_BACKEND)
     if name not in _REGISTRY:
         raise ValueError(
             f"Unknown TTS backend '{name}'. Registered: {sorted(_REGISTRY.keys())}"
         )
-    return _REGISTRY[name]()
+    if name not in _INSTANCES:
+        _INSTANCES[name] = _REGISTRY[name]()
+    return _INSTANCES[name]
