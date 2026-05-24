@@ -100,3 +100,46 @@ spot-env/bin/python scripts/mic_verify.py
 
 Save log to /tmp/ and compare gates against the T0 baseline snapshot at
 `/tmp/stage2a_preflight_*.json`.
+
+## After 2E.1 — TTS + persona
+
+### Layer: revert TTS backend (cloud → local)
+
+Symptom: ElevenLabs latency spike, API outage, free tier exhausted, network drop.
+
+```bash
+export SPOT_TTS_BACKEND=kokoro
+# restart voice loop
+```
+
+Reverts to local kokoro-onnx v1.0. No code change required.
+
+### Layer: collapse to single persona
+
+Symptom: persona swap action causing dispatch errors or bad behavior.
+
+```bash
+export SPOT_PERSONA=tour_guide
+```
+
+Brain still loads registry but treats every utterance as default persona. To fully disable runtime swap, comment out the `set_persona` bullet in `SYSTEM_PROMPT` (llm_brain.py) so the LLM stops emitting the action.
+
+### Layer: pin to Kokoro v1.0 directory (default)
+
+Symptom: alternate Kokoro install attempted (e.g. future v1.1) corrupt OR voice quality regression.
+
+```bash
+export SPOT_KOKORO_MODEL_DIR=models/tts/kokoro-v1.0
+```
+
+`models/tts/kokoro-v1.0/` (54 voices, fp16-gpu ONNX) is the in-repo default; this env var just makes the pin explicit when an override was set.
+
+### Hard rollback (full 2E.1 revert)
+
+```bash
+git revert <2e1-merge-commits>
+# or, on stage2e1-tts-persona branch:
+git reset --hard <pre-2e1-tag>
+```
+
+Pre-2E.1 commit hash: `d9468bf` — branch off this point.
