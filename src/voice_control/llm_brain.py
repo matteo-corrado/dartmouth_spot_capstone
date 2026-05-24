@@ -109,6 +109,7 @@ AVAILABLE ACTIONS:
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
+- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: tour_guide, pirate, snarky, butler, shakespeare, gen_z. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to tour_guide), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
 
 RULES:
 - When the user asks you to do something physical, put action(s) in the "actions" list.
