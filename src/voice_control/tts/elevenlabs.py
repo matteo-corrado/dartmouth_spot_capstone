@@ -3,7 +3,8 @@
 Uses the official `elevenlabs` Python SDK. Streaming via `text_to_speech.stream`
 with `eleven_flash_v2_5` model (lowest-latency Flash variant, ~150-300ms TTFA
 per independent Coval benchmark May 2026). Output format `pcm_24000` to avoid
-mp3 decode latency. Latency optimization level 3 (max except text normalizer).
+mp3 decode latency. SDK defaults govern any latency-optimization knob — we
+don't override it (Flash v2.5 ignores most levels anyway per ElevenLabs docs).
 """
 import logging
 import os

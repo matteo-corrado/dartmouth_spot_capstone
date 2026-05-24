@@ -1277,7 +1277,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                             print(f"\nSPOT (VLM, error): \"{fallback}\"")
                             if tts:
                                 tts.wait()
-                                tts.speak(fallback)
+                                tts.speak(fallback, voice=voice_id)
                     else:
                         if execute_on_spot(intent, brain=brain):
                             print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")

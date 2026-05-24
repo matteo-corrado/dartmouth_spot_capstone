@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PERSONA = "tour_guide"
 
+# Repo-root-anchored default so load_registry() works regardless of CWD
+# (e.g. systemd service, web panel subprocess, subagent worktree).
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_REGISTRY_PATH = str(_REPO_ROOT / "config" / "personas.yaml")
+
 
 class PersonaRegistryError(Exception):
     """Raised when the persona registry YAML cannot be loaded."""
@@ -35,7 +40,7 @@ class Persona:
     ack_template: str = "Give me a second."  # spoken in CURRENT persona while add_persona runs
 
 
-def load_registry(path: str = "config/personas.yaml") -> dict:
+def load_registry(path: str = DEFAULT_REGISTRY_PATH) -> dict:
     """Load persona registry from YAML file.
 
     Raises PersonaRegistryError if the file is missing or malformed.
