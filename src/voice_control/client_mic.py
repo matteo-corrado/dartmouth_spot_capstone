@@ -403,14 +403,19 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 # ============================================================================
 # Intent Execution
 # ============================================================================
-def execute_on_spot(intent: dict) -> bool:
-    """Execute parsed intent on Spot robot."""
+def execute_on_spot(intent: dict, brain=None) -> bool:
+    """Execute parsed intent on Spot robot.
+
+    `brain` is forwarded to dispatch_intent so handlers needing across-turn
+    state (set_persona today, follow-ups later) can mutate it. Safety + regex
+    fallback paths leave it None — those intents never touch brain state.
+    """
     if os.environ.get("SPOT_DRY_RUN") == "1":
         print(f"[dry-run] would dispatch: {intent}")
         return True
     try:
         from src.voice_control.spot_dispatch import dispatch_intent
-        return dispatch_intent(intent)
+        return dispatch_intent(intent, brain=brain)
     except Exception as e:
         print(f"[Spot error: {e}]")
         return False
@@ -1263,7 +1268,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 tts.wait()
                                 tts.speak(fallback)
                     else:
-                        if execute_on_spot(intent):
+                        if execute_on_spot(intent, brain=brain):
                             print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
                         else:
                             beep.error()

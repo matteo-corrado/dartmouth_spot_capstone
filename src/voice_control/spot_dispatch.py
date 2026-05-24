@@ -549,11 +549,33 @@ def _handle_set_volume(params):
         return False
 
 
-def dispatch_intent(intent):
+def do_set_persona(params: dict, brain) -> dict:
+    """Switch active persona via runtime action.
+
+    Params:
+        name: persona registry key (e.g. "pirate", "butler", "tour_guide").
+
+    On unknown name: falls back to default + logs warning (handled inside
+    persona registry's get_persona()).
+    """
+    name = (params or {}).get("name", "").strip()
+    if not name:
+        return {"ok": False, "error": "set_persona requires 'name' param"}
+    if brain is None:
+        return {"ok": False, "error": "set_persona requires a brain instance"}
+    from src.voice_control.chatbot.persona import get_persona
+    persona = get_persona(name, brain._persona_registry)
+    brain.session_state.current_persona = persona.name
+    print(f"[Dispatch] Persona switched to '{persona.name}'")
+    return {"ok": True, "persona": persona.name}
+
+
+def dispatch_intent(intent, brain=None):
     """Execute a Spot command based on parsed intent.
 
     Args:
         intent: Dict with keys "intent" (str) and "params" (dict)
+        brain: Optional LLMBrain instance — required only for set_persona.
 
     Returns:
         bool: True if command executed successfully, False otherwise
@@ -566,7 +588,9 @@ def dispatch_intent(intent):
     name = intent["intent"]
     params = intent.get("params", {})
 
-    # Volume control doesn't need a Spot session — handle before ensure_spot_session()
+    # set_persona + set_volume don't need a Spot session — handle before ensure_spot_session()
+    if name == "set_persona":
+        return do_set_persona(params, brain).get("ok", False)
     if name == "set_volume":
         return _handle_set_volume(params)
 
