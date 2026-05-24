@@ -65,3 +65,7 @@ opencv-python==4.11.0.86
 # isolation: never imported by production code paths. pin-guardian PASS
 # (2026-05-22): zero numpy/onnx/opencv transitive deps.
 pytest>=8.0,<9.0
+
+# Stage 2E.1 — ElevenLabs cloud TTS backend. Pure-Python WebSocket + HTTP
+# client; no numpy/onnx conflict per pin-guardian audit.
+elevenlabs>=2.0,<3.0
