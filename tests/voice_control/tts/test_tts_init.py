@@ -24,11 +24,13 @@ def test_get_backend_unknown_raises(monkeypatch):
 
 
 def test_get_backend_default_when_env_unset(monkeypatch):
+    from src.voice_control.tts import _INSTANCES
+    _INSTANCES.clear()  # don't let a cached singleton from another test pass vacuously
     monkeypatch.delenv("SPOT_TTS_BACKEND", raising=False)
     register_backend("elevenlabs", lambda: FakeBackend())  # DEFAULT_BACKEND
     register_backend("kokoro", lambda: FakeBackend())      # FALLBACK_BACKEND
     backend = get_backend()
-    assert backend is not None
+    assert isinstance(backend, FakeBackend)
 
 
 def test_get_backend_fallback_on_init_failure(monkeypatch):
@@ -45,3 +47,63 @@ def test_get_backend_fallback_on_init_failure(monkeypatch):
     register_backend("kokoro", lambda: FakeBackend())
     backend = get_backend()
     assert isinstance(backend, FakeBackend)
+
+
+def test_get_backend_fallback_is_cached(monkeypatch):
+    """After ElevenLabs init fails once and we fall back, subsequent calls
+    must NOT re-run the broken factory (which would do a network round-trip
+    per sentence chunk). Cache the fallback under the requested name."""
+    from src.voice_control.tts import _INSTANCES, _REGISTRY
+    _INSTANCES.clear()
+    monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
+
+    call_count = {"n": 0}
+
+    def _bad_factory():
+        call_count["n"] += 1
+        raise RuntimeError("simulated")
+
+    register_backend("elevenlabs", _bad_factory)
+    register_backend("kokoro", lambda: FakeBackend())
+    get_backend()
+    get_backend()
+    get_backend()
+    assert call_count["n"] == 1, "fallback should be cached; bad factory ran once, not per-call"
+
+
+def test_get_backend_dual_failure_preserves_primary_error(monkeypatch):
+    """If both ElevenLabs AND Kokoro init fail, the operator needs to see
+    the primary (ElevenLabs) error — not just the fallback failure."""
+    from src.voice_control.tts import _INSTANCES
+    _INSTANCES.clear()
+    monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
+
+    def _primary_bad():
+        raise RuntimeError("ELEVENLABS_API_KEY missing")
+
+    def _fallback_bad():
+        raise RuntimeError("kokoro ONNX file not found")
+
+    register_backend("elevenlabs", _primary_bad)
+    register_backend("kokoro", _fallback_bad)
+    with pytest.raises(RuntimeError) as exc:
+        get_backend()
+    msg = str(exc.value)
+    assert "ELEVENLABS_API_KEY missing" in msg
+    assert "kokoro ONNX file not found" in msg
+
+
+def test_get_active_backend_name(monkeypatch):
+    """get_active_backend_name() reflects the *actual* class returned, not
+    the requested env var — so callers picking persona voice slots get the
+    right key after a silent fallback."""
+    from src.voice_control.tts import _INSTANCES, get_active_backend_name
+    _INSTANCES.clear()
+    monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
+
+    class FakeKokoroBackend(FakeBackend):
+        pass
+
+    register_backend("elevenlabs", lambda: (_ for _ in ()).throw(RuntimeError("no key")))
+    register_backend("kokoro", lambda: FakeKokoroBackend())
+    assert get_active_backend_name() == "kokoro"

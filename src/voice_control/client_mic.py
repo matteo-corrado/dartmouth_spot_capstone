@@ -21,11 +21,15 @@ project_root = pathlib.Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-# Auto-load .env from project root so callers don't need `source .env` first.
+# Auto-load .env from project root so callers don't need `source .env`
+# first. `override=True` so .env wins over stale shell exports (e.g. an old
+# SPOT_TTS_BACKEND=kokoro from a prior session). Broad except: dotenv may
+# not be installed, .env may be unreadable (PermissionError) or non-UTF-8
+# (UnicodeDecodeError); none of those should crash the launcher.
 try:
     from dotenv import load_dotenv
-    load_dotenv(project_root / ".env")
-except ImportError:
+    load_dotenv(project_root / ".env", override=True)
+except Exception:
     pass
 
 from src.voice_control.chatbot.persona import get_persona, voice_id_for
@@ -435,7 +439,11 @@ def execute_on_spot(intent: dict, brain=None) -> bool:
 
 
 def get_spot_state() -> dict:
-    """Get current robot state for LLM context."""
+    """Get current robot state for LLM context. Short-circuits in dry-run
+    mode so the auto-degrade path stays robot-free (no spot_dispatch
+    import, no disk I/O for locations.json / maps dir) per turn."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        return {}
     try:
         from src.voice_control.spot_dispatch import get_robot_state_dict
         return get_robot_state_dict()
@@ -467,16 +475,20 @@ def cleanup_spot():
        force_reset). The shutdown call drains the queue, joins the
        worker, and closes the stream gracefully.
     """
-    try:
-        from src.voice_control.spot_dispatch import _cancel_nav
-        _cancel_nav()
-    except Exception as e:
-        print(f"[Spot] cancel_nav error during cleanup: {e}")
-    try:
-        from src.voice_control.spot_dispatch import close_spot_session
-        close_spot_session()
-    except Exception:
-        pass
+    # In dry-run mode there is no Spot session to close; skip the
+    # spot_dispatch imports entirely so cleanup doesn't trigger bosdyn
+    # module-load side effects in a path advertised as robot-free.
+    if os.environ.get("SPOT_DRY_RUN") != "1":
+        try:
+            from src.voice_control.spot_dispatch import _cancel_nav
+            _cancel_nav()
+        except Exception as e:
+            print(f"[Spot] cancel_nav error during cleanup: {e}")
+        try:
+            from src.voice_control.spot_dispatch import close_spot_session
+            close_spot_session()
+        except Exception:
+            pass
     if _audio_player is not None:
         try:
             _audio_player.shutdown()
@@ -711,30 +723,50 @@ def main():
     # Pre-loading them at startup starves the audio thread (CPU-bound
     # PyTorch init causes PortAudio init overflow and delays wake word).
 
-    # Eagerly probe the Spot session (and upload a map if --map was passed)
-    # BEFORE starting the audio loop. This surfaces auth/lease/power errors
-    # at startup rather than mid-conversation. With --map, eager init is
-    # also the only way to load the map as part of the same session bring-up.
+    # Probe Spot connectivity BEFORE starting the audio loop.
     #
-    # If Spot is unreachable (powered off, no network, auth fail), auto-
-    # enable --dry-run so the voice pipeline (ASR + LLM + TTS) still runs
-    # end-to-end for benchtop testing without the robot. Caller can opt
-    # out by passing --dry-run explicitly (already a no-op below).
+    # Two paths:
+    #   --map present: eager full session init (stand_on_enter=True) so
+    #     the map uploads as part of the SAME bring-up. This DOES power
+    #     on the robot and requires e-stop to be running already. If it
+    #     fails (missing SDK, unreachable, lease conflict), we auto-
+    #     degrade to dry-run.
+    #   no --map: light TCP probe to SPOT_IP:443 only — does NOT power
+    #     on, does NOT acquire lease, does NOT require e-stop. The real
+    #     session bring-up happens lazily on first dispatch_intent.
+    #     If the probe fails, auto-degrade.
+    #
+    # Caller can opt out by passing --dry-run explicitly (skips everything).
     if not args.dry_run:
         if args.map:
             print(f"\n[Spot] Eager session init with map: {args.map}")
+            try:
+                from src.voice_control.spot_dispatch import ensure_spot_session
+                ensure_spot_session(map_path=args.map)
+                print("[Spot] Map loaded; session standing.")
+            except ModuleNotFoundError as e:
+                print(f"[Spot] SDK not installed ({e}); auto-enabling dry-run.")
+                os.environ["SPOT_DRY_RUN"] = "1"
+                args.dry_run = True
+            except Exception as e:
+                print(f"[Spot] Eager session init failed "
+                      f"({type(e).__name__}: {e}); auto-enabling dry-run.")
+                os.environ["SPOT_DRY_RUN"] = "1"
+                args.dry_run = True
         else:
-            print("\n[Spot] Probing session...")
-        from src.voice_control.spot_dispatch import ensure_spot_session
-        try:
-            ensure_spot_session(map_path=args.map)
-            print("[Spot] Session ready.")
-        except Exception as e:
-            print(f"[Spot] Not reachable ({type(e).__name__}: {e})")
-            print("[Spot] Auto-enabling dry-run mode (voice pipeline only, "
-                  "robot dispatch disabled).")
-            os.environ["SPOT_DRY_RUN"] = "1"
-            args.dry_run = True
+            import socket
+            spot_host = os.environ.get("SPOT_IP", "192.168.80.3")
+            try:
+                print(f"\n[Spot] TCP-probing {spot_host}:443 ...")
+                with socket.create_connection((spot_host, 443), timeout=2.0):
+                    pass
+                print("[Spot] Reachable; full session deferred to first command.")
+            except OSError as e:
+                print(f"[Spot] Not reachable ({type(e).__name__}: {e})")
+                print("[Spot] Auto-enabling dry-run mode (voice pipeline "
+                      "only; no robot dispatch, no e-stop required).")
+                os.environ["SPOT_DRY_RUN"] = "1"
+                args.dry_run = True
 
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
@@ -1164,8 +1196,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # the same voice. Persona swaps that fire mid-turn don't apply
             # until the next turn — UX is "switch to pirate" spoken in the
             # current voice, then pirate voice from the next response on.
-            from src.voice_control.tts import DEFAULT_BACKEND
-            backend_name = os.environ.get("SPOT_TTS_BACKEND", DEFAULT_BACKEND)
+            from src.voice_control.tts import get_active_backend_name
+            backend_name = get_active_backend_name()
             persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
             voice_id = voice_id_for(persona, backend_name) or None
 

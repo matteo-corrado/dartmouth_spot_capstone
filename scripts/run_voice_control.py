@@ -29,11 +29,13 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VOICE_DIR = PROJECT_ROOT / "src" / "voice_control"
 
 # Auto-load .env so callers don't need `source .env` first. Child processes
-# (client_mic.py, server.py) inherit the resulting env.
+# (client_mic.py, server.py) inherit the resulting env. `override=True` so
+# .env wins over stale shell exports. Broad except: dotenv may not be
+# installed, .env may be unreadable / non-UTF-8 — none should crash launch.
 try:
     from dotenv import load_dotenv
-    load_dotenv(PROJECT_ROOT / ".env")
-except ImportError:
+    load_dotenv(PROJECT_ROOT / ".env", override=True)
+except Exception:
     pass
 
 OLLAMA_PORT = 11434
