@@ -1160,7 +1160,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # the same voice. Persona swaps that fire mid-turn don't apply
             # until the next turn — UX is "switch to pirate" spoken in the
             # current voice, then pirate voice from the next response on.
-            backend_name = os.environ.get("SPOT_TTS_BACKEND", "kokoro")
+            from src.voice_control.tts import DEFAULT_BACKEND
+            backend_name = os.environ.get("SPOT_TTS_BACKEND", DEFAULT_BACKEND)
             persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
             voice_id = voice_id_for(persona, backend_name) or None
 

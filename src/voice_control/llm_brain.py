@@ -397,7 +397,8 @@ class LLMBrain:
         self.session_state.turn_index += 1
 
         try:
-            backend_name = os.environ.get("SPOT_TTS_BACKEND", "kokoro")
+            from src.voice_control.tts import DEFAULT_BACKEND
+            backend_name = os.environ.get("SPOT_TTS_BACKEND", DEFAULT_BACKEND)
             persona_obj = get_persona(self.session_state.current_persona, self._persona_registry)
             voice_id = persona_obj.voices.get(
                 "elevenlabs" if backend_name == "elevenlabs" else "kokoro_v1", ""
