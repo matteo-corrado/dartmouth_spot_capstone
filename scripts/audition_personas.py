@@ -69,8 +69,87 @@ def main() -> int:
     if args.dry_run:
         print("\n--dry-run: matrix printed, no audio played, no API hit.")
         return 0
-    print("\nTODO Task 2: wire backend instantiation + playback + verdict loop")
+
+    # --- live audition ---
+    from src.voice_control.tts.kokoro import KokoroBackend
+    from src.voice_control.tts.elevenlabs import ElevenLabsBackend
+
+    print("\nWarming backends (Kokoro loads ~85MB ONNX, ElevenLabs needs API key)...")
+    kokoro = KokoroBackend()
+    eleven = ElevenLabsBackend()  # raises if ELEVENLABS_API_KEY unset
+    backends = {"kokoro": kokoro, "elevenlabs": eleven}
+
+    # verdicts[name][backend_name] = "y" | "n" | "s" | "ERR:<msg>"
+    verdicts: dict[str, dict[str, str]] = {n: {} for n in names}
+
+    print("\nStarting audition. After each clip, type: y (fit), n (miss), "
+          "s (skip), r (replay), q (quit early).\n")
+    for name in names:
+        text = SAMPLE_TEXTS.get(name, f"Hello, I am Spot in {name} mode.")
+        desc = personas[name].get("prompt_prefix", "")[:80]
+        print(f"\n=== {name} ===  {desc!r}")
+        print(f"  text: {text!r}")
+        for backend_name, voice_key in BACKENDS:
+            voice = personas[name].get("voices", {}).get(voice_key)
+            if not voice:
+                verdicts[name][backend_name] = "s"
+                print(f"  [{backend_name}] NO VOICE_ID — auto-skip")
+                continue
+            while True:
+                print(f"  [{backend_name}] voice={voice} — rendering...", flush=True)
+                try:
+                    pcm = backends[backend_name].synthesize(text, voice)
+                    audio = np.frombuffer(pcm, dtype="<i2")
+                    sd.play(audio, SAMPLE_RATE)
+                    sd.wait()
+                except Exception as e:
+                    print(f"    ERROR: {e}")
+                    verdicts[name][backend_name] = f"ERR:{type(e).__name__}"
+                    break
+                v = input(f"    [{name}/{backend_name}] fit? (y/n/s/r/q): ").strip().lower()
+                if v == "r":
+                    continue
+                if v == "q":
+                    print("Early quit — writing partial results.")
+                    write_report(verdicts, names)
+                    return 0
+                if v not in ("y", "n", "s"):
+                    v = "s"
+                verdicts[name][backend_name] = v
+                break
+
+    write_report(verdicts, names)
     return 0
+
+
+def write_report(verdicts: dict, names: list) -> None:
+    date = dt.date.today().isoformat()
+    out = ROOT / "docs" / "project" / f"persona-audition-{date}.md"
+    lines = [
+        f"# Persona × Backend Audition — {date}",
+        "",
+        "Verdicts: `y` = fits persona, `n` = misses, `s` = skipped / no voice, "
+        "`ERR:<type>` = synth failure.",
+        "",
+        "| persona | kokoro | elevenlabs | sample text |",
+        "|---|---|---|---|",
+    ]
+    for name in names:
+        k = verdicts.get(name, {}).get("kokoro", "-")
+        e = verdicts.get(name, {}).get("elevenlabs", "-")
+        text = SAMPLE_TEXTS.get(name, "").replace("|", "\\|")
+        lines.append(f"| {name} | {k} | {e} | {text} |")
+
+    n_k_fit = sum(1 for n in names if verdicts.get(n, {}).get("kokoro") == "y")
+    n_e_fit = sum(1 for n in names if verdicts.get(n, {}).get("elevenlabs") == "y")
+    lines += [
+        "",
+        f"**Kokoro fit:** {n_k_fit}/{len(names)}",
+        f"**ElevenLabs fit:** {n_e_fit}/{len(names)}",
+    ]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(lines) + "\n")
+    print(f"\nWrote {out}")
 
 
 if __name__ == "__main__":
