@@ -8,12 +8,14 @@ Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
 """
 import os
-
-from src.voice_control.chatbot.persona import get_persona, voice_id_for
 import sys
 import pathlib
 
-# Add parent and project root to path for local imports
+# Add parent and project root to path for local imports — must run BEFORE
+# any `from src.*` import below, otherwise launching client_mic.py as a
+# script (e.g. via run_voice_control.py subprocess) fails with
+# ModuleNotFoundError because sys.path[0] is src/voice_control/, not the
+# project root.
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 project_root = pathlib.Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
@@ -25,6 +27,8 @@ try:
     load_dotenv(project_root / ".env")
 except ImportError:
     pass
+
+from src.voice_control.chatbot.persona import get_persona, voice_id_for
 
 import re
 import glob
