@@ -25,6 +25,23 @@ def test_get_backend_unknown_raises(monkeypatch):
 
 def test_get_backend_default_when_env_unset(monkeypatch):
     monkeypatch.delenv("SPOT_TTS_BACKEND", raising=False)
-    register_backend("kokoro", lambda: FakeBackend())
+    register_backend("elevenlabs", lambda: FakeBackend())  # DEFAULT_BACKEND
+    register_backend("kokoro", lambda: FakeBackend())      # FALLBACK_BACKEND
     backend = get_backend()
     assert backend is not None
+
+
+def test_get_backend_fallback_on_init_failure(monkeypatch):
+    """If the chosen backend cannot be instantiated (e.g. ElevenLabs without
+    an API key), get_backend() falls back to Kokoro so Spot keeps talking."""
+    from src.voice_control.tts import _INSTANCES
+    _INSTANCES.clear()
+    monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
+
+    def _bad_factory():
+        raise RuntimeError("simulated init failure (no API key)")
+
+    register_backend("elevenlabs", _bad_factory)
+    register_backend("kokoro", lambda: FakeBackend())
+    backend = get_backend()
+    assert isinstance(backend, FakeBackend)
