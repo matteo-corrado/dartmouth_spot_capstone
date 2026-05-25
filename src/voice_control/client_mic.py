@@ -19,6 +19,13 @@ project_root = pathlib.Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+# Auto-load .env from project root so callers don't need `source .env` first.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(project_root / ".env")
+except ImportError:
+    pass
+
 import re
 import glob
 import time
@@ -700,20 +707,30 @@ def main():
     # Pre-loading them at startup starves the audio thread (CPU-bound
     # PyTorch init causes PortAudio init overflow and delays wake word).
 
-    # Eagerly initialize the Spot session (and upload a map if --map was
-    # passed) BEFORE starting the audio loop. Without --map this is still
-    # useful: it surfaces auth/lease errors before the user starts speaking,
-    # rather than at the moment of the first command. With --map, this is
-    # the only way to load the map as part of the same session bring-up
-    # (lazy init from dispatch would happen too late).
-    if args.map:
-        print(f"\n[Spot] Eager session init with map: {args.map}")
+    # Eagerly probe the Spot session (and upload a map if --map was passed)
+    # BEFORE starting the audio loop. This surfaces auth/lease/power errors
+    # at startup rather than mid-conversation. With --map, eager init is
+    # also the only way to load the map as part of the same session bring-up.
+    #
+    # If Spot is unreachable (powered off, no network, auth fail), auto-
+    # enable --dry-run so the voice pipeline (ASR + LLM + TTS) still runs
+    # end-to-end for benchtop testing without the robot. Caller can opt
+    # out by passing --dry-run explicitly (already a no-op below).
+    if not args.dry_run:
+        if args.map:
+            print(f"\n[Spot] Eager session init with map: {args.map}")
+        else:
+            print("\n[Spot] Probing session...")
         from src.voice_control.spot_dispatch import ensure_spot_session
         try:
             ensure_spot_session(map_path=args.map)
+            print("[Spot] Session ready.")
         except Exception as e:
-            print(f"[Spot] Eager session init failed: {e}")
-            print("[Spot] Will retry lazily on first command.")
+            print(f"[Spot] Not reachable ({type(e).__name__}: {e})")
+            print("[Spot] Auto-enabling dry-run mode (voice pipeline only, "
+                  "robot dispatch disabled).")
+            os.environ["SPOT_DRY_RUN"] = "1"
+            args.dry_run = True
 
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:

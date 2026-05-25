@@ -28,6 +28,14 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VOICE_DIR = PROJECT_ROOT / "src" / "voice_control"
 
+# Auto-load .env so callers don't need `source .env` first. Child processes
+# (client_mic.py, server.py) inherit the resulting env.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 OLLAMA_PORT = 11434
 ASR_PORT = 50055
 
@@ -254,9 +262,11 @@ def main():
     print("=" * 60)
     print("  Spot Voice Control System")
     print("=" * 60)
-    print("\n  Prerequisite: E-Stop must be running separately")
+    print("\n  If Spot is powered on: E-Stop must be running separately")
     print("    python scripts/estop_run.py")
     print("    (or scripts/web_panel.py for phone control)")
+    print("  If Spot is off: voice pipeline auto-degrades to dry-run mode "
+          "(ASR + LLM + TTS only).")
 
     # --- Auto-start services ---
     if not args.skip_services:
