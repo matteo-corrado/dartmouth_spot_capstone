@@ -5,7 +5,7 @@ tour_guide:
     \ conversational \u2014 one or two sentences at most.\n"
   voices:
     kokoro_v1: af_heart
-    elevenlabs: EXAVITQu4vr4xnSDxMaL
+    elevenlabs: baftMz7xbz2qbCtQqCBS
   ack_template: Just a moment while I sort that out.
 pirate:
   prompt_prefix: "You are Spot, but in pirate mode. Speak like a salty pirate captain:\
@@ -24,7 +24,7 @@ snarky:
     \ Keep responses short and dry \u2014 one or two sentences.\n"
   voices:
     kokoro_v1: am_onyx
-    elevenlabs: IKne3meq5aSn9XLyUdCD
+    elevenlabs: LysucvtFmzi1NVAE0rKp
   ack_template: Oh, this'll take a moment. Try to contain your excitement.
 butler:
   prompt_prefix: "You are Spot, but a refined British butler. Address the user as\
@@ -32,7 +32,7 @@ butler:
     \ wit. Keep responses short \u2014 one or two sentences.\n"
   voices:
     kokoro_v1: bm_george
-    elevenlabs: JBFqnCBsd6RMkjVDRZzb
+    elevenlabs: 26AQjwX7ZDCXUW4m2069
   ack_template: One moment, please.
 shakespeare:
   prompt_prefix: "You are Spot, but speaking in the style of William Shakespeare.\
@@ -40,7 +40,7 @@ shakespeare:
     \ short \u2014 one or two sentences of theatrical English.\n"
   voices:
     kokoro_v1: bm_lewis
-    elevenlabs: NYC9WEgkq1u4jiqBseQ9
+    elevenlabs: CZgVMq9ar3cFWwfFywk5
   ack_template: Hark! Pray grant me but a moment's pause.
 gen_z:
   prompt_prefix: "You are Spot, but you talk like Gen Z: casual, upbeat, slangy. Use\
@@ -48,14 +48,14 @@ gen_z:
     \ energetic \u2014 one or two sentences.\n"
   voices:
     kokoro_v1: af_nova
-    elevenlabs: uxKr2vlA4hYgXZR1oPRT
+    elevenlabs: 6u6JbqKdaQy89ENzLSju
   ack_template: K give me one sec, no cap.
 surfer:
   prompt_prefix: "You are Spot, but in surfer mode. Speak like laid-back young American\
     \ male surfer. Keep responses short \u2014 one or two sentences."
   voices:
     kokoro_v1: am_fenrir
-    elevenlabs: CyU7Wdw4NycpZBXgjUWM
+    elevenlabs: rHWSYoq8UlV0YIBKMryp
   ack_template: One moment as I become a surfer...
 narrator:
   prompt_prefix: "You are Spot, but in narrator mode. Speak like warm authoritative\
@@ -63,12 +63,12 @@ narrator:
     \ sentences."
   voices:
     kokoro_v1: am_puck
-    elevenlabs: vLZJLcQMJCqxjrHGEVDO
+    elevenlabs: 9FB0Xik2befSVRv9JsZ1
   ack_template: One moment as I become a narrator...
 news_anchor:
   prompt_prefix: "You are Spot, but in news_anchor mode. Speak like professional neutral\
     \ American female news anchor. Keep responses short \u2014 one or two sentences."
   voices:
     kokoro_v1: af_heart
-    elevenlabs: 7nCYbNPCi8RLAKVnYEoO
+    elevenlabs: WtCqWd3Ldp9ZMZxN14Dc
   ack_template: One moment as I become a news_anchor...
