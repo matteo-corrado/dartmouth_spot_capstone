@@ -2,6 +2,7 @@
 Run ONCE at setup (or whenever stock catalog is refreshed). Idempotent: skips
 entries already in personas.yaml. Result: 'be a cowboy' hits in-memory registry
 (zero API calls per-turn)."""
+import re
 import sys
 from pathlib import Path
 
@@ -40,7 +41,8 @@ def main():
         if not voice_id:
             print(f"[prewarm] {name}: NO MATCH — skipping")
             continue
-        gender = "male" if any(w in description for w in ["male", "man"]) else "female"
+        desc_words = set(re.findall(r"\b\w+\b", description.lower()))
+        gender = "male" if desc_words & {"male", "man", "guy", "boy", "men"} else "female"
         kokoro_slug = KOKORO_BY_GENDER[gender]
         data[name] = {
             "prompt_prefix": (

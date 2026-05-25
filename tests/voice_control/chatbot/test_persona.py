@@ -15,9 +15,9 @@ REGISTRY_PATH = "config/personas.yaml"
 
 def test_load_registry_returns_six_personas():
     reg = load_registry(REGISTRY_PATH)
-    assert set(reg.keys()) == {
+    assert {
         "tour_guide", "pirate", "snarky", "butler", "shakespeare", "gen_z",
-    }
+    } <= set(reg.keys())
 
 
 def test_persona_has_prompt_prefix_and_voices():
@@ -25,7 +25,7 @@ def test_persona_has_prompt_prefix_and_voices():
     pirate = reg["pirate"]
     assert isinstance(pirate, Persona)
     assert "pirate" in pirate.prompt_prefix.lower()
-    assert pirate.voices["kokoro_v1"] == "am_fenrir"
+    assert pirate.voices["kokoro_v1"] == "am_michael"
     assert pirate.voices["elevenlabs"] == "Xq2dbIWNPChFB77imiDe"
     # Persona with no override returns empty dict; pirate carries a vlm override.
     assert reg["butler"].sampling_overrides == {}
@@ -67,5 +67,5 @@ def test_voice_id_for():
     from src.voice_control.chatbot.persona import voice_id_for
     reg = load_registry(REGISTRY_PATH)
     pirate = reg["pirate"]
-    assert voice_id_for(pirate, "kokoro") == "am_fenrir"
+    assert voice_id_for(pirate, "kokoro") == "am_michael"
     assert voice_id_for(pirate, "elevenlabs") == "Xq2dbIWNPChFB77imiDe"

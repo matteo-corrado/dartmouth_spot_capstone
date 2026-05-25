@@ -62,7 +62,7 @@ def find_and_claim(description: str, persona_name: str) -> Optional[str]:
     try:
         result = client.voices.get_shared(
             search=description,
-            sort="popularity",
+            sort="trending",
             page_size=5,
         )
     except Exception as e:
