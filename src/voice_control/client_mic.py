@@ -420,6 +420,13 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 # ============================================================================
 # Intent Execution
 # ============================================================================
+# State-only intents mutate brain/TTS state and do NOT touch the robot;
+# dispatch_intent handles them BEFORE ensure_spot_session(), so they must run
+# even in dry-run mode (Spot off). Otherwise "switch to pirate" no-ops and
+# every subsequent voice_id resolves to the prior persona's voice.
+_STATE_ONLY_INTENTS = {"set_persona", "add_persona", "set_volume"}
+
+
 def execute_on_spot(intent: dict, brain=None) -> bool:
     """Execute parsed intent on Spot robot.
 
@@ -427,7 +434,8 @@ def execute_on_spot(intent: dict, brain=None) -> bool:
     state (set_persona today, follow-ups later) can mutate it. Safety + regex
     fallback paths leave it None — those intents never touch brain state.
     """
-    if os.environ.get("SPOT_DRY_RUN") == "1":
+    intent_name = intent.get("intent", "")
+    if os.environ.get("SPOT_DRY_RUN") == "1" and intent_name not in _STATE_ONLY_INTENTS:
         print(f"[dry-run] would dispatch: {intent}")
         return True
     try:
