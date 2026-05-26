@@ -59,17 +59,35 @@ def find_and_claim(description: str, persona_name: str) -> Optional[str]:
         logger.warning(f"[VoiceDiscovery] {e}")
         return None
 
-    try:
-        result = client.voices.get_shared(
-            search=description,
-            sort="trending",
-            page_size=5,
-        )
-    except Exception as e:
-        logger.warning(f"[VoiceDiscovery] get_shared failed: {e}")
-        return None
-    if not result.voices:
-        logger.info(f"[VoiceDiscovery] no library match for '{description}'")
+    # ElevenLabs Library search matches against voice tags, not free text — multi-word
+    # descriptions like "deep gravelly American male cowboy" frequently return 0 hits
+    # even when single-word tags like "cowboy" hit 3+ voices. Try a ladder of progressively
+    # broader queries: persona name first (usually a tag-like noun), then full description,
+    # then first word of description as last resort.
+    queries: list[str] = []
+    name_q = persona_name.replace("_", " ").strip()
+    if name_q:
+        queries.append(name_q)
+    if description and description.lower() != name_q.lower():
+        queries.append(description)
+        first_word = description.split()[0] if description.split() else ""
+        if first_word and first_word.lower() not in {name_q.lower(), description.lower()}:
+            queries.append(first_word)
+
+    result = None
+    matched_query = None
+    for q in queries:
+        try:
+            result = client.voices.get_shared(search=q, sort="trending", page_size=5)
+        except Exception as e:
+            logger.warning(f"[VoiceDiscovery] get_shared({q!r}) failed: {e}")
+            continue
+        if result.voices:
+            matched_query = q
+            print(f"[VoiceDiscovery] matched query={q!r} top={result.voices[0].name!r}")
+            break
+    if result is None or not result.voices:
+        print(f"[VoiceDiscovery] no library match for any of {queries!r}")
         return None
 
     top = result.voices[0]

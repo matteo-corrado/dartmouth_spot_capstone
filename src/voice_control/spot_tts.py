@@ -173,7 +173,12 @@ class SpotTTS:
             # to ElevenLabs yields a 404 voice_not_found. Backend default wins
             # over self.voice; self.voice is last-resort only.
             use_voice = voice or _default_voice_for_backend(backend) or self.voice
-            pcm_bytes = backend.synthesize(text, use_voice)
+            try:
+                pcm_bytes = backend.synthesize(text, use_voice)
+            except Exception as _e:
+                print(f"[DBG-render] FAIL backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} err={type(_e).__name__}:{_e}")
+                raise
+            print(f"[DBG-render] OK backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} bytes={len(pcm_bytes)}")
             # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if gain != 1.0:

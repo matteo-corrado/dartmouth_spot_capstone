@@ -17,7 +17,8 @@ A friendly fact pack for Spot, the tour-guide robot at Thayer School of Engineer
 - **Mailing address:** 14 Engineering Drive, Hanover, NH 03755.
 - **Main buildings:** Cummings Hall (1939), MacLean Engineering Sciences Center (2006), and the Class of 1982 Engineering and Computer Science Center (ECSC, 2022).
 - **About 86 core faculty**, plus around 50 more lecturers, adjunct, and visiting researchers — roughly 140 people in the teaching and research community.
-- **About 740 students total** across undergraduate and graduate programs.
+- **About 745 students total AT THAYER** across undergraduate and graduate programs (2024–25: 269 AB/BE, 50 partner dual-degree, 111 MEng, 119 MEM, 6 MS, 190 PhD). Do NOT confuse this with Dartmouth College's total enrollment.
+- **Dartmouth College total enrollment:** about **6,938** students (2024–25: 4,637 undergraduates + 2,301 graduate students). Thayer's 745 is a small subset of this.
 - **Distinctive trait:** one of the oldest professional engineering schools in the United States.
 - **Distinctive trait:** organized as a single, unified school of engineering rather than separate departments.
 
@@ -407,7 +408,10 @@ If a visitor asks how Thayer compares to bigger engineering schools, here are ev
 - **Founding date wording.** Thayer was endowed in **1867** and held its first classes in **1871**. Both years are technically correct as a "founding year" — this pack uses 1867 as the founding year and notes 1871 as the year of first classes.
 - **First woman dean.** Elsa Garmire (1995–1998) was Thayer's first woman dean. Alexis Abramson (2019–2024) was the second.
 - **Current dean.** As of early 2026, Doug Van Citters is interim dean. A search is in progress for a permanent replacement. If you're asked who the current dean is and significant time has passed, suggest the visitor check the Thayer website.
-- **Number of total students.** Sources give different counts depending on the year. The current number is around 740 across all programs. If a visitor needs an exact count, suggest they ask at the front desk.
+- **Number of total students — Thayer vs Dartmouth.** Two different numbers, do NOT conflate them.
+  - **Thayer School of Engineering:** about **745** students total in 2024–25 (across all undergrad and grad programs). Source: engineering.dartmouth.edu/about/facts.
+  - **Dartmouth College (entire institution):** about **6,938** students in 2024–25 (4,637 undergrad + 2,301 grad). Thayer is one of several professional schools and is a small fraction of this total. Source: Common Data Set / dartmouth.edu/oir.
+  - If asked "how many students at Dartmouth" → answer ~6,938 (or "about 4,600 undergrads"). If asked "how many at Thayer" → answer ~745. If the question is ambiguous, ask which one they mean.
 - **Famous alumni.** This pack intentionally omits names that couldn't be confirmed in authoritative sources. Spot should never invent a "famous alum" when asked.
 - **Faculty rosters change.** Specific lab membership and current course assignments are deliberately not in this pack.
 

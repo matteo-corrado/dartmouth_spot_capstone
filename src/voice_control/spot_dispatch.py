@@ -550,24 +550,54 @@ def _handle_set_volume(params):
         return False
 
 
+def _handle_set_backend(params):
+    """Switch active TTS backend at runtime. Accepts {"name": "kokoro"|"elevenlabs"}.
+
+    Sets SPOT_TTS_BACKEND so subsequent get_backend() calls route to the new
+    backend, then warms the instance so the first post-switch synth doesn't
+    pay cold-init latency.
+    """
+    name = (params or {}).get("name", "").strip().lower()
+    if name not in {"kokoro", "elevenlabs"}:
+        print(f"[Spot] set_backend: invalid name '{name}' (expected 'kokoro' or 'elevenlabs')")
+        return False
+    os.environ["SPOT_TTS_BACKEND"] = name
+    try:
+        from src.voice_control.tts import get_backend, get_active_backend_name
+        get_backend()  # lazy init / cache warm
+        active = get_active_backend_name()
+        print(f"[Spot] ✓ TTS backend switched to '{active}'")
+        return True
+    except Exception as e:
+        print(f"[Spot] ✗ set_backend warm failed: {e}")
+        return False
+
+
 def do_set_persona(params: dict, brain) -> dict:
     """Switch active persona via runtime action.
 
     Params:
         name: persona registry key (e.g. "pirate", "butler", "tour_guide").
 
-    On unknown name: falls back to default + logs warning (handled inside
-    persona registry's get_persona()).
+    Unknown name → auto-upgrade to add_persona with an LLM-generated voice
+    description, instead of the prior silent fallback to tour_guide. This
+    salvages the common case where the LLM emits set_persona for a name
+    that isn't registered yet (e.g. "cowboy", "wizard").
     """
-    name = (params or {}).get("name", "").strip()
+    name = (params or {}).get("name", "").strip().lower()
     if not name:
         return {"ok": False, "error": "set_persona requires 'name' param"}
     if brain is None:
         return {"ok": False, "error": "set_persona requires a brain instance"}
+    if name not in brain._persona_registry:
+        print(f"[Dispatch] Unknown persona '{name}' — auto-upgrading to add_persona")
+        description = brain.describe_persona(name) if hasattr(brain, "describe_persona") else f"{name} character voice"
+        return do_add_persona({"name": name, "description": description}, brain)
     from src.voice_control.chatbot.persona import get_persona
     persona = get_persona(name, brain._persona_registry)
     brain.session_state.current_persona = persona.name
-    print(f"[Dispatch] Persona switched to '{persona.name}'")
+    threading.Thread(target=brain.warm_up, daemon=True).start()
+    print(f"[Dispatch] Persona switched to '{persona.name}' (warming new prefix in bg)")
     return {"ok": True, "persona": persona.name}
 
 
@@ -603,20 +633,28 @@ def do_add_persona(params: dict, brain) -> dict:
 
     tts = get_tts()
 
-    result_box = {"voice_id": None}
+    print(f"[Dispatch] add_persona name='{name}' description='{description}'")
+    result_box = {"voice_id": None, "error": None}
     def worker():
-        result_box["voice_id"] = find_and_claim(description, name)
+        try:
+            result_box["voice_id"] = find_and_claim(description, name)
+        except Exception as e:
+            result_box["error"] = f"{type(e).__name__}: {e}"
     t = threading.Thread(target=worker, daemon=True)
     t.start()
     if tts is not None:
         tts.speak(ack_text)  # ACK plays through speakers; claim happens in parallel
-    t.join(timeout=8.0)  # hard budget; beyond which user thinks it failed
+    t.join(timeout=15.0)  # ElevenLabs Library search + share can take 8-12s; was 8s (too tight)
 
     new_voice_id = result_box["voice_id"]
     if not new_voice_id:
+        reason = ("worker raised: " + result_box["error"]) if result_box["error"] else (
+            "thread still running after 15s budget" if t.is_alive() else "voice library returned no match"
+        )
+        print(f"[Dispatch] add_persona FAILED for '{name}': {reason}")
         if tts is not None:
             tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
-        return {"ok": False, "error": "no voice match or timeout"}
+        return {"ok": False, "error": reason}
 
     # Word-boundary match — substring would misfire ("female" contains "male").
     desc_words = set(re.findall(r"\b\w+\b", description.lower()))
@@ -661,6 +699,8 @@ def dispatch_intent(intent, brain=None):
         return do_add_persona(params, brain).get("ok", False)
     if name == "set_volume":
         return _handle_set_volume(params)
+    if name == "set_backend":
+        return _handle_set_backend(params)
 
     try:
         session = ensure_spot_session()

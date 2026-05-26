@@ -129,6 +129,16 @@ class AudioFeedback:
         samples = _tone(659, 60, 0.15)
         self._play(samples, "chain_next")
 
+    def ready(self):
+        """Power-on chime — pipeline initialized (C4 -> C5 -> C6, 240ms)."""
+        c4 = _tone(261, 80, 0.25)
+        c5 = _tone(523, 80, 0.25)
+        c6 = _tone(1047, 80, 0.25)
+        samples = np.concatenate([c4[:-int(SAMPLE_RATE*TAIL_MS/1000)],
+                                  c5[:-int(SAMPLE_RATE*TAIL_MS/1000)],
+                                  c6])
+        self._play(samples, "ready")
+
 
 # Module-level singleton. Created without a player so importing the module
 # is side-effect free; client_mic.py wires up the real player at startup

@@ -481,6 +481,7 @@ class AudioPlayer:
             except queue.Empty:
                 continue
 
+            print(f"[DBG-worker] picked task={task.label} qsize={self._queue.qsize()} inflight={self._inflight}")
             try:
                 with self._inflight_lock:
                     self._current_task_started_at = time.monotonic()
@@ -489,6 +490,7 @@ class AudioPlayer:
                 _safe_cb(task.on_render_start)
                 samples, rate = self._materialize(task)
                 if samples is None:
+                    print(f"[DBG-worker] {task.label}: samples=None (render failed) -> skip")
                     _safe_cb(task.on_render_end)
                     continue
                 _safe_cb(task.on_render_end)
@@ -499,6 +501,7 @@ class AudioPlayer:
                 # force_reset/shutdown) within ~100ms instead of blocking for
                 # the full duration of the utterance.
                 played_first_chunk = False
+                n_chunks_written = 0
                 for offset in range(0, len(samples), chunk_samples):
                     if stop.is_set():
                         break
@@ -506,6 +509,8 @@ class AudioPlayer:
                         _safe_cb(task.on_play_start)
                         played_first_chunk = True
                     self._stream.write(samples[offset:offset + chunk_samples])
+                    n_chunks_written += 1
+                print(f"[DBG-worker] {task.label}: wrote {n_chunks_written} chunks ({n_chunks_written * self._CHUNK_MS}ms), stop={stop.is_set()}, samples_total={len(samples)}")
                 _safe_cb(task.on_play_end)
             except Exception as e:
                 print(f"[Player] {task.label}: playback error: {e}")

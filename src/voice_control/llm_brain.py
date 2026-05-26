@@ -112,6 +112,7 @@ AVAILABLE ACTIONS:
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
 - set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to tour_guide), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
 - add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
   • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
   • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
@@ -126,6 +127,8 @@ RULES:
 - Location names must be lowercase with underscores.
 - IMPORTANT: Check "saved_locations" in the robot state. If the user says "go to X" and X matches a saved location name, ALWAYS use go_to (map navigation). Only use go_to_object for objects NOT in saved_locations (e.g. "go to the red chair" when "red_chair" is not a saved location).
 - IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?" are OBSERVATION questions — use describe (look with camera), NOT go_to_object. Only use go_to_object when the user explicitly says "go to X", "walk to X", "find X", or "approach X".
+- IMPORTANT: When the user says "add", "create", "make" a [name] voice or persona → ALWAYS use add_persona, NEVER set_persona. The verb is the trigger, regardless of whether [name] looks like it could be a known persona. Use set_persona ONLY for verbs like "be", "switch to", "act like", "turn into" combined with a name already in the known personas list.
+- THINKING: You SHOULD include "thinking": "<brief reasoning under 30 words>" BEFORE "actions" whenever the request requires interpretation. You MUST include thinking when: (a) actions list has 2+ items, (b) the action is add_persona, (c) selecting between similar persona names, (d) the user's target for go_to / go_to_object / find is ambiguous, (e) interpreting figurative or sarcastic language. The thinking field is logged for the operator — the user does not hear it. Omit it for trivial replies (greetings, yes/no, acknowledgements).
 
 EXAMPLES:
 User: "How are you doing?"
@@ -162,7 +165,25 @@ User: "Set your volume to 80 percent"
 {"actions": [{"action": "set_volume", "params": {"level": 80}}], "response": "Setting my volume to 80%."}
 
 User: "A bit louder please"
-{"actions": [{"action": "set_volume", "params": {"level": 90}}], "response": "Speaking up!"}"""
+{"actions": [{"action": "set_volume", "params": {"level": 90}}], "response": "Speaking up!"}
+
+User: "Switch to pirate" (pirate IS in known personas)
+{"actions": [{"action": "set_persona", "params": {"name": "pirate"}}], "response": "Aye, hoisting the colors!"}
+
+User: "Add a cowboy voice" (cowboy NOT in known personas)
+{"thinking": "User said 'add' so must use add_persona, not set_persona. Cowboy = American male, deep gravelly tone.", "actions": [{"action": "add_persona", "params": {"name": "cowboy", "description": "deep gravelly American male cowboy"}}], "response": "Howdy partner — saddlin' up a new voice for ya."}
+
+User: "Go to the conference and come back" (chained action — 2 items)
+{"thinking": "Two actions in order: go_to conference, then come_back. Sequential chaining.", "actions": [{"action": "go_to", "params": {"location": "conference"}}, {"action": "come_back", "params": {}}], "response": "Going to conference and coming right back!"}
+
+User: "Add a new persona called scientist who sounds like a calm British professor" (scientist NOT in known personas)
+{"actions": [{"action": "add_persona", "params": {"name": "scientist", "description": "calm measured British male professor"}}], "response": "Splendid — let me prepare the voice of inquiry."}
+
+User: "Switch to your local voice" / "Go offline mode" / "Use kokoro"
+{"actions": [{"action": "set_backend", "params": {"name": "kokoro"}}], "response": "Switching to my local voice."}
+
+User: "Switch to your premium voice" / "Use elevenlabs"
+{"actions": [{"action": "set_backend", "params": {"name": "elevenlabs"}}], "response": "Bringing in the premium voice."}"""
 
 
 # ---------------------------------------------------------------------------
@@ -274,47 +295,80 @@ class LLMBrain:
             return False
 
     def warm_up(self):
-        """Send a trivial prompt to pre-load model into VRAM."""
+        """Send a trivial prompt through the ACTIVE backend to prime KV cache.
+
+        Must route through `_backend().chat()` (not direct Ollama REST) — the
+        default backend is llama.cpp, so hitting Ollama would warm a different
+        process and the first real call still pays full cold-start cost. The
+        system prompt is identical to what `process()` builds, so llama.cpp's
+        `cache_prompt=True` reuses the same KV prefix on the next user turn.
+        max_tokens=10 keeps the generation phase short — the prompt-prefill
+        is what we want primed, not the output.
+        """
         if not self.is_available():
             return
-        print(f"[Brain] Warming up model '{self.model}'...")
+        backend = _backend()
+        print(f"[Brain] Warming up backend '{backend.name}'...")
         t0 = time.time()
         try:
-            # Use the actual system prompt so Ollama caches its KV state.
-            # This makes the first real command fast (~0.2s prompt eval
-            # instead of ~1.5s cold).
             warm_state = {"battery_percent": "unknown", "is_powered": True,
                           "is_standing": "unknown", "saved_locations": "none"}
             messages = self._build_messages("ping", warm_state)
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    # No "format": "json" here — warm-up discards response, and combining
-                    # it with "think": False triggers Ollama bug #15260 (json constraint
-                    # silently dropped). Plain text gen is fine for KV-cache priming.
-                    "think": False,
-                    "stream": False,
-                    "keep_alive": -1,
-                    "options": {"num_predict": 10, "num_gpu": 99, "num_ctx": 32768},
-                },
+            system = messages[0]["content"]
+            user_history = messages[1:]
+            backend.chat(
+                system,
+                user_history,
+                profile="freeform",
+                max_tokens=10,
                 timeout=FIRST_REQUEST_TIMEOUT,
             )
             elapsed = time.time() - t0
             self._first_request = False
-            if r.status_code == 200:
-                print(f"[Brain] Model warm in {elapsed:.1f}s (prompt cached)")
-            else:
-                print(f"[Brain] Warm-up got status {r.status_code}")
+            print(f"[Brain] Backend warm in {elapsed:.1f}s (prompt cached)")
         except Exception as e:
-            print(f"[Brain] Warm-up error: {e}")
+            print(f"[Brain] Warm-up error: {type(e).__name__}: {e}")
 
     def warm_up_vlm(self):
         """No-op since LLM and VLM are now the same model (gemma4:e4b).
         Kept for API compatibility with callers that still invoke it.
         """
         return
+
+    def describe_persona(self, name: str) -> str:
+        """Generate a 5-10 word voice + style description for a persona name.
+
+        Used by the dispatcher safety net when set_persona is called with an
+        unknown name and we auto-upgrade to add_persona — feeds ElevenLabs
+        Voice Library matching with richer traits than just the bare name.
+        On any failure, returns a generic fallback so add_persona still runs.
+        """
+        fallback = f"{name} character voice"
+        if not self.is_available():
+            return fallback
+        try:
+            r = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": "Return only a 5-10 word voice and style description for a TTS persona. Cover gender, accent, tone, and style. No punctuation, no quotes, no preamble."},
+                        {"role": "user", "content": f"Persona name: {name}"},
+                    ],
+                    "think": False,
+                    "stream": False,
+                    "keep_alive": -1,
+                    "options": {"num_predict": 30, "num_ctx": 4096},
+                },
+                timeout=10.0,
+            )
+            if r.status_code == 200:
+                desc = r.json().get("message", {}).get("content", "").strip()
+                if desc:
+                    return desc[:120]
+        except Exception as e:
+            print(f"[Brain] describe_persona({name}) failed: {type(e).__name__}: {e}")
+        return fallback
 
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build message list. State is the live robot snapshot from
@@ -368,6 +422,9 @@ class LLMBrain:
             parsed = json.loads(raw)
             grammar_actions = parsed.get("actions", []) or []
             response = parsed.get("response", "").strip()
+            thinking = (parsed.get("thinking") or "").strip()
+            if thinking:
+                print(f"[Brain-think] {thinking}")
         except json.JSONDecodeError:
             # Grammar guarantees valid JSON — should never hit. Defensive.
             grammar_actions = []

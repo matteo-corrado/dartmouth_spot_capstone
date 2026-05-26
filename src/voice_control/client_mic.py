@@ -137,8 +137,8 @@ BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 SILERO_VAD_PATH = "/mnt/ssd/vad-models/silero_vad.onnx"
 VAD_WINDOW_SAMPLES = 512         # Silero default @ 16 kHz = 32 ms; VAD buffers internally
-SILENCE_TIMEOUT_SHORT = 0.8      # Silence timeout for short utterances (< 2s)
-SILENCE_TIMEOUT_LONG = 1.5       # Silence timeout for longer utterances (> 2s, e.g. chained commands)
+SILENCE_TIMEOUT_SHORT = 1.2      # Silence timeout for short utterances (< 2s)
+SILENCE_TIMEOUT_LONG = 2.25      # Silence timeout for longer utterances (> 2s, e.g. chained commands)
 SILENCE_CROSSOVER = 2.0          # Switch from short to long timeout after this much speech (seconds)
 MAX_UTTERANCE_SECONDS = 20       # Force-send after this duration (up from 8 — allows long chains)
 MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
@@ -424,7 +424,7 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 # dispatch_intent handles them BEFORE ensure_spot_session(), so they must run
 # even in dry-run mode (Spot off). Otherwise "switch to pirate" no-ops and
 # every subsequent voice_id resolves to the prior persona's voice.
-_STATE_ONLY_INTENTS = {"set_persona", "add_persona", "set_volume"}
+_STATE_ONLY_INTENTS = {"set_persona", "add_persona", "set_volume", "set_backend"}
 
 
 def execute_on_spot(intent: dict, brain=None) -> bool:
@@ -798,6 +798,8 @@ def main():
     print("  Safety commands (stop/freeze/estop) always instant")
     print("  Everything else goes through the LLM brain")
     print("=" * 60 + "\n")
+
+    beep.ready()
 
     # ========================================================================
     # Main Loop State
