@@ -921,8 +921,9 @@ def main():
                         listening_start_time = time.time()
                         # Don't drain audio — remaining speech ("stand up" in
                         # "Hey Spot stand up") stays in buffer for VAD to pick up
-                    # Still process VAD for safety commands below
-                    # (stop/freeze/estop work even in WAKE_WORD state)
+                    # Cold stop/freeze/estop is handled above by the always-on
+                    # safety KWS (Stage 2F C1). The VAD->ASR path below still
+                    # serves the ASR-wake fallback (no dedicated detector).
 
                 # Calculate frame energy
                 frame_rms = compute_rms(frame)
@@ -1029,7 +1030,7 @@ def main():
                             speech_buffer.clear()
                             speech_float_buffer.clear()
                             _drain_audio_queue()
-                            if result != "wake_detected":
+                            if result != "wake_detected" and not safety_only:
                                 response_pending = True
                             if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                 print(">>> Now listening for commands...")
@@ -1070,7 +1071,7 @@ def main():
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
                                 _drain_audio_queue()
-                                if result != "wake_detected":
+                                if result != "wake_detected" and not safety_only:
                                     response_pending = True
                                 if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                     print(">>> Now listening for commands...")
