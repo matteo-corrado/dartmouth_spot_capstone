@@ -1,0 +1,14 @@
+{
+  "_comment": "Stage 2F voice-eval baseline. Tolerances are the regression gate (spec Component 5). VALUES are the observed run on this single-operator lab corpus (2026-05-30). Update ONLY on an approved intentional change, never to mask a regression.",
+  "chunker_tdd": {"required": "20/20 pass", "gate": "all pass"},
+  "barge_in_asserts": {"required": "5/5 pass", "gate": "all pass"},
+  "safety_recall": {"value": 1.0, "gate": ">= 1.0 before over-fire wake ships (C1)"},
+  "idle_false_fires": {"value": 0, "gate": "informational — nuisance, not a hazard; track for regressions"},
+  "wake_tpr_single_operator_ceiling": {"value": 1.0, "gate": "informational only — optimistic ceiling, NOT robustness (C4)"},
+  "far_per_hour_ci_upper": {"value": 273.418, "negative_hours": 0.011, "gate": "UNMEASURABLE on minutes-long corpus; the 273/hr CI upper reflects 0.011h of negatives, NOT a real FAR. A <=1/hr gate needs >=3h zero-fire negatives (C3)."},
+  "tolerances": {
+    "tpr_max_drop_pts": 2,
+    "far_ci_upper_max_per_hour": 1.0,
+    "safety_recall_min": 1.0
+  }
+}
