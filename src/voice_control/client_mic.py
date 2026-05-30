@@ -825,12 +825,38 @@ def main():
     from collections import deque
     preroll_buffer = deque(maxlen=PREROLL_FRAMES)  # Ring buffer for pre-onset audio
 
+    # Stage 2F P0a: barge-in reset bookkeeping. `player_was_busy` tracks the
+    # AudioPlayer busy edge across iterations; `response_pending` is armed only
+    # after a processed utterance (TTS response), never after the wake beep,
+    # so the in-breath command audio kept on a wake fire is not drained.
+    player_was_busy = False
+    response_pending = False
+
     # Wake word state
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
     listening_start_time = time.time()
 
     try:
         while True:
+            # Stage 2F P0a: on the player busy->idle edge after a TTS response,
+            # reset streaming-detector state so the speaker tail + stale VAD/KWS
+            # decisions can't corrupt the next detection. Never touches `state`.
+            from src.voice_control.barge_in import should_reset_after_player
+            busy = _audio_player.is_busy() if _audio_player is not None else False
+            if should_reset_after_player(response_pending, player_was_busy, busy):
+                vad.reset()
+                if wake_detector:
+                    wake_detector.reset()
+                preroll_buffer.clear()
+                pending_speech_frames.clear()
+                consecutive_speech = 0
+                is_speaking = False
+                speech_buffer.clear()
+                speech_float_buffer.clear()
+                _drain_audio_queue()
+                response_pending = False
+                print("[Barge-in] detector state reset after TTS response")
+            player_was_busy = busy
             # Get audio from queue. Short timeout so we still cycle (and stay
             # responsive to SIGTERM / KeyboardInterrupt) even when the audio
             # callback has stopped putting frames in the queue — which is
@@ -967,6 +993,8 @@ def main():
                             speech_buffer.clear()
                             speech_float_buffer.clear()
                             _drain_audio_queue()
+                            if result != "wake_detected":
+                                response_pending = True
                             if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                 print(">>> Now listening for commands...")
                                 beep.wake_detected()
@@ -1006,6 +1034,8 @@ def main():
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
                                 _drain_audio_queue()
+                                if result != "wake_detected":
+                                    response_pending = True
                                 if result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                     print(">>> Now listening for commands...")
                                     beep.wake_detected()
