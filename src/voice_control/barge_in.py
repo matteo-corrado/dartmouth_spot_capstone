@@ -8,7 +8,7 @@ vad/wake/drain callables.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Callable
 
 
 def should_reset_after_player(response_pending: bool, was_busy: bool, busy: bool) -> bool:
