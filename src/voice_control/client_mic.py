@@ -738,8 +738,10 @@ def main():
 
     # Stage 2F C1: always-on safety KWS — stop/freeze/estop fire at frame level
     # in WAKE_WORD state with no wake required, even when the wake backend is
-    # livekit. Fail-closed: if it cannot load, refuse motion (handled where the
-    # detector is consumed); a future task adds the startup health gate.
+    # livekit. Degraded (not fail-closed): if it cannot load, the frame-level
+    # cold-stop check is skipped and safety falls back to the VAD->ASR path
+    # (which needs a wake first in WAKE_WORD state); a future task adds a
+    # startup health gate to enforce this explicitly.
     safety_detector = None
     try:
         from src.voice_control.wake.safety_kws import make_safety_detector

@@ -76,3 +76,8 @@ elevenlabs>=2.0,<3.0
 # zero dependencies, natively abbreviation-aware (Dr./U.S./decimals). Cannot
 # perturb the numpy/onnxruntime-gpu/kokoro-onnx/opencv pins.
 pysbd==0.3.4
+
+# Stage 2F C1 — BPE tokenization for the safety keyword-file generator
+# (scripts/setup_safety_kws.py builds models/kws/safety_keywords.txt). Already
+# present on the Jetson (0.2.1); self-contained wheel, no numpy/onnx deps.
+sentencepiece>=0.2.0
