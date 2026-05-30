@@ -12,7 +12,12 @@ Pure + synchronous: returns (complete_sentences, remainder). The chunker keeps
 from __future__ import annotations
 import re
 
-_BACKEND = "pysbd"  # blingfire has no aarch64 wheel on JetPack 6 (Task 5)
+# Backend choice (eval 2026-05-30): pysbd beats the alternatives for per-char
+# streaming on the pinned aarch64 Jetson venv — blingfire (no aarch64 build),
+# nltk-punkt (splits "e.g."), syntok / sentence-splitter (compiled regex dep),
+# spaCy (263 MB, 28 deps, numpy-2 pull), wtpsplit/SaT (11-13 ms/call, not viable).
+# pysbd is pure-Python, zero-dep, MIT, sub-ms, and passes all abbreviation cases.
+_BACKEND = "pysbd"
 
 # Lowercased tokens that, when they immediately precede a split point, indicate
 # a false boundary. Compared against the last whitespace-delimited token of a
