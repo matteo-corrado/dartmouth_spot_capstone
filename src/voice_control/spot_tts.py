@@ -172,7 +172,16 @@ class SpotTTS:
             # self.voice is a Kokoro slug by default (e.g. af_sarah). Passing it
             # to ElevenLabs yields a 404 voice_not_found. Backend default wins
             # over self.voice; self.voice is last-resort only.
-            use_voice = voice or _default_voice_for_backend(backend) or self.voice
+            # Mid-turn set_backend can leave the closure carrying a voice ID
+            # for the OLD backend (kokoro slug → ElevenLabs, or vice versa).
+            # Detect by shape: kokoro slugs are short and contain '_'.
+            backend_name = type(backend).__name__
+            voice_is_kokoro_shape = bool(voice) and "_" in (voice or "") and len(voice or "") < 16
+            mismatch = bool(voice) and (
+                ("ElevenLabs" in backend_name and voice_is_kokoro_shape)
+                or ("Kokoro" in backend_name and not voice_is_kokoro_shape)
+            )
+            use_voice = (None if mismatch else voice) or _default_voice_for_backend(backend) or self.voice
             try:
                 pcm_bytes = backend.synthesize(text, use_voice)
             except Exception as _e:

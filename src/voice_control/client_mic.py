@@ -566,6 +566,9 @@ def main():
     parser.add_argument("--output-device", type=int, default=None, help="Speaker output device index (auto-detected from UACDemoV1.0)")
     parser.add_argument("--no-brain", action="store_true", help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true", help="Disable text-to-speech")
+    parser.add_argument("--tts-backend", choices=["kokoro", "elevenlabs"], default=None,
+                        help="TTS backend (overrides SPOT_TTS_BACKEND env). "
+                             "kokoro=local ONNX, elevenlabs=cloud premium.")
     parser.add_argument("--no-wake-word", action="store_true", help="Always listening (skip wake word)")
     parser.add_argument("--dry-run", action="store_true", help="Skip robot dispatch (transcript+brain only; for mic-verify)")
     parser.add_argument("--debug-audio", action="store_true", help="Print audio levels for mic diagnostics")
@@ -590,6 +593,10 @@ def main():
     if args.dry_run:
         os.environ["SPOT_DRY_RUN"] = "1"
         print("[dry-run] robot dispatch disabled (transcript + brain only)")
+
+    if args.tts_backend is not None:
+        os.environ["SPOT_TTS_BACKEND"] = args.tts_backend
+        print(f"[TTS] backend override: {args.tts_backend}")
 
     # Latency telemetry — no-op when --latency=off
     init_recorder(mode=args.latency, file_path=args.latency_out)

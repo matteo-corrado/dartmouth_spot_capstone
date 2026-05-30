@@ -185,8 +185,15 @@ def initialize_localization(robot, use_fiducial: bool = True) -> bool:
         else:
             print("✗ Localization failed - robot may not see a fiducial or be at the waypoint")
             return False
+    except ResponseError as e:
+        status = getattr(e.response, "status", None)
+        if status == graph_nav_pb2.SetLocalizationResponse.STATUS_NO_MATCHING_FIDUCIAL:
+            print("Localization failed: no map fiducial in view. Move Spot so a recorded fiducial is visible, or use waypoint init.")
+            return False
+        print(f"Localization error: {e}")
+        return False
     except Exception as e:
-        print(f"✗ Localization error: {e}")
+        print(f"Unexpected localization error: {e}")
         import traceback
         traceback.print_exc()
         return False

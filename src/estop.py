@@ -3,18 +3,52 @@ import time
 from contextlib import contextmanager
 
 from bosdyn.client import create_standard_sdk
-from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-from bosdyn.client.time_sync import TimeSyncClient
+from bosdyn.client.estop import (
+    EstopClient,
+    EstopEndpoint,
+    EstopKeepAlive,
+    MotorsOnError,
+)
+from bosdyn.client.exceptions import RetryableRpcError, UnimplementedError
+from bosdyn.client.lease import LeaseClient
 from src.config import BOSDYN_ROBOT_IP, BOSDYN_CLIENT_USERNAME, BOSDYN_CLIENT_PASSWORD
 
 
-def claim_estop(estop_client: EstopClient, name: str, timeout_sec: int) -> EstopEndpoint:
-    """Claim the E-Stop by deregistering existing endpoints and registering ours.
+def _safe_power_off(robot) -> None:
+    """Sit Spot and de-energize motors via force-taken lease.
 
-    Uses force_simple_setup to replace the entire E-Stop configuration,
-    taking over from any other client (tablet, other scripts, etc.).
+    Required when ``force_simple_setup`` hits ``MotorsOnError``: BD's
+    ``SetEstopConfig`` refuses motors-on, and the public SDK has no
+    runtime takeover mechanism. Tablet bypasses this with a pre-paired
+    persistent endpoint — third-party clients have no equivalent.
+
+    ``lease_client.take()`` force-takes the lease regardless of holder.
+    ``robot.power_off(cut_immediately=False)`` issues SafePowerOff: Spot
+    sits gracefully then de-energizes motors. Lease is then returned so
+    voice control's child can acquire its own.
     """
-    # Check who currently holds the E-Stop
+    print("[E-Stop] Motors on — taking lease and SafePowerOff to recover...")
+    lease_client = robot.ensure_client(LeaseClient.default_service_name)
+    lease = lease_client.take()
+    try:
+        robot.power_off(cut_immediately=False, timeout_sec=20)
+        print("[E-Stop] Motors de-energized.")
+    finally:
+        try:
+            lease_client.return_lease(lease)
+        except Exception as e:
+            print(f"[E-Stop] WARN: lease return failed ({e}); continuing.")
+
+
+def claim_estop(robot, estop_client: EstopClient, name: str,
+                timeout_sec: int) -> EstopEndpoint:
+    """Claim the E-Stop. On ``MotorsOnError``, SafePowerOff then retry.
+
+    ``force_simple_setup`` is the only public-SDK way to install a new
+    endpoint — and it requires motors off. On ``MotorsOnError`` we
+    self-recover: force-take lease, SafePowerOff (Spot sits + motors
+    de-energize), then retry the setup.
+    """
     try:
         status = estop_client.get_status()
         active_endpoints = status.endpoints
@@ -27,10 +61,13 @@ def claim_estop(estop_client: EstopClient, name: str, timeout_sec: int) -> Estop
     except Exception as e:
         print(f"[E-Stop] Could not query status ({e}), proceeding with claim...")
 
-    # force_simple_setup replaces the entire config with just our endpoint
     endpoint = EstopEndpoint(estop_client, name=name, estop_timeout=timeout_sec)
-    endpoint.force_simple_setup()
-    print(f"[E-Stop] Claimed successfully as '{name}'")
+    try:
+        endpoint.force_simple_setup()
+    except MotorsOnError:
+        _safe_power_off(robot)
+        endpoint.force_simple_setup()
+    print(f"[E-Stop] Claimed successfully as '{name}'.")
     return endpoint
 
 
@@ -40,7 +77,9 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
                   password: str = BOSDYN_CLIENT_PASSWORD,
                   name: str = "dartmouth_estop",
                   timeout_sec: int = 3,
-                  cut_on_exit: bool = True):
+                  cut_on_exit: bool = True,
+                  auth_timeout_sec: float = 90.0,
+                  auth_retry_interval: float = 3.0):
     """Claim Spot's E-Stop and yield the live keepalive.
 
     Args:
@@ -57,19 +96,39 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
     """
     sdk = create_standard_sdk("dartmouth_spot_capstone_estop")
     robot = sdk.create_robot(hostname)
-    robot.authenticate(username, password)
 
-    # Time sync recommended before E-Stop registration
-    ts_client = robot.ensure_client(TimeSyncClient.default_service_name)
-    for _ in range(5):
+    # Cold-boot race: if wakespot launches while Spot is still powering on,
+    # authenticate() throws transient transport errors — ProxyConnectionError
+    # before the robot proxy answers, UnimplementedError while the auth service
+    # is still registering behind it. Retry until the robot finishes booting.
+    # Credential rejections (InvalidLoginError, TemporarilyLockedOutError) are
+    # ResponseError, not RpcError, so they propagate immediately — no pointless
+    # retry and no risk of triggering an account lockout.
+    auth_deadline = time.monotonic() + auth_timeout_sec
+    attempt = 0
+    while True:
         try:
-            ts_client.get_time_sync_update()
+            robot.authenticate(username, password)
             break
-        except Exception:
-            time.sleep(0.2)
+        except (RetryableRpcError, UnimplementedError) as e:
+            attempt += 1
+            remaining = auth_deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            wait = min(auth_retry_interval, remaining)
+            print(f"[E-Stop] Robot not ready yet ({type(e).__name__}, "
+                  f"attempt {attempt}); retrying in {wait:.0f}s "
+                  f"(~{remaining:.0f}s before giving up)...")
+            time.sleep(wait)
+
+    # Time sync required before any robot_command (power_off recovery path).
+    # wait_for_sync() defaults to a 3s budget and RAISES on expiry; on a cold
+    # boot the sync service may still be settling right after auth succeeds, so
+    # share the remaining boot-wait budget instead of crashing here.
+    robot.time_sync.wait_for_sync(timeout_sec=max(1.0, auth_deadline - time.monotonic()))
 
     estop_client: EstopClient = robot.ensure_client(EstopClient.default_service_name)
-    endpoint = claim_estop(estop_client, name, timeout_sec)
+    endpoint = claim_estop(robot, estop_client, name, timeout_sec)
 
     keepalive = EstopKeepAlive(endpoint)
     keepalive.allow()  # ALLOW = not stopping robot

@@ -15,7 +15,6 @@ import json
 import os
 import re
 import time
-import base64
 import collections
 import requests
 from pathlib import Path
@@ -72,8 +71,9 @@ SYSTEM_PROMPT = """\
 You are Spot, a Boston Dynamics quadruped robot at Dartmouth College. \
 You are a friendly, helpful general assistant. You are self-aware: you know \
 you are a four-legged robot, you can walk, navigate, and perform physical \
-actions. You have a sense of humor and personality. Keep responses concise \
-(1-2 sentences for actions, a bit more for conversation).
+actions. You have a sense of humor and personality. Length: 1-2 sentences for \
+actions and quick replies; for knowledge, history, stories, or detailed \
+questions, take time to think and answer thoroughly (3-6 sentences as needed).
 
 You MUST respond with a JSON object with exactly these fields:
 {"actions": [<list of actions>], "response": "<what you say>"}
@@ -111,7 +111,7 @@ AVAILABLE ACTIONS:
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
-- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to tour_guide), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
 - set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
 - add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
   • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
@@ -534,6 +534,11 @@ class LLMBrain:
     def query_vlm(self, image_bytes: bytes, question: str, yolo_hint: str = "") -> str:
         """Send image + question to the VLM for visual description.
 
+        Routes through the active brain backend (`_backend().vlm_describe`),
+        so the default llama.cpp backend reuses its already-loaded mmproj
+        on port 11435 instead of double-loading the same gemma4:e4b in
+        Ollama. Ollama backend keeps its own VLM path for explicit opt-in.
+
         Args:
             image_bytes: JPEG image data from Spot camera.
             question: The user's original question (e.g. "what do you see?").
@@ -542,72 +547,35 @@ class LLMBrain:
         Returns:
             VLM's text response describing the image.
         """
-        image_b64 = base64.b64encode(image_bytes).decode()
-
-        vlm_prompt = (
-            f"You are Spot, a Boston Dynamics robot at Dartmouth College. "
-            f"This image is what you see right now through your own camera eyes. "
-            f"A user asked: \"{question}\". "
-        )
-        if yolo_hint:
-            vlm_prompt += f"{yolo_hint} "
-        vlm_prompt += (
+        system = (
+            "You are Spot, a Boston Dynamics robot at Dartmouth College. "
+            "The image is what you see right now through your own camera eyes. "
             "Respond naturally in first person as if you are looking around, "
             "NOT as if you are analyzing a photograph. Never mention 'image', "
             "'photo', 'picture', 'angle', or 'vantage point'. "
             "Describe what you see in 2-3 sentences. "
             "Be specific about objects, people, and surroundings."
         )
+        prompt = f'A user asked: "{question}". '
+        if yolo_hint:
+            prompt += f"{yolo_hint} "
 
+        backend = _backend()
         try:
-            print(f"[Brain] Querying VLM ({VLM_MODEL})...")
+            print(f"[Brain] Querying VLM via backend '{backend.name}'...")
             t0 = time.time()
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": VLM_MODEL,
-                    "messages": [
-                        {"role": "user", "content": vlm_prompt, "images": [image_b64]}
-                    ],
-                    "stream": False,
-                    "keep_alive": -1,
-                    "think": False,  # disable chain-of-thought for VLM (gemma4 puts output in thinking otherwise)
-                    "options": {"num_gpu": 99, "num_predict": 200},
-                },
-                timeout=VLM_TIMEOUT,
-            )
+            content = backend.vlm_describe(system, prompt, image_bytes, timeout=VLM_TIMEOUT)
             elapsed = time.time() - t0
-
-            if r.status_code != 200:
-                print(f"[Brain] VLM error {r.status_code}: {r.text[:200]}")
-                return "Sorry, I couldn't process the image right now."
-
-            _resp_json = r.json()
-            content = _resp_json.get("message", {}).get("content", "").strip()
             print(f"[Brain] VLM responded in {elapsed:.1f}s")
-
-            # --- Ollama duration breakdown (Stage 2 latency instrumentation) ---
-            _total_ms   = _resp_json.get("total_duration",       0) // 1_000_000
-            _load_ms    = _resp_json.get("load_duration",         0) // 1_000_000
-            _pe_ms      = _resp_json.get("prompt_eval_duration",  0) // 1_000_000
-            _pe_tok     = _resp_json.get("prompt_eval_count",     0)
-            _eval_ms    = _resp_json.get("eval_duration",         0) // 1_000_000
-            _eval_tok   = _resp_json.get("eval_count",            0)
-            _tps = _eval_tok / (_eval_ms / 1000) if _eval_ms > 0 else 0.0
-            print(
-                f"[Brain-timing] path=vlm model={VLM_MODEL} "
-                f"total={_total_ms}ms load={_load_ms}ms "
-                f"prompt_eval={_pe_ms}ms ({_pe_tok} tok) "
-                f"eval={_eval_ms}ms ({_eval_tok} tok @ {_tps:.1f} tok/s)"
-            )
-
+            print(f"[Brain-timing] path=vlm backend={backend.name} total={elapsed*1000:.0f}ms")
+            content = (content or "").strip()
             return content or "I can see the image but I'm having trouble describing it."
 
         except requests.Timeout:
             print(f"[Brain] VLM timeout after {VLM_TIMEOUT}s")
             return "Sorry, the image analysis took too long."
         except requests.ConnectionError:
-            print("[Brain] VLM cannot connect to Ollama")
+            print(f"[Brain] VLM cannot connect to backend '{backend.name}'")
             return "Sorry, I can't access my vision system right now."
         except Exception as e:
             print(f"[Brain] VLM error: {e}")

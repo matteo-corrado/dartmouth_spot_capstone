@@ -4,7 +4,7 @@ from src.voice_control.chatbot.session_state import SessionState
 
 def test_defaults():
     state = SessionState()
-    assert state.current_persona == "tour_guide"
+    assert state.current_persona == "default"
     assert state.turn_index == 0
     assert state.last_action_taken is None
     assert state.last_comment_ts == 0.0
@@ -13,7 +13,7 @@ def test_defaults():
 def test_as_dict_with_defaults():
     state = SessionState()
     d = state.as_dict()
-    assert d["current_persona"] == "tour_guide"
+    assert d["current_persona"] == "default"
     assert d["turn_index"] == 0
     assert d["last_action_taken"] == "none"  # human-readable for LLM
     # seconds_since_last_comment should be very large when ts=0

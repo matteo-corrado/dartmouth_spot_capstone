@@ -5,7 +5,7 @@ Loads `config/personas.yaml` at boot. Provides:
 - load_registry(path) -> dict[name, Persona]
 - get_persona(name, registry) -> Persona  (falls back to default on miss + warns)
 - list_personas(registry) -> sorted list[str]
-- default_persona_name() -> str  (from SPOT_PERSONA env or "tour_guide")
+- default_persona_name() -> str  (from SPOT_PERSONA env or "default")
 """
 import logging
 import os
@@ -16,7 +16,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_PERSONA = "tour_guide"
+DEFAULT_PERSONA = "default"
 
 # Repo-root-anchored default so load_registry() works regardless of CWD
 # (e.g. systemd service, web panel subprocess, subagent worktree).

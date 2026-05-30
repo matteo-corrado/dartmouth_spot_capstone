@@ -179,6 +179,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # Pass-through flags forwarded to scripts/run_voice_control.py
     parser.add_argument("--no-tts", action="store_true",
                         help="Forwarded to voice control: disable text-to-speech.")
+    parser.add_argument("--tts-backend", choices=["kokoro", "elevenlabs"], default=None,
+                        help="Forwarded to voice control: TTS backend "
+                             "(overrides SPOT_TTS_BACKEND env).")
     parser.add_argument("--no-wake-word", action="store_true",
                         help="Forwarded to voice control: always-listening mode.")
     parser.add_argument("--volume", type=float, default=None,
@@ -205,6 +208,8 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
     ]
     if args.no_tts:
         cmd.append("--no-tts")
+    if args.tts_backend is not None:
+        cmd.extend(["--tts-backend", args.tts_backend])
     if args.no_wake_word:
         cmd.append("--no-wake-word")
     if args.volume is not None:

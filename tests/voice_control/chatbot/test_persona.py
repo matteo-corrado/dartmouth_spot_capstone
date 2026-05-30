@@ -36,7 +36,7 @@ def test_persona_has_prompt_prefix_and_voices():
 def test_get_persona_returns_default_on_unknown_name(caplog):
     reg = load_registry(REGISTRY_PATH)
     p = get_persona("nonexistent_persona", reg)
-    assert p.prompt_prefix == reg["tour_guide"].prompt_prefix
+    assert p.prompt_prefix == reg["default"].prompt_prefix
     # Warning should be logged
     assert any("nonexistent_persona" in rec.message for rec in caplog.records)
 
@@ -55,7 +55,7 @@ def test_default_persona_name_from_env(monkeypatch):
 
 def test_default_persona_name_fallback(monkeypatch):
     monkeypatch.delenv("SPOT_PERSONA", raising=False)
-    assert default_persona_name() == "tour_guide"
+    assert default_persona_name() == "default"
 
 
 def test_load_registry_missing_file_raises():

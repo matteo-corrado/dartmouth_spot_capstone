@@ -17,7 +17,7 @@ from typing import Optional
 
 @dataclass
 class SessionState:
-    current_persona: str = "tour_guide"
+    current_persona: str = "default"
     turn_index: int = 0
     last_action_taken: Optional[str] = None
     last_comment_ts: float = 0.0

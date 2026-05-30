@@ -238,6 +238,9 @@ def main():
                         help="Disable LLM brain (regex-only)")
     parser.add_argument("--no-tts", action="store_true",
                         help="Disable text-to-speech")
+    parser.add_argument("--tts-backend", choices=["kokoro", "elevenlabs"], default=None,
+                        help="TTS backend (overrides SPOT_TTS_BACKEND env). "
+                             "kokoro=local ONNX, elevenlabs=cloud premium.")
     parser.add_argument("--debug-audio", action="store_true",
                         help="Print audio levels for mic diagnostics")
     parser.add_argument("--skip-services", action="store_true",
@@ -271,8 +274,11 @@ def main():
           "(ASR + LLM + TTS only).")
 
     # --- Auto-start services ---
+    # Default brain backend is llama-server (systemd unit llama-server.service,
+    # port 11435) which manages itself. Ollama only needed when caller
+    # explicitly opts in via SPOT_BRAIN_BACKEND=ollama; warm it then.
     if not args.skip_services:
-        if not args.no_brain:
+        if not args.no_brain and os.environ.get("SPOT_BRAIN_BACKEND", "llamacpp").lower() == "ollama":
             if not ensure_ollama():
                 print("\n  WARNING: Ollama not available. LLM brain will be disabled.")
                 print("  Falling back to regex-only mode.\n")
@@ -312,6 +318,8 @@ def main():
         client_cmd.append("--no-brain")
     if args.no_tts:
         client_cmd.append("--no-tts")
+    if args.tts_backend is not None:
+        client_cmd.extend(["--tts-backend", args.tts_backend])
     if args.debug_audio:
         client_cmd.append("--debug-audio")
     if args.no_wake_word:

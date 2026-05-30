@@ -73,10 +73,9 @@ class OllamaBackend:
         return "".join(full)
 
     def vlm_describe(
-        self, system: str, prompt: str, image_path: Path, timeout: float = 60.0
+        self, system: str, prompt: str, image_bytes: bytes, timeout: float = 60.0
     ) -> str:
-        with open(image_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
+        b64 = base64.b64encode(image_bytes).decode("ascii")
         payload = {
             "model": OLLAMA_MODEL,
             "messages": [
