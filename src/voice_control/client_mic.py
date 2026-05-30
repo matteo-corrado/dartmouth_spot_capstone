@@ -529,11 +529,13 @@ def _wait_for_nav_complete(timeout: float = 120.0):
         time.sleep(0.5)
 
 
-# Safety commands that bypass the LLM for zero-latency execution
+# Safety commands that bypass the LLM for zero-latency execution.
+# ORDER MATTERS: estop must be checked before stop so "e stop" / "e-stop"
+# matches the more-specific estop pattern, not the bare stop pattern.
 SAFETY_PATTERNS = [
+    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
     (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
     (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
-    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
 ]
 
 
@@ -734,6 +736,22 @@ def main():
     else:
         print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
+    # Stage 2F C1: always-on safety KWS — stop/freeze/estop fire at frame level
+    # in WAKE_WORD state with no wake required, even when the wake backend is
+    # livekit. Fail-closed: if it cannot load, refuse motion (handled where the
+    # detector is consumed); a future task adds the startup health gate.
+    safety_detector = None
+    try:
+        from src.voice_control.wake.safety_kws import make_safety_detector
+        safety_detector = make_safety_detector()
+        if not safety_detector.is_available():
+            print("[SafetyKWS] UNAVAILABLE — cold stop/freeze/estop will not work "
+                  "in WAKE_WORD state; run scripts/setup_safety_kws.py")
+            safety_detector = None
+    except Exception as e:
+        print(f"[SafetyKWS] import failed: {e}")
+        safety_detector = None
+
     # YOLO models (YOLOv8n, YOLO-World) lazy-load on first use.
     # Pre-loading them at startup starves the audio thread (CPU-bound
     # PyTorch init causes PortAudio init overflow and delays wake word).
@@ -873,6 +891,24 @@ def main():
                 frame = window[:BYTES_PER_FRAME]
                 window = window[BYTES_PER_FRAME:]
                 frame_count += 1
+
+                # Stage 2F C1: always-on safety check (cold stop/freeze/estop).
+                # Runs in WAKE_WORD state before the wake early-continue so a
+                # safety command halts the robot with no prior wake.
+                if state == VoiceState.WAKE_WORD and safety_detector:
+                    kw = safety_detector.process_frame(frame)
+                    if kw:
+                        intent = check_safety_command(kw)
+                        if intent:
+                            print(f"[SAFETY-KWS] '{kw}' — executing immediately")
+                            if execute_on_spot(intent):
+                                beep.command_ok()
+                            else:
+                                beep.error()
+                            safety_detector.reset()
+                            consecutive_speech = 0
+                            pending_speech_frames.clear()
+                            continue
 
                 # ============================================================
                 # Wake word detection (dedicated detector, runs on every frame)
