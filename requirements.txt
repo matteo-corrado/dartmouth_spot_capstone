@@ -69,3 +69,10 @@ pytest>=8.0,<9.0
 # Stage 2E.1 — ElevenLabs cloud TTS backend. Pure-Python WebSocket + HTTP
 # client; no numpy/onnx conflict per pin-guardian audit.
 elevenlabs>=2.0,<3.0
+
+# Stage 2F P1 — streaming-TTS sentence detector for the chunker backend swap.
+# blingfire has NO working aarch64 build (libblingfiretokdll.so fails to load on
+# JetPack 6 — OSError, verified 2026-05-30), so we use pysbd instead: pure-Python,
+# zero dependencies, natively abbreviation-aware (Dr./U.S./decimals). Cannot
+# perturb the numpy/onnxruntime-gpu/kokoro-onnx/opencv pins.
+pysbd==0.3.4
