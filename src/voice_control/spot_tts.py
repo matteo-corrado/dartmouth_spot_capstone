@@ -239,12 +239,17 @@ class SpotTTS:
 # ---------------------------------------------------------------------------
 import re
 
-_SENTENCE_END_RE = re.compile(r"[.!?]\s")
 # Matches `"response": "` (with optional whitespace between colon and opening
 # quote of the value) — llama-server prettyprints JSON with a space after `:`.
 _RESPONSE_KEY_RE = re.compile(r'"response"\s*:\s*"')
 _DESCRIBE_ACTION_RE = re.compile(r'"action"\s*:\s*"describe"')
-
+# Gate for mid-stream split: fires only when a word character is already
+# buffered after a sentence-end punctuation + whitespace.  This prevents
+# pysbd from seeing "Dr. " (trailing space, no following word) and
+# erroneously marking it complete — pysbd needs the next word token to
+# resolve abbreviation vs. sentence-end (e.g. "Dr. " fires False,
+# "Dr. L" fires True).
+_POST_PUNCT_WORD_RE = re.compile(r"[.!?]\s+\w")
 
 class TTSChunker:
     """Buffer streaming LLM tokens; flush a sentence to TTS on each boundary.
@@ -302,21 +307,25 @@ class TTSChunker:
                 self.buf = []
             else:
                 self.buf.append(ch)
-                text = "".join(self.buf)
-                if _SENTENCE_END_RE.search(text):
-                    parts = _SENTENCE_END_RE.split(text)
-                    complete = parts[:-1]
-                    tail = parts[-1]
+                if _POST_PUNCT_WORD_RE.search("".join(self.buf)):
+                    from src.voice_control.text_segment import split_sentences
+                    complete, remainder = split_sentences("".join(self.buf))
                     if complete:
-                        self._emit(" ".join(s.strip() for s in complete if s.strip()))
-                    self.buf = list(tail)
+                        for sent in complete:
+                            self._emit(sent)
+                        self.buf = list(remainder)
 
     def flush(self) -> None:
         """Emit any trailing partial sentence (called at end of stream)."""
         if self.in_response:
-            rest = "".join(self.buf).strip()
-            if rest:
-                self._emit(rest)
+            from src.voice_control.text_segment import split_sentences
+            text = "".join(self.buf).strip()
+            if text:
+                complete, remainder = split_sentences(text)
+                for sent in complete:
+                    self._emit(sent)
+                if remainder:
+                    self._emit(remainder)
         self.buf = []
 
 

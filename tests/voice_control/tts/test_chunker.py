@@ -71,3 +71,88 @@ def test_abbrev_then_real_end():
     complete, remainder = split_sentences("Meet Mr. Lee. Then go.")
     assert any("Mr. Lee." in c for c in complete)
     assert not any(c.strip() == "Mr." for c in complete)
+
+
+from src.voice_control.spot_tts import TTSChunker
+
+
+class _FakeTTS:
+    """Captures speak() calls instead of rendering audio."""
+    def __init__(self):
+        self.spoken = []
+    def speak(self, text, voice=None):
+        self.spoken.append(text)
+
+
+def _feed(chunker, s):
+    for ch in s:
+        chunker.accept(ch)
+
+
+def test_chunker_emits_response_sentences_from_json_stream():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [], "response": "Hello there. How are you?"}')
+    c.flush()
+    assert tts.spoken == ["Hello there.", "How are you?"]
+
+
+def test_chunker_does_not_split_abbreviation_in_response():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [], "response": "Meet Dr. Lee now. Then we walk."}')
+    c.flush()
+    assert "Meet Dr. Lee now." in tts.spoken
+    assert "Dr." not in tts.spoken
+
+
+def test_chunker_suppresses_on_describe_action():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [{"action": "describe"}], "response": "I see a red chair."}')
+    c.flush()
+    assert c.suppressed is True
+    assert tts.spoken == []  # nothing spoken — client_mic speaks the stock ack
+
+
+def test_chunker_does_not_suppress_without_describe():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [{"action": "stand"}], "response": "Standing up now."}')
+    c.flush()
+    assert c.suppressed is False
+    assert tts.spoken == ["Standing up now."]
+
+
+def test_chunker_flush_emits_trailing_partial():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [], "response": "No terminal punctuation here"')
+    c.flush()
+    assert tts.spoken == ["No terminal punctuation here"]
+
+
+def test_chunker_handles_escaped_quote_in_response():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [], "response": "She said \\"hi\\" to me. Bye."}')
+    c.flush()
+    assert any("hi" in s for s in tts.spoken)
+    assert "Bye." in tts.spoken
+
+
+def test_chunker_callable_alias():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    for ch in '{"actions": [], "response": "One. Two."}':
+        c(ch)  # __call__ == accept
+    c.flush()
+    assert tts.spoken == ["One.", "Two."]
+
+
+def test_chunker_empty_response():
+    tts = _FakeTTS()
+    c = TTSChunker(tts)
+    _feed(c, '{"actions": [], "response": ""}')
+    c.flush()
+    assert tts.spoken == []
