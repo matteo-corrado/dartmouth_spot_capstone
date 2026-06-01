@@ -59,7 +59,7 @@ Unchanged and relied upon: `src/voice_control/wake/__init__.py` (`make_wake_dete
 # Discovery LOGIN node. Use scratch — home is only 50 GB; the env + 18 GB data won't fit.
 SCRATCH=/dartfs-hpc/scratch/$USER
 mkdir -p "$SCRATCH" ~/.conda/pkgs/cache ~/.conda/envs        # last two avoid a first-run conda cache error
-git clone -b stage2f-wake-asr-overhaul <your-repo-url> "$SCRATCH/spot-capstone"
+git clone -b tour_guide_upgrade_matteo <your-repo-url> "$SCRATCH/spot-capstone"
 cd "$SCRATCH/spot-capstone"
 
 source /optnfs/common/miniconda3/etc/profile.d/conda.sh      # enables `conda` (no module to load)
