@@ -18,7 +18,7 @@
 #SBATCH --account=free
 #SBATCH --partition=standard          # CPU-only; full dedicated node (no --gres)
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=64            # whole node — parallel TTS synth + mel augment
+#SBATCH --cpus-per-task=32            # whole node — parallel TTS synth + mel augment
 #SBATCH --mem=256G                    # 18 GB audio + feature buffers + page cache
 #SBATCH --time=12:00:00
 #SBATCH --hint=nomultithread
