@@ -1,28 +1,21 @@
-# Production "hey spot" wake word — accent-agnostic English, far-field tolerant,
-# hardened against confusables ("spot the difference", "hot spot", "hey stop"...).
-# Generates synthetic positives via Piper VITS SLERP pool (904 speakers).
-# Train via: scripts/training/wake/sbatch_hey_spot.sh (Discovery); see that dir's README.md.
+# Candidate B: "hi spot" wake word — alternate to "hey spot" (some far-field mics
+# resolve the "hi" vowel more cleanly than "hey"). Synthetic positives via Piper
+# VITS SLERP pool (904 speakers). Hardened against "hi scott"/"high spot" confusables.
+# Train via: scripts/training/wake/sbatch_all_candidates.sh (array task 1).
 
 data_dir: /mnt/ssd/livekit-wakeword-data
 
-model_name: hey_spot
+model_name: hi_spot
 target_phrases:
-  - "hey spot"
-  - "hey, spot"
-  - "hey spot."
+  - "hi spot"
+  - "hi, spot"
 
 custom_negative_phrases:
-  - "spot the difference"
-  - "on the spot"
-  - "X marks the spot"
-  - "hot spot"
-  - "stop"
-  - "hey stop"
-  - "hey dog"
-  - "hey scott"
-  - "the spot"
-  - "spotted"
-  - "spotlight"
+  - "hi scott"
+  - "hipster"
+  - "high spot"
+  - "hi sport"
+  - "hide spot"
 
 tts_backend: piper_vits
 

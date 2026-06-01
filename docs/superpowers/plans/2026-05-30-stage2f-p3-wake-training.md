@@ -25,15 +25,19 @@
 
 | File | Responsibility | Phase |
 |------|----------------|-------|
-| `scripts/training/setup_livekit_wakeword.sh` (LEGACY) | Jetson-era (`/mnt/ssd`, spot-env) — **superseded** by the inline Discovery conda flow (A1); not run on the cluster | A |
-| `scripts/training/sbatch_wake_train.sh` (CREATE) | Discovery SLURM array job: `run` the 3 candidate configs on L40S/H200 | A |
-| `configs/wake/wakeword_hey_spot.yaml` (MODIFY) | Production base config, schema-aligned to the pinned commit | A |
-| `configs/wake/wakeword_hi_spot.yaml` (CREATE) | Candidate B | A |
-| `configs/wake/wakeword_big_yellow.yaml` (CREATE) | Candidate C | A |
+| `scripts/training/wake/sbatch_cpu_prep.sh` (DONE) | **Split flow** (recommended): `standard` 64-core node, generate+augment → scratch (no GPU) | A |
+| `scripts/training/wake/sbatch_gpu_train.sh` (DONE) | **Split flow**: `gpuq`+`gpu:l40s:1`, train+export+eval over prep's features (`--dependency=afterok`) | A |
+| `scripts/training/wake/sbatch_hey_spot.sh` (DONE) | **Combined flow** (simple): one candidate, full pipeline on the GPU node | A |
+| `scripts/training/wake/sbatch_all_candidates.sh` (DONE) | **Combined flow**: SLURM array, all 3 candidates, full pipeline each | A |
+| `scripts/training/wake/README.md` (DONE) | Build-free runbook; split-vs-combined; verified `gpuq`/`free`/`l40s` flags | A |
+| `configs/wake/wakeword_hey_spot.yaml` (DONE; `data_dir`→scratch via sed at runtime, README ②) | Production base config | A |
+| `configs/wake/wakeword_hi_spot.yaml` (DONE) | Candidate B | A |
+| `configs/wake/wakeword_big_yellow.yaml` (DONE) | Candidate C | A |
 | `src/voice_control/wake/livekit.py` (REWRITE) | Hand-rolled 3-stage ONNX chain via onnxruntime-gpu; no `livekit` import | B |
 | `tests/voice_control/wake/test_livekit_windows.py` (CREATE) | Unit test for the pure windowing helper | B |
 | `tests/audio/eval_wake_det.py` (CREATE) | On-device DET sweep → threshold at FAR ≤ target | C |
-| `scripts/training/train_wake_hey_spot.sh` (LEGACY) | Jetson-era — **superseded** by the sbatch flow (A4); not run on the cluster | A |
+
+(The Jetson-era `scripts/training/{setup_livekit_wakeword,train_wake_hey_spot}.sh` have been **deleted** — superseded by the Discovery `scripts/training/wake/` flow above.)
 
 Unchanged and relied upon: `src/voice_control/wake/__init__.py` (`make_wake_detector` already routes `SPOT_WAKE_BACKEND=livekit`), `src/voice_control/wake/sherpa_onnx.py` (fallback), `scripts/record_corpus.py` (corpus recorder), `tests/audio/eval_wake.py` (P2 harness).
 
@@ -47,7 +51,7 @@ Unchanged and relied upon: `src/voice_control/wake/__init__.py` (`make_wake_dete
 
 ## Phase A — Cluster training on Dartmouth Discovery (runbook; verification = artifacts, not unit tests)
 
-> Runs on **Dartmouth Discovery** (SLURM + conda; docs: rc.dartmouth.edu). Discovery rules baked in below: conda comes from `source /optnfs/common/miniconda3/etc/profile.d/conda.sh` (there is no anaconda module to load); the sbatch script MUST begin `#!/bin/bash -l` (sbatch does NOT source `.bashrc`, so `conda activate` fails otherwise); GPU jobs go to an **L40S** (`l40s_nova`, free/public) or **H200** partition; **`--time` is mandatory** (Discovery's 1 h default would kill the train); data + clone live on **`/dartfs-hpc/scratch/<NETID>/`** (home is only 50 GB); and because compute-node egress is not guaranteed, **all downloads (conda, git, dataset) happen on the LOGIN node** and the sbatch job trains offline. spot-env on the Jetson is never touched here. Replace `<NETID>` with your Dartmouth NetID throughout.
+> Runs on **Dartmouth Discovery** (SLURM + conda; docs: rc.dartmouth.edu). Discovery rules baked in below: conda comes from `source /optnfs/common/miniconda3/etc/profile.d/conda.sh` (there is no anaconda module to load); the sbatch script MUST begin `#!/bin/bash -l` (sbatch does NOT source `.bashrc`, so `conda activate` fails otherwise); GPU jobs run on **`--partition=gpuq`** under **`--account=free`** (public QOS), with the GPU type chosen via **`--gres=gpu:l40s:1`** (or `gpu:h200:1`) — NOT a per-GPU partition name; the free QOS caps **concurrent** GPU tasks at 2, so arrays use `--array=...%2`; **`--time` is mandatory** (Discovery's 1 h default would kill the train); data + clone live on **`/dartfs-hpc/scratch/<NETID>/`** (home is only 50 GB); and because compute-node egress is not guaranteed, **all downloads (conda, git, dataset) happen on the LOGIN node** and the sbatch job trains offline. spot-env on the Jetson is never touched here. Replace `<NETID>` with your Dartmouth NetID throughout. **Nothing compiles on Discovery:** it is x86_64, so every dependency installs as a prebuilt binary (conda-forge system libs + PyPI manylinux wheels + livekit's pure-Python wheel) — no build node (e.g. andes/polaris) is ever needed. Full build-free runbook: `scripts/training/wake/README.md`.
 
 ### Task A1: Discovery conda env + repo on scratch (LOGIN node — has internet)
 
@@ -66,14 +70,16 @@ source /optnfs/common/miniconda3/etc/profile.d/conda.sh      # enables `conda` (
 conda create -n lkww python=3.11 -y
 conda activate lkww
 conda install -n lkww -c conda-forge espeak-ng libsndfile ffmpeg sox -y   # TTS/audio deps (no apt on HPC)
-pip install "livekit-wakeword[train,eval,export] @ git+https://github.com/livekit/livekit-wakeword@1ec7f680df30ff4ca0ebae6b5983441e94b10980"
+# 0.2.1 == pinned commit 1ec7f680, shipped as a pure-Python wheel. --only-binary=:all:
+# makes pip REFUSE to compile (fails loud if a wheel is missing) — guarantees no build.
+pip install --only-binary=:all: "livekit-wakeword[train,eval,export]==0.2.1"
 ```
 
 - [ ] **Step 2: Verify the CLI + CUDA torch on an L40S node**
 
 ```bash
 # short interactive GPU slice (-l login shell so conda works):
-srun --partition=l40s_nova --gres=gpu:1 --time=00:15:00 --pty bash -l
+srun --account=free --partition=gpuq --gres=gpu:l40s:1 --time=00:15:00 --pty bash -l
 source /optnfs/common/miniconda3/etc/profile.d/conda.sh && conda activate lkww
 livekit-wakeword --help
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
@@ -81,12 +87,13 @@ exit
 ```
 Expected: the Typer help lists `setup generate augment train export eval run`; torch prints a `2.5+` version and `True` (CUDA visible on the L40S node).
 
-- [ ] **Step 3: Find your SLURM account (paid/private partitions only)**
+- [ ] **Step 3: Confirm your SLURM account + GPU gres**
 
 ```bash
-sacctmgr show associations where user=$USER
+sacctmgr show associations where user=$USER   # confirm the `free` account/QOS is yours
+sinfo -o "%P %G"                               # partition (gpuq) + gres types (gpu:l40s, gpu:h200)
 ```
-`l40s_nova` is free/public and usually needs no `--account`. If you instead use an **H200** partition (`h200` / `h200_preemptable`) or your output shows a required account/QOS, note the account string and uncomment `--account` in the sbatch script (A4). The legacy `scripts/training/{setup_livekit_wakeword,train_wake_hey_spot}.sh` are Jetson-era (`/mnt/ssd`, spot-env) and are **superseded by this Discovery flow** — do not run them on the cluster.
+The committed sbatch scripts use `--account=free --partition=gpuq --gres=gpu:l40s:1`. The free QOS caps **concurrent** GPU tasks at 2, so the array uses `--array=0-2%2` (keep `%2` on any override). Only edit the script headers if `sacctmgr`/`sinfo` show something other than `free`/`gpuq` for you, or to switch the gres to `gpu:h200:1`.
 
 ### Task A2: Schema-align and harden the base config
 
@@ -180,46 +187,9 @@ git commit -m "stage2f p3: hi_spot + big_yellow candidate configs"
 ### Task A4: SLURM array job for the 3 candidates
 
 **Files:**
-- Create: `scripts/training/sbatch_wake_train.sh`
+- Already written + committed: `scripts/training/wake/sbatch_all_candidates.sh` (3-candidate array) and `scripts/training/wake/sbatch_hey_spot.sh` (single candidate).
 
-- [ ] **Step 1: Write the sbatch script**
-
-```bash
-#!/bin/bash -l
-# -l (login shell) is REQUIRED on Discovery: sbatch does NOT source .bashrc, so
-# without it `conda activate` fails. (rc.dartmouth.edu/hpc/sbatch)
-#SBATCH --job-name=wake-train
-#SBATCH --partition=l40s_nova       # free/public L40S (cap 2 GPUs/node, 3-day). Alt: h200 / h200_preemptable
-#SBATCH --gres=gpu:1
-#SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=06:00:00             # MANDATORY — Discovery default is 1h and would kill the train
-#SBATCH --array=0-2
-#SBATCH --output=%x-%a-%j.out
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=<NETID>@dartmouth.edu
-## --account only for H200/paid partitions; uncomment with the string from `sacctmgr` (A1 Step 3):
-##SBATCH --account=<SLURM_ACCOUNT>
-# One candidate per array task: generate->augment->train->export->eval, OFFLINE.
-# Prereq: A4 Step 2 ran `setup` once on the LOGIN node (~18 GB -> data_dir on scratch).
-# --time is a ceiling: smoke-test per-step time with a `--steps 1000` run first; large/80k
-# must finish inside the wall-time or the job is killed before `export` and no ONNX is written.
-set -euo pipefail
-
-source /optnfs/common/miniconda3/etc/profile.d/conda.sh
-conda activate lkww
-cd "/dartfs-hpc/scratch/$USER/spot-capstone"     # the repo clone from A1 (has configs/)
-
-CONFIGS=(configs/wake/wakeword_hey_spot.yaml \
-         configs/wake/wakeword_hi_spot.yaml \
-         configs/wake/wakeword_big_yellow.yaml)
-CONFIG=${CONFIGS[$SLURM_ARRAY_TASK_ID]}
-
-echo "Training $CONFIG on $(hostname), GPU $CUDA_VISIBLE_DEVICES"; nvidia-smi
-livekit-wakeword run "$CONFIG"
-```
+- [x] **Step 1: The sbatch scripts are committed** — no need to author them inline. `scripts/training/wake/sbatch_all_candidates.sh` is the 3-candidate array (one candidate per `--array=0-2` task); `scripts/training/wake/sbatch_hey_spot.sh` trains just `hey_spot`. Both begin `#!/bin/bash -l` (sbatch does NOT source `.bashrc`), `source` the Discovery conda, `cd` to the scratch clone, then `livekit-wakeword run <config>` (generate→augment→train→export→eval, OFFLINE). `--time=06:00:00` is a ceiling — smoke-test step timing with a short `--steps 1000` run first so a large/80k config finishes before the wall-time kills the job pre-`export` (no ONNX written otherwise). Set `--mail-user` / uncomment `--account` per A1 Step 3, and confirm the partition name with `sinfo -s` on your login node.
 
 - [ ] **Step 2: One-time data download, then submit**
 
