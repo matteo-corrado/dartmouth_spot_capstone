@@ -22,7 +22,7 @@
 #SBATCH --mem=256G                    # 18 GB audio + feature buffers + page cache
 #SBATCH --time=12:00:00
 #SBATCH --hint=nomultithread
-#SBATCH --array=0-2%1                 # 3 candidates; %1 = sequential (safe under the
+#SBATCH --array=0-2%3                 # 3 candidates; %1 = sequential (safe under the
                                       # unpublished free CPU cap). Raise to %2/%3 if
                                       # `sacctmgr show qos` shows TRES headroom.
 #SBATCH --output=logs/wake-prep_%A_%a.out
