@@ -13,8 +13,8 @@
 #
 #SBATCH --job-name=wake-train
 #SBATCH --account=free
-#SBATCH --partition=gpuq             # free GPU; --gres=gpu:l40s:1 lands on l40sx8 (8xL40S)
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --partition=gpu_preempt             # free GPU; --gres=gpu:l40s:1 lands on l40sx8 (8xL40S)
+#SBATCH --gres=gpu:h200:1
 #SBATCH --cpus-per-task=8            # fair share of the 8-GPU node; train barely uses CPU
 #SBATCH --mem=24G
 #SBATCH --time=02:00:00
