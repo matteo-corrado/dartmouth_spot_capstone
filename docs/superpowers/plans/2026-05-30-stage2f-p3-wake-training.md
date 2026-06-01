@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Train a custom `livekit-wakeword` "hey spot" classifier off-box on the SLURM cluster, deploy its ONNX to the Jetson, run inference through spot-env's `onnxruntime-gpu` (no `livekit` package at runtime), derive the deploy threshold from real held-out audio, and ship it behind `SPOT_WAKE_BACKEND=livekit` with the sherpa-onnx + push-to-talk fallback intact.
+**Goal:** Train a custom `livekit-wakeword` "hey spot" classifier off-box on Dartmouth Discovery (SLURM + conda), deploy its ONNX to the Jetson, run inference through spot-env's `onnxruntime-gpu` (no `livekit` package at runtime), derive the deploy threshold from real held-out audio, and ship it behind `SPOT_WAKE_BACKEND=livekit` with the sherpa-onnx + push-to-talk fallback intact.
 
-**Architecture:** Three phases. **(A) Cluster training** — operational runbook the operator runs on the L40S/H200 SLURM cluster (Python 3.11 venv; spot-env is untouched). **(B) On-device inference** — TDD code in spot-env (Python 3.10): the exported `hey_spot.onnx` is only the *classifier head* (`embeddings (B,16,96) → score (B,1)`), so we hand-roll the full 3-stage ONNX chain (`melspectrogram.onnx → embedding_model.onnx → hey_spot.onnx`) directly via `onnxruntime-gpu`, because the `livekit` pip package requires Python 3.11 and cannot import in spot-env. **(C) Eval/threshold/deploy** — derive the operating point from real audio (TPR on the existing `*_lab.wav` positives, FAR on ≥3h of newly-recorded negatives) and flip the backend only if the real held-out TPR clears the gate.
+**Architecture:** Three phases. **(A) Cluster training** — operational runbook the operator runs on **Dartmouth Discovery** (SLURM + conda; L40S or H200 GPU partition; Python 3.11; spot-env is untouched). **(B) On-device inference** — TDD code in spot-env (Python 3.10): the exported `hey_spot.onnx` is only the *classifier head* (`embeddings (B,16,96) → score (B,1)`), so we hand-roll the full 3-stage ONNX chain (`melspectrogram.onnx → embedding_model.onnx → hey_spot.onnx`) directly via `onnxruntime-gpu`, because the `livekit` pip package requires Python 3.11 and cannot import in spot-env. **(C) Eval/threshold/deploy** — derive the operating point from real audio (TPR on the existing `*_lab.wav` positives, FAR on ≥3h of newly-recorded negatives) and flip the backend only if the real held-out TPR clears the gate.
 
-**Tech Stack:** livekit-wakeword (pinned commit `1ec7f680`, Apache-2.0, conv-attention head); Piper VITS synthetic positives; SLURM/sbatch; onnxruntime-gpu 1.23.0 (CUDA EP) on aarch64; numpy. Verified model-currency (2026-05-30): livekit-wakeword is openWakeWord's direct successor and the current best-in-class for custom-phrase, synthetic-trained, ONNX-exported KWS; sherpa-onnx KWS stays as the rollback.
+**Tech Stack:** livekit-wakeword (pinned commit `1ec7f680`, Apache-2.0, conv-attention head); Piper VITS synthetic positives; Dartmouth Discovery (SLURM + conda, L40S/H200); onnxruntime-gpu 1.23.0 (CUDA EP) on aarch64; numpy. Verified model-currency (2026-05-30): livekit-wakeword is openWakeWord's direct successor and the current best-in-class for custom-phrase, synthetic-trained, ONNX-exported KWS; sherpa-onnx KWS stays as the rollback.
 
 **Key facts (verified at livekit commit `1ec7f680` / v0.2.1):**
 - CLI is a Typer app `livekit-wakeword`. `setup` uses `-c/--config`; every other subcommand (`generate`, `augment`, `train`, `export`, `eval`) takes the config path as a **positional** arg. `run <config>` does generate→augment→extract→train→export→eval in one process.
@@ -25,15 +25,15 @@
 
 | File | Responsibility | Phase |
 |------|----------------|-------|
-| `scripts/training/setup_livekit_wakeword.sh` (MODIFY) | Clone + install into a **Python 3.11 cluster venv** (not spot-env); download data | A |
-| `scripts/training/sbatch_wake_train.sh` (CREATE) | SLURM array job: `run` the 3 candidate configs | A |
+| `scripts/training/setup_livekit_wakeword.sh` (LEGACY) | Jetson-era (`/mnt/ssd`, spot-env) — **superseded** by the inline Discovery conda flow (A1); not run on the cluster | A |
+| `scripts/training/sbatch_wake_train.sh` (CREATE) | Discovery SLURM array job: `run` the 3 candidate configs on L40S/H200 | A |
 | `configs/wake/wakeword_hey_spot.yaml` (MODIFY) | Production base config, schema-aligned to the pinned commit | A |
 | `configs/wake/wakeword_hi_spot.yaml` (CREATE) | Candidate B | A |
 | `configs/wake/wakeword_big_yellow.yaml` (CREATE) | Candidate C | A |
 | `src/voice_control/wake/livekit.py` (REWRITE) | Hand-rolled 3-stage ONNX chain via onnxruntime-gpu; no `livekit` import | B |
 | `tests/voice_control/wake/test_livekit_windows.py` (CREATE) | Unit test for the pure windowing helper | B |
 | `tests/audio/eval_wake_det.py` (CREATE) | On-device DET sweep → threshold at FAR ≤ target | C |
-| `scripts/training/train_wake_hey_spot.sh` (MODIFY) | Point at cluster venv; copy 3 ONNX out | A |
+| `scripts/training/train_wake_hey_spot.sh` (LEGACY) | Jetson-era — **superseded** by the sbatch flow (A4); not run on the cluster | A |
 
 Unchanged and relied upon: `src/voice_control/wake/__init__.py` (`make_wake_detector` already routes `SPOT_WAKE_BACKEND=livekit`), `src/voice_control/wake/sherpa_onnx.py` (fallback), `scripts/record_corpus.py` (corpus recorder), `tests/audio/eval_wake.py` (P2 harness).
 
@@ -45,57 +45,48 @@ Unchanged and relied upon: `src/voice_control/wake/__init__.py` (`make_wake_dete
 
 ---
 
-## Phase A — Cluster training (runbook; verification = artifacts, not unit tests)
+## Phase A — Cluster training on Dartmouth Discovery (runbook; verification = artifacts, not unit tests)
 
-> Runs on the SLURM cluster in a **Python 3.11** venv. spot-env on the Jetson is never touched here.
+> Runs on **Dartmouth Discovery** (SLURM + conda; docs: rc.dartmouth.edu). Discovery rules baked in below: conda comes from `source /optnfs/common/miniconda3/etc/profile.d/conda.sh` (there is no anaconda module to load); the sbatch script MUST begin `#!/bin/bash -l` (sbatch does NOT source `.bashrc`, so `conda activate` fails otherwise); GPU jobs go to an **L40S** (`l40s_nova`, free/public) or **H200** partition; **`--time` is mandatory** (Discovery's 1 h default would kill the train); data + clone live on **`/dartfs-hpc/scratch/<NETID>/`** (home is only 50 GB); and because compute-node egress is not guaranteed, **all downloads (conda, git, dataset) happen on the LOGIN node** and the sbatch job trains offline. spot-env on the Jetson is never touched here. Replace `<NETID>` with your Dartmouth NetID throughout.
 
-### Task A1: Cluster environment
+### Task A1: Discovery conda env + repo on scratch (LOGIN node — has internet)
 
-**Files:** none (environment setup on the cluster login node).
+**Files:** none (environment + working tree on Discovery scratch).
 
-- [ ] **Step 1: Create a Python 3.11 venv and install the training extras**
+- [ ] **Step 1: Clone this repo + build the conda env on the LOGIN node**
 
 ```bash
-# on the cluster (login node or an interactive GPU alloc)
-module load python/3.11 cuda/12.x   # or: conda create -n lkww python=3.11
-python3.11 -m venv ~/lkww-venv && source ~/lkww-venv/bin/activate
-pip install --upgrade pip
+# Discovery LOGIN node. Use scratch — home is only 50 GB; the env + 18 GB data won't fit.
+SCRATCH=/dartfs-hpc/scratch/$USER
+mkdir -p "$SCRATCH" ~/.conda/pkgs/cache ~/.conda/envs        # last two avoid a first-run conda cache error
+git clone -b stage2f-wake-asr-overhaul <your-repo-url> "$SCRATCH/spot-capstone"
+cd "$SCRATCH/spot-capstone"
+
+source /optnfs/common/miniconda3/etc/profile.d/conda.sh      # enables `conda` (no module to load)
+conda create -n lkww python=3.11 -y
+conda activate lkww
+conda install -n lkww -c conda-forge espeak-ng libsndfile ffmpeg sox -y   # TTS/audio deps (no apt on HPC)
 pip install "livekit-wakeword[train,eval,export] @ git+https://github.com/livekit/livekit-wakeword@1ec7f680df30ff4ca0ebae6b5983441e94b10980"
-# system deps for TTS/audio (request via your cluster's package channel if not present):
-#   espeak-ng libsndfile1 ffmpeg sox
 ```
 
-- [ ] **Step 2: Verify the CLI and CUDA torch on a GPU node**
+- [ ] **Step 2: Verify the CLI + CUDA torch on an L40S node**
 
-Run (inside a GPU allocation, e.g. `srun --gres=gpu:1 --pty bash`):
 ```bash
+# short interactive GPU slice (-l login shell so conda works):
+srun --partition=l40s_nova --gres=gpu:1 --time=00:15:00 --pty bash -l
+source /optnfs/common/miniconda3/etc/profile.d/conda.sh && conda activate lkww
 livekit-wakeword --help
 python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+exit
 ```
-Expected: the Typer help lists `setup generate augment train export eval run`; torch prints a `2.5+` version and `True`.
+Expected: the Typer help lists `setup generate augment train export eval run`; torch prints a `2.5+` version and `True` (CUDA visible on the L40S node).
 
-- [ ] **Step 3: Pin the commit in the setup script for reproducibility**
-
-In `scripts/training/setup_livekit_wakeword.sh`, change the clone to pin the commit and install into the **cluster** venv (not spot-env). Replace lines 11-22:
+- [ ] **Step 3: Find your SLURM account (paid/private partitions only)**
 
 ```bash
-LKWW_COMMIT=1ec7f680df30ff4ca0ebae6b5983441e94b10980
-if [ ! -d "$LKWW_ROOT" ]; then
-  git clone https://github.com/livekit/livekit-wakeword "$LKWW_ROOT"
-fi
-cd "$LKWW_ROOT"
-git checkout "$LKWW_COMMIT"
-# Install into the ACTIVE (Python 3.11) venv — NOT spot-env, which is 3.10 and
-# cannot import this package (it uses enum.StrEnum). Training is off-box.
-pip install -e ".[train,eval,export]"
+sacctmgr show associations where user=$USER
 ```
-
-- [ ] **Step 4: Commit the setup-script change**
-
-```bash
-git add scripts/training/setup_livekit_wakeword.sh
-git commit -m "stage2f p3: pin livekit-wakeword commit, install into cluster py3.11 venv (off-box train)"
-```
+`l40s_nova` is free/public and usually needs no `--account`. If you instead use an **H200** partition (`h200` / `h200_preemptable`) or your output shows a required account/QOS, note the account string and uncomment `--account` in the sbatch script (A4). The legacy `scripts/training/{setup_livekit_wakeword,train_wake_hey_spot}.sh` are Jetson-era (`/mnt/ssd`, spot-env) and are **superseded by this Discovery flow** — do not run them on the cluster.
 
 ### Task A2: Schema-align and harden the base config
 
@@ -115,10 +106,11 @@ Expected: a list of valid top-level fields (incl. `target_phrases`, `custom_nega
 
 - [ ] **Step 2: Apply the production training deltas + drop any schema-invalid keys**
 
-Edit `configs/wake/wakeword_hey_spot.yaml`: set `model.model_size: large`, `n_samples: 50000`, `steps: 80000`, `target_fp_per_hour: 1.0` (train for high recall; the *deploy* threshold is DET-derived later — do not hardcode a low threshold). Keep `target_phrases` and `custom_negative_phrases` as-is. Remove augmentation keys that Step 1 proved invalid; keep only schema-valid fields.
+Edit `configs/wake/wakeword_hey_spot.yaml`: set `model.model_size: large`, `n_samples: 50000`, `steps: 80000`, `target_fp_per_hour: 1.0` (train for high recall; the *deploy* threshold is DET-derived later — do not hardcode a low threshold). **Repoint `data_dir`** from the Jetson path `/mnt/ssd/livekit-wakeword-data` to Discovery scratch `/dartfs-hpc/scratch/<NETID>/lkww-data` — `data_dir` is used ONLY during cluster training; the Jetson never reads this config. Keep `target_phrases` and `custom_negative_phrases` as-is. Remove augmentation keys that Step 1 proved invalid; keep only schema-valid fields.
 
 ```yaml
 # (only the changed lines shown — match existing file layout)
+data_dir: /dartfs-hpc/scratch/<NETID>/lkww-data   # was /mnt/ssd/... (Jetson); Discovery scratch
 n_samples: 50000
 target_fp_per_hour: 1.0
 steps: 80000
@@ -193,40 +185,54 @@ git commit -m "stage2f p3: hi_spot + big_yellow candidate configs"
 - [ ] **Step 1: Write the sbatch script**
 
 ```bash
-#!/bin/bash
+#!/bin/bash -l
+# -l (login shell) is REQUIRED on Discovery: sbatch does NOT source .bashrc, so
+# without it `conda activate` fails. (rc.dartmouth.edu/hpc/sbatch)
 #SBATCH --job-name=wake-train
+#SBATCH --partition=l40s_nova       # free/public L40S (cap 2 GPUs/node, 3-day). Alt: h200 / h200_preemptable
 #SBATCH --gres=gpu:1
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=06:00:00
+#SBATCH --time=06:00:00             # MANDATORY — Discovery default is 1h and would kill the train
 #SBATCH --array=0-2
-#SBATCH --output=wake-train-%a.log
-# Trains one candidate per array task: generate->augment->train->export->eval.
-# Prereq: setup_livekit_wakeword.sh has run `setup` once (downloads ~18 GB to
-# the shared data_dir). Activate the Python 3.11 cluster venv before sbatch, or
-# set LKWW_VENV_DIR below. --time is a ceiling: verify per-step time on a
-# `--steps 1000` smoke run first; large/80k must finish inside 6 h or the job is
-# killed before `export` and no ONNX is written.
+#SBATCH --output=%x-%a-%j.out
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=<NETID>@dartmouth.edu
+## --account only for H200/paid partitions; uncomment with the string from `sacctmgr` (A1 Step 3):
+##SBATCH --account=<SLURM_ACCOUNT>
+# One candidate per array task: generate->augment->train->export->eval, OFFLINE.
+# Prereq: A4 Step 2 ran `setup` once on the LOGIN node (~18 GB -> data_dir on scratch).
+# --time is a ceiling: smoke-test per-step time with a `--steps 1000` run first; large/80k
+# must finish inside the wall-time or the job is killed before `export` and no ONNX is written.
 set -euo pipefail
+
+source /optnfs/common/miniconda3/etc/profile.d/conda.sh
+conda activate lkww
+cd "/dartfs-hpc/scratch/$USER/spot-capstone"     # the repo clone from A1 (has configs/)
 
 CONFIGS=(configs/wake/wakeword_hey_spot.yaml \
          configs/wake/wakeword_hi_spot.yaml \
          configs/wake/wakeword_big_yellow.yaml)
 CONFIG=${CONFIGS[$SLURM_ARRAY_TASK_ID]}
 
-source "${LKWW_VENV_DIR:-$HOME/lkww-venv}/bin/activate"
-echo "Training $CONFIG on $(hostname), GPU $CUDA_VISIBLE_DEVICES"
+echo "Training $CONFIG on $(hostname), GPU $CUDA_VISIBLE_DEVICES"; nvidia-smi
 livekit-wakeword run "$CONFIG"
 ```
 
 - [ ] **Step 2: One-time data download, then submit**
 
 ```bash
-source ~/lkww-venv/bin/activate
-livekit-wakeword setup -c configs/wake/wakeword_hey_spot.yaml   # ~18 GB to data_dir, once
-sbatch scripts/training/sbatch_wake_train.sh
+# LOGIN node (has internet) — pre-fetch ALL data so the sbatch job runs offline:
+cd "/dartfs-hpc/scratch/$USER/spot-capstone"
+source /optnfs/common/miniconda3/etc/profile.d/conda.sh && conda activate lkww
+livekit-wakeword setup -c configs/wake/wakeword_hey_spot.yaml   # ~18GB -> data_dir (scratch), once
+# (smoke option: append --skip-acav for ~176MB validation-only negatives)
+sbatch scripts/training/sbatch_wake_train.sh                    # 3-candidate array on L40S
+squeue -u $USER                                                 # watch the array
 ```
-Expected: `setup` populates `data_dir`; `sbatch` returns a job id; each array task ends with `output/<model_name>/<model_name>.onnx`, `<model_name>_eval.json`, `<model_name>_det.png`. (For a fast smoke run first, `setup` accepts `--skip-acav` to grab only ~176 MB of validation negatives.)
+Expected: `setup` populates the scratch `data_dir`; `sbatch` returns a job id; each array task ends with `output/<model_name>/<model_name>.onnx`, `<model_name>_eval.json`, `<model_name>_det.png`. All Piper/ACAV/MUSAN/RIR fetches happen here on the login node, so the compute job needs no internet.
 
 - [ ] **Step 3: Sanity-read each eval JSON**
 
@@ -251,6 +257,9 @@ git commit -m "stage2f p3: SLURM array job to train 3 wake candidates"
 - [ ] **Step 1: Collect the 3 classifiers + the 2 shared front-end models**
 
 ```bash
+# LOGIN node, in the repo clone on scratch (where output/ landed):
+cd "/dartfs-hpc/scratch/$USER/spot-capstone"
+source /optnfs/common/miniconda3/etc/profile.d/conda.sh && conda activate lkww
 mkdir -p wake-artifacts
 for m in hey_spot hi_spot big_yellow; do cp output/$m/$m.onnx wake-artifacts/; done
 # Front-end models are frozen + shared — copy once (from the installed package):
