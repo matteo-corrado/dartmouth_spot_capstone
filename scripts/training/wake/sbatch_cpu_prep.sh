@@ -18,17 +18,17 @@
 #SBATCH --account=free
 #SBATCH --partition=standard          # CPU-only; full dedicated node (no --gres)
 #SBATCH --nodes=1
-#SBATCH --cpus-per-task=32            # whole node — parallel TTS synth + mel augment
-#SBATCH --mem=256G                    # 18 GB audio + feature buffers + page cache
+#SBATCH --cpus-per-task=16            # parallel TTS synth + mel augment; modest to fit the
+                                      # free CPU cap. Override at submit: --cpus-per-task=N
+#SBATCH --mem=64G                     # 18 GB audio + feature buffers fit easily
 #SBATCH --time=12:00:00
 #SBATCH --hint=nomultithread
-#SBATCH --array=0-2%3                 # 3 candidates; %1 = sequential (safe under the
-                                      # unpublished free CPU cap). Raise to %2/%3 if
-                                      # `sacctmgr show qos` shows TRES headroom.
+#SBATCH --array=0-2%3                 # 3 candidates, all concurrent (%3). Total CPUs in flight
+                                      # = 3 x cpus-per-task; if that tops your per-user cap the
+                                      # extra tasks just pend (fine) — lower cpus or use %1/%2.
 #SBATCH --output=logs/wake-prep_%A_%a.out
 #SBATCH --error=logs/wake-prep_%A_%a.err
-#SBATCH --mail-type=END,FAIL
-##SBATCH --mail-user=<NETID>@dartmouth.edu
+
 set -euo pipefail
 export PYTHONUNBUFFERED=1
 
