@@ -581,8 +581,9 @@ def _close_mouth():
         _t = get_tts()
         if _t is not None and _t.mouth is not None:
             _t.mouth.close()
-    except Exception:
-        pass
+    except Exception as e:
+        # Safety path — surface a failed gripper-close instead of hiding it.
+        print(f"[Spot] ⚠️  _close_mouth failed (gripper may be open): {e}")
 
 
 def _handle_enable_mouth(params):
@@ -599,8 +600,15 @@ def _handle_enable_mouth(params):
             print("[Spot] enable_mouth: TTS not initialized")
             return False
         session = ensure_spot_session()
-        if not session["robot"].has_arm():
+        robot = session["robot"]
+        if not robot.has_arm():
             print("[Spot] enable_mouth: no arm installed")
+            return False
+        # Safety gate: never deploy the arm unless motors are powered. An
+        # e-stop cut also drops motor power, so this blocks deploy while
+        # e-stopped too.
+        if not robot.is_powered_on():
+            print("[Spot] enable_mouth: motors not powered (or e-stopped) — refusing arm deploy")
             return False
         deploy_arm_safe(session["cmd"])
         if tts.mouth is None:

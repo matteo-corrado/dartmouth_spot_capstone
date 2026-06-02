@@ -482,6 +482,7 @@ class AudioPlayer:
                 continue
 
             print(f"[DBG-worker] picked task={task.label} qsize={self._queue.qsize()} inflight={self._inflight}")
+            played_first_chunk = False
             try:
                 with self._inflight_lock:
                     self._current_task_started_at = time.monotonic()
@@ -500,7 +501,6 @@ class AudioPlayer:
                 # Chunked write so the worker can react to ``stop`` (set by
                 # force_reset/shutdown) within ~100ms instead of blocking for
                 # the full duration of the utterance.
-                played_first_chunk = False
                 n_chunks_written = 0
                 for offset in range(0, len(samples), chunk_samples):
                     if stop.is_set():
@@ -514,6 +514,11 @@ class AudioPlayer:
                 _safe_cb(task.on_play_end)
             except Exception as e:
                 print(f"[Player] {task.label}: playback error: {e}")
+                # Stage 2E.2: if playback already started, on_play_end (gripper
+                # mouth close) MUST still fire on a write error — otherwise the
+                # gripper is left commanding open after on_play_start ran.
+                if played_first_chunk:
+                    _safe_cb(task.on_play_end)
             finally:
                 with self._inflight_lock:
                     self._inflight = max(0, self._inflight - 1)
