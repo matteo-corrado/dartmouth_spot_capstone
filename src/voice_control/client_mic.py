@@ -92,6 +92,10 @@ from spot_tts import SpotTTS
 from audio_feedback import beep
 from latency import init_recorder, get_recorder
 from src.voice_control import startup_status  # noqa: F401 — available for later use
+from src.voice_control.response_gate import should_reopen_mic, RESPONSE_REOPEN_DELAY_S
+# NB: state_feedback imports VoiceState from this module, so it must be imported
+# AFTER the VoiceState class is defined below (else a partial-init circular
+# import). The deferred import lives just under that class definition.
 
 
 # ============================================================================
@@ -124,6 +128,12 @@ class VoiceState(Enum):
     LISTENING = auto()   # Wake word heard, waiting for speech
     THINKING = auto()    # Utterance captured — ASR + LLM running (mic gated)
     RESPONDING = auto()  # TTS playing the response (mic gated)
+
+
+# Imported here (not with the other top-level imports) because state_feedback
+# does `from src.voice_control.client_mic import VoiceState`; placing it after
+# the class above breaks the otherwise-circular import at module load.
+from src.voice_control.state_feedback import chime_for  # noqa: E402
 
 
 LISTENING_TIMEOUT = 15.0  # seconds before requiring wake word again
@@ -190,6 +200,14 @@ MIC_CHANNEL = 0  # 0=left (beamformed), 1=right (ASR); set from --channel arg
 # voice back into ASR. Wired up in main() before the input stream opens.
 _audio_player: AudioPlayer | None = None
 
+# Stage 2F P6: hard mic gate during THINKING/RESPONDING + the 0.5s reopen
+# settle. The audio callback drops frames while gated, so no speech uttered
+# from the moment Spot commits to a response until 0.5s after it stops
+# speaking is ever captured (no barge-in, no late phantom commands).
+_mic_gated = False
+_mic_reopen_at = None  # monotonic time the post-response settle ends
+_state_leds = None     # StateLeds instance (set in main); None = LEDs off
+
 # Cooldown after the player goes idle: the OS audio buffer keeps draining
 # for ~tens of ms after stream.write() returns, so the mic would otherwise
 # pick up the tail of Spot's own utterance. 150ms is enough headroom on
@@ -216,9 +234,9 @@ def audio_callback(indata, frames, time_info, status):
     """
     global _player_last_busy_at
     now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
-    if _audio_player is not None and _audio_player.is_busy():
+    if _mic_gated or (_audio_player is not None and _audio_player.is_busy()):
         _player_last_busy_at = now
-        return  # discard frame — speaker is active
+        return  # discard frame — gated for a response, or speaker active
     if now - _player_last_busy_at < SPEAKER_TAIL_COOLDOWN_S:
         return  # cooldown — speaker buffer still draining
     if status:
@@ -558,10 +576,20 @@ WAKE_PHRASE_PATTERN = re.compile(
 )
 
 
+def _enter_state(new_state):
+    """Play the entry chime + set LEDs for a state transition. Best-effort."""
+    name = chime_for(new_state)
+    if name is not None:
+        getattr(beep, name)()
+    if _state_leds is not None:
+        _state_leds.set_state(new_state)
+
+
 # ============================================================================
 # Main Voice Control Loop
 # ============================================================================
 def main():
+    global _mic_gated, _mic_reopen_at
 
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
@@ -704,6 +732,24 @@ def main():
     # device selection is now owned by the player.
     beep.set_player(_audio_player)
     beep.set_volume(args.volume)
+
+    # Stage 2F P7: onboard RGB LED state indicator. Lazily binds to the Spot
+    # AV service on first state change; no-op in dry-run or if the robot has
+    # no AV system. Chimes are the fallback indicator either way.
+    global _state_leds
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        _state_leds = None
+    else:
+        from src.voice_control.spot_leds import StateLeds
+        from src.voice_control.spot_dispatch import ensure_spot_session
+
+        def _led_robot():
+            try:
+                return ensure_spot_session()["robot"]
+            except Exception:
+                return None
+
+        _state_leds = StateLeds(get_robot=_led_robot)
 
     # Initialize VAD (Silero via sherpa-onnx — replaces webrtcvad 2012-era model)
     vad_cfg = VadModelConfig(
@@ -874,17 +920,29 @@ def main():
                 is_speaking = False
                 speech_buffer.clear()
                 speech_float_buffer.clear()
-                _drain_audio_queue()
+                _drain_audio_queue(keep_tail=False)  # full drain: no late phantom commands
                 response_pending = False
-                print("[Barge-in] detector state reset after TTS response")
+                _mic_reopen_at = time.monotonic() + RESPONSE_REOPEN_DELAY_S
+                print("[Mic] response done — gated, reopening in "
+                      f"{RESPONSE_REOPEN_DELAY_S:.1f}s")
             player_was_busy = busy
+
+            # Stage 2F P6: reopen the mic once the post-response settle elapses.
+            if should_reopen_mic(_mic_gated, _mic_reopen_at, time.monotonic()):
+                _mic_gated = False
+                _mic_reopen_at = None
+                _drain_audio_queue(keep_tail=False)  # drop anything from the settle window
+                state = VoiceState.LISTENING
+                listening_start_time = time.time()
+                _enter_state(VoiceState.LISTENING)
+                print(">>> Listening for follow-up (no wake needed)...")
             # Get audio from queue. Short timeout so we still cycle (and stay
             # responsive to SIGTERM / KeyboardInterrupt) even when the audio
             # callback has stopped putting frames in the queue — which is
             # what happens whenever the AudioPlayer is busy (mic muted) or
             # the watchdog has just force-reset the player.
             try:
-                pcm = audio_queue.get(timeout=1.0)
+                pcm = audio_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             window += pcm
@@ -1026,22 +1084,31 @@ def main():
                         if speech_frame_count >= MAX_UTTERANCE_FRAMES:
                             print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                             safety_only = (state == VoiceState.WAKE_WORD)
+                            if not safety_only:
+                                # Commit to processing: gate the mic and show THINKING
+                                # before ASR+LLM so nothing said meanwhile is captured.
+                                _mic_gated = True
+                                _enter_state(VoiceState.THINKING)
+                                state = VoiceState.THINKING
                             result = process_utterance(stub, speech_buffer, speech_float_buffer,
                                                        brain, safety_only=safety_only, tts=tts,
                                                        has_wake_detector=bool(wake_detector))
                             is_speaking = False
                             speech_buffer.clear()
                             speech_float_buffer.clear()
-                            _drain_audio_queue()
                             if result != "wake_detected" and not safety_only:
                                 response_pending = True
-                            if result == "wake_detected" and state == VoiceState.WAKE_WORD:
+                                _enter_state(VoiceState.RESPONDING)
+                                state = VoiceState.RESPONDING
+                            elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                 print(">>> Now listening for commands...")
                                 beep.wake_detected()
                                 state = VoiceState.LISTENING
                                 listening_start_time = time.time()
-                            elif use_wake_word and state == VoiceState.LISTENING:
-                                listening_start_time = time.time()
+                                _drain_audio_queue()
+                            elif use_wake_word:
+                                # safety-only / ignored utterance: keep prior behavior
+                                _drain_audio_queue()
 
                 else:
                     consecutive_speech = 0
@@ -1067,22 +1134,31 @@ def main():
                             if elapsed_silence > effective_silence:
                                 print(f"\n>>> Processing...")
                                 safety_only = (state == VoiceState.WAKE_WORD)
+                                if not safety_only:
+                                    # Commit to processing: gate the mic and show THINKING
+                                    # before ASR+LLM so nothing said meanwhile is captured.
+                                    _mic_gated = True
+                                    _enter_state(VoiceState.THINKING)
+                                    state = VoiceState.THINKING
                                 result = process_utterance(stub, speech_buffer, speech_float_buffer,
                                                            brain, safety_only=safety_only, tts=tts,
                                                            has_wake_detector=bool(wake_detector))
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
-                                _drain_audio_queue()
                                 if result != "wake_detected" and not safety_only:
                                     response_pending = True
-                                if result == "wake_detected" and state == VoiceState.WAKE_WORD:
+                                    _enter_state(VoiceState.RESPONDING)
+                                    state = VoiceState.RESPONDING
+                                elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
                                     print(">>> Now listening for commands...")
                                     beep.wake_detected()
                                     state = VoiceState.LISTENING
                                     listening_start_time = time.time()
-                                elif use_wake_word and state == VoiceState.LISTENING:
-                                    listening_start_time = time.time()
+                                    _drain_audio_queue()
+                                elif use_wake_word:
+                                    # safety-only / ignored utterance: keep prior behavior
+                                    _drain_audio_queue()
                     else:
                         # Fully idle: update adaptive noise floor
                         rolling_noise_rms = (1 - NOISE_EMA_ALPHA) * rolling_noise_rms + NOISE_EMA_ALPHA * frame_rms
