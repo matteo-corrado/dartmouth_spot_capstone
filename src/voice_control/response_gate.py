@@ -14,6 +14,17 @@ from __future__ import annotations
 RESPONSE_REOPEN_DELAY_S = 0.5
 
 
+def should_arm_reopen(gated: bool, reopen_at, player_busy: bool) -> bool:
+    """True when the post-response settle timer should be (re)started.
+
+    Armed only while gated, the player is idle, and no timer is pending. The
+    release is therefore IDLE-based, not tied to a TTS busy->idle edge — so a
+    turn that plays no audio at all (e.g. a noise burst that yields an empty
+    ASR transcript) still releases the gate and can never wedge it shut.
+    """
+    return gated and not player_busy and reopen_at is None
+
+
 def should_reopen_mic(gated: bool, reopen_at, now: float) -> bool:
     """True once the post-response settle has elapsed and the mic may reopen.
 

@@ -92,7 +92,8 @@ from spot_tts import SpotTTS
 from audio_feedback import beep
 from latency import init_recorder, get_recorder
 from src.voice_control import startup_status  # noqa: F401 — available for later use
-from src.voice_control.response_gate import should_reopen_mic, RESPONSE_REOPEN_DELAY_S
+from src.voice_control.response_gate import (
+    should_arm_reopen, should_reopen_mic, RESPONSE_REOPEN_DELAY_S)
 # NB: state_feedback imports VoiceState from this module, so it must be imported
 # AFTER the VoiceState class is defined below (else a partial-init circular
 # import). The deferred import lives just under that class definition.
@@ -922,20 +923,31 @@ def main():
                 speech_float_buffer.clear()
                 _drain_audio_queue(keep_tail=False)  # full drain: no late phantom commands
                 response_pending = False
-                _mic_reopen_at = time.monotonic() + RESPONSE_REOPEN_DELAY_S
-                print("[Mic] response done — gated, reopening in "
-                      f"{RESPONSE_REOPEN_DELAY_S:.1f}s")
+                print("[Mic] detector reset after TTS response")
             player_was_busy = busy
 
-            # Stage 2F P6: reopen the mic once the post-response settle elapses.
-            if should_reopen_mic(_mic_gated, _mic_reopen_at, time.monotonic()):
-                _mic_gated = False
-                _mic_reopen_at = None
-                _drain_audio_queue(keep_tail=False)  # drop anything from the settle window
-                state = VoiceState.LISTENING
-                listening_start_time = time.time()
-                _enter_state(VoiceState.LISTENING)
-                print(">>> Listening for follow-up (no wake needed)...")
+            # Stage 2F P6 gate release (IDLE-based, not TTS-edge-based, so a turn
+            # that plays no audio — e.g. a noise burst with an empty ASR result —
+            # can't wedge the gate shut). Once gated and the player is idle, start
+            # the 0.5s settle; reopen to LISTENING when it elapses.
+            if _mic_gated:
+                now_m = time.monotonic()
+                if busy:
+                    _mic_reopen_at = None  # still speaking/chiming — hold the gate
+                elif should_arm_reopen(_mic_gated, _mic_reopen_at, busy):
+                    _mic_reopen_at = now_m + RESPONSE_REOPEN_DELAY_S
+                elif should_reopen_mic(_mic_gated, _mic_reopen_at, now_m):
+                    _mic_gated = False
+                    _mic_reopen_at = None
+                    response_pending = False
+                    vad.reset()
+                    if wake_detector:
+                        wake_detector.reset()
+                    _drain_audio_queue(keep_tail=False)  # drop the settle-window audio
+                    state = VoiceState.LISTENING
+                    listening_start_time = time.time()
+                    _enter_state(VoiceState.LISTENING)
+                    print(">>> Listening for follow-up (no wake needed)...")
             # Get audio from queue. Short timeout so we still cycle (and stay
             # responsive to SIGTERM / KeyboardInterrupt) even when the audio
             # callback has stopped putting frames in the queue — which is

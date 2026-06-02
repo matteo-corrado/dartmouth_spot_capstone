@@ -1,6 +1,30 @@
 # tests/voice_control/test_response_gate.py
 """Unit tests for the post-response mic-reopen predicate (Stage 2F P6)."""
-from src.voice_control.response_gate import should_reopen_mic, RESPONSE_REOPEN_DELAY_S
+from src.voice_control.response_gate import (
+    should_arm_reopen, should_reopen_mic, RESPONSE_REOPEN_DELAY_S)
+
+
+def test_arm_when_gated_idle_and_unarmed():
+    assert should_arm_reopen(gated=True, reopen_at=None, player_busy=False) is True
+
+
+def test_no_arm_while_player_busy():
+    # still speaking (or chime playing) — hold the gate, don't start the settle
+    assert should_arm_reopen(gated=True, reopen_at=None, player_busy=True) is False
+
+
+def test_no_arm_when_timer_already_pending():
+    assert should_arm_reopen(gated=True, reopen_at=10.0, player_busy=False) is False
+
+
+def test_no_arm_when_not_gated():
+    assert should_arm_reopen(gated=False, reopen_at=None, player_busy=False) is False
+
+
+def test_no_audio_turn_still_arms():
+    # The deadlock case: a turn that played no TTS (player never busy) must
+    # still arm the settle so the gate releases.
+    assert should_arm_reopen(gated=True, reopen_at=None, player_busy=False) is True
 
 
 def test_reopens_once_settle_elapsed():
