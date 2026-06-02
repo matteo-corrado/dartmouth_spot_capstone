@@ -32,6 +32,7 @@ Install (Jetson AGX Orin, JetPack 6, CUDA 12.6, Python 3.10, aarch64):
 """
 
 import os
+import time
 from pathlib import Path
 import numpy as np
 
@@ -46,6 +47,7 @@ from src.voice_control.latency import get_recorder
 import src.voice_control.tts.kokoro      # noqa: F401  (registers backend)
 import src.voice_control.tts.elevenlabs  # noqa: F401  (registers backend)
 from src.voice_control.tts import get_backend
+from src.voice_control.animation.mouth import envelope
 
 
 def _default_voice_for_backend(backend) -> str:
@@ -172,7 +174,6 @@ class SpotTTS:
         # _render (worker thread) fills it; cb_play_start (same thread, later)
         # reads it. Same worker → no cross-thread race.
         frame_holder = {}
-        import time as _t
 
         def _render():
             backend = get_backend()
@@ -200,7 +201,6 @@ class SpotTTS:
             if gain != 1.0:
                 samples = samples * gain
             if self.mouth is not None and self.mouth.enabled:
-                from src.voice_control.animation.mouth import envelope
                 frame_holder["frames"] = envelope(
                     samples, 24000, fps=self.mouth.fps,
                     intensity=self.mouth.intensity)
@@ -228,12 +228,12 @@ class SpotTTS:
                 _trace_play_start()
             frames = frame_holder.get("frames")
             if self.mouth is not None and self.mouth.enabled and frames is not None and len(frames):
-                self.mouth.play(frames, _t.monotonic())
+                self.mouth.play(frames, time.monotonic())
 
         def cb_play_end():
             if _trace_play_end:
                 _trace_play_end()
-            if self.mouth is not None:
+            if self.mouth is not None and self.mouth.enabled:
                 self.mouth.close()
 
         self._player.enqueue_render(

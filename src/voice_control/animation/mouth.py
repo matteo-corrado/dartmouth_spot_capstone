@@ -6,8 +6,24 @@ array. `MouthDriver` paces those fractions to the arm in sync with playback.
 MOUTH_FPS is set from the Task 0 feasibility spike — the proven smooth
 gripper command rate on our Spot. Default 20; lower it if the spike found a
 lower ceiling.
+
+Threading model: all gripper I/O happens on ONE persistent daemon worker
+thread fed by a queue. `play()`/`close()` only enqueue (and signal the
+current job to cancel) — they NEVER block on a gRPC call or a join. This
+keeps the AudioPlayer worker (which calls these from the TTS play callbacks)
+and the voice-loop/safety thread (which calls close() on stop/estop) from
+ever stalling on the arm command channel.
 """
+import queue
+import threading
+import time as _time
+
 import numpy as np
+
+try:
+    from bosdyn.client.robot_command import RobotCommandBuilder
+except Exception:  # bosdyn not importable in unit-test env
+    RobotCommandBuilder = None
 
 MOUTH_FPS = 20  # set from spike_gripper_rate.py measurement
 
@@ -21,26 +37,19 @@ def envelope(samples: np.ndarray, rate: int, fps: int = MOUTH_FPS,
     """
     if samples.size == 0:
         return np.zeros(0, dtype=np.float32)
+    fps = max(1, int(fps))
     rect = np.abs(samples.astype(np.float32))
     hop = max(1, int(round(rate / fps)))
     n_frames = int(np.ceil(rect.size / hop))
-    frames = np.zeros(n_frames, dtype=np.float32)
-    for i in range(n_frames):
-        frames[i] = rect[i * hop:(i + 1) * hop].max()
+    pad_len = n_frames * hop
+    if rect.size < pad_len:  # zero-pad the trailing partial window
+        rect = np.concatenate([rect, np.zeros(pad_len - rect.size, dtype=np.float32)])
+    frames = rect.reshape(n_frames, hop).max(axis=1)
     peak = float(frames.max())
     if peak > 0:
         frames = frames / peak
     frames[frames < gate] = 0.0
     return np.clip(frames * intensity, 0.0, 1.0).astype(np.float32)
-
-
-import threading
-import time as _time
-
-try:
-    from bosdyn.client.robot_command import RobotCommandBuilder
-except Exception:  # bosdyn not importable in unit-test env
-    RobotCommandBuilder = None
 
 
 class MouthDriver:
@@ -49,66 +58,78 @@ class MouthDriver:
     Disabled by default (arm-safety). `enable()` is called by the
     enable_mouth dispatch handler AFTER the arm is deployed. `dry_run`
     records fractions to `self.log` instead of commanding the robot.
+
+    All gripper commands run on a single daemon worker thread; public
+    methods are non-blocking.
     """
 
     def __init__(self, cmd_client=None, fps: int = MOUTH_FPS,
                  dry_run: bool = False):
         self._cmd = cmd_client
-        self.fps = fps
+        self.fps = max(1, int(fps))
         self.dry_run = dry_run
         self.enabled = False
         self.intensity = 1.0
         self.log = []  # list[(monotonic_ts, fraction)] — dry_run only
-        self._stop = threading.Event()
-        self._thread = None
-        self._gen = 0  # bumped by play()/close() to supersede stale threads
         self._lock = threading.Lock()
+        self._q = queue.Queue()
+        self._cur_stop = threading.Event()  # cancels the in-progress play
+        self._worker = threading.Thread(target=self._serve, daemon=True)
+        self._worker.start()
 
     def enable(self):
         with self._lock:
             self.enabled = True
 
     def disable(self):
+        """Stop animating AND latch off, so a queued/next play() cannot
+        re-open the gripper (used on the stop/estop safety path)."""
         with self._lock:
             self.enabled = False
         self.close()
 
-    def _send(self, frac: float, gen=None):
-        # Drop sends from a superseded generation so a stale paced thread
-        # cannot re-open the gripper after a close()/new play() — even if its
-        # join timed out. gen=None (close's 0.0 command) always sends.
-        if gen is not None:
-            with self._lock:
-                if gen != self._gen:
-                    return
-        frac = float(max(0.0, min(1.0, frac)))
-        if self.dry_run:
-            self.log.append((_time.monotonic(), frac))
-            return
-        if self._cmd is None or RobotCommandBuilder is None:
-            return
-        self._cmd.robot_command(
-            RobotCommandBuilder.claw_gripper_open_fraction_command(frac))
-
     def play(self, fractions, t0: float):
-        # Whole supersede-and-start sequence under the lock so a concurrent
-        # close()/disable() from a stop/estop handler thread cannot interleave
-        # and leave the gripper open.
+        """Enqueue a paced open/close sequence. Non-blocking. No-op if
+        disabled."""
         with self._lock:
             if not self.enabled:
                 return
-            self._gen += 1
-            gen = self._gen
-            self._stop.set()              # signal any prior thread to quit
-            self._stop = threading.Event()
-            stop = self._stop
-            t = threading.Thread(
-                target=self._run, args=(list(fractions), t0, stop, gen),
-                daemon=True)
-            self._thread = t
-            t.start()
+        self._cur_stop.set()  # supersede whatever is animating now
+        self._q.put(("play", list(fractions), t0))
 
-    def _run(self, fractions, t0, stop, gen):
+    def close(self):
+        """Force the gripper closed. Non-blocking: cancels the current play,
+        drops any queued plays so the close takes priority, and asks the
+        worker to command 0.0."""
+        self._cur_stop.set()
+        self._drain_queue()
+        self._q.put(("close",))
+
+    def _drain_queue(self):
+        while True:
+            try:
+                self._q.get_nowait()
+                self._q.task_done()
+            except queue.Empty:
+                return
+
+    def _serve(self):
+        while True:
+            job = self._q.get()
+            try:
+                kind = job[0]
+                if kind == "close":
+                    self._send(0.0)
+                elif kind == "play":
+                    _, fractions, t0 = job
+                    stop = threading.Event()
+                    with self._lock:
+                        self._cur_stop = stop
+                    self._run(fractions, t0, stop)
+            finally:
+                self._q.task_done()
+
+    def _run(self, fractions, t0, stop):
         for i, frac in enumerate(fractions):
             if stop.is_set():
                 return
@@ -118,23 +139,22 @@ class MouthDriver:
                 stop.wait(target - now)
             if stop.is_set():
                 return
-            self._send(frac, gen)
+            self._send(frac)
+
+    def _send(self, frac: float):
+        frac = float(max(0.0, min(1.0, frac)))
+        if self.dry_run:
+            self.log.append((_time.monotonic(), frac))
+            return
+        if self._cmd is None or RobotCommandBuilder is None:
+            return
+        try:
+            self._cmd.robot_command(
+                RobotCommandBuilder.claw_gripper_open_fraction_command(frac))
+        except Exception as e:
+            # Never let an arm/comms error kill the worker thread.
+            print(f"[MouthDriver] gripper command failed: {e}")
 
     def wait(self):
-        with self._lock:
-            t = self._thread
-        if t:
-            t.join(timeout=5.0)
-
-    def close(self):
-        """Force gripper closed + supersede any in-flight playback. The gen
-        bump guarantees a stale thread's late frame is dropped even if its
-        join times out."""
-        with self._lock:
-            self._gen += 1
-            self._stop.set()
-            old = self._thread
-            self._thread = None
-        if old and old.is_alive():
-            old.join(timeout=1.0)
-        self._send(0.0)
+        """Block until all queued work has drained (test/diagnostic helper)."""
+        self._q.join()

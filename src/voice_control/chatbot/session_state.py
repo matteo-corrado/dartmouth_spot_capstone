@@ -21,8 +21,6 @@ class SessionState:
     turn_index: int = 0
     last_action_taken: Optional[str] = None
     last_comment_ts: float = 0.0
-    arm_deployed: bool = False
-    mouth_enabled: bool = False
 
     def as_dict(self) -> dict:
         """Render as flat dict for LLM bullet-list block.

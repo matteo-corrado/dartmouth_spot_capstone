@@ -574,13 +574,16 @@ def _handle_set_backend(params):
 
 
 def _close_mouth():
-    """Stage 2E.2: force the gripper mouth closed + cancel playback. Safe
-    no-op if TTS/mouth isn't initialized. Called from stop/freeze/estop."""
+    """Stage 2E.2 safety path: latch the gripper mouth OFF and close it.
+    Uses disable() (not close()) so a TTS chunk still queued/playing can't
+    re-open the gripper via its play callback after a stop/estop. Non-blocking
+    (the gripper command runs on the MouthDriver worker). Safe no-op if
+    TTS/mouth isn't initialized. Called from stop/freeze/estop."""
     try:
         from src.voice_control.spot_tts import get_tts
         _t = get_tts()
         if _t is not None and _t.mouth is not None:
-            _t.mouth.close()
+            _t.mouth.disable()
     except Exception as e:
         # Safety path — surface a failed gripper-close instead of hiding it.
         print(f"[Spot] ⚠️  _close_mouth failed (gripper may be open): {e}")
@@ -610,7 +613,9 @@ def _handle_enable_mouth(params):
         if not robot.is_powered_on():
             print("[Spot] enable_mouth: motors not powered (or e-stopped) — refusing arm deploy")
             return False
-        deploy_arm_safe(session["cmd"])
+        if not deploy_arm_safe(session["cmd"]):
+            print("[Spot] enable_mouth: arm did not reach ready pose — not enabling")
+            return False
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
         tts.mouth.enable()

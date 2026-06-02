@@ -19,9 +19,9 @@ import argparse
 import math
 import time
 
-from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
+from bosdyn.client.robot_command import RobotCommandBuilder
 
-from src.session import spot_session
+from src.session import spot_session, deploy_arm_safe, stow_arm
 
 
 def run_rate(cmd_client, hz: float, secs: float) -> dict:
@@ -84,8 +84,7 @@ def main():
             return
 
         print("[spike] Deploying arm to ready pose...")
-        cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_ready_command())
-        block_until_arm_arrives(cmd_client, cmd_id, 6.0)
+        deploy_arm_safe(cmd_client, timeout_sec=6.0)
 
         results = []
         for hz in args.rates:
@@ -95,10 +94,7 @@ def main():
             results.append(r)
 
         print("[spike] Closing gripper + stowing arm...")
-        cmd_client.robot_command(
-            RobotCommandBuilder.claw_gripper_open_fraction_command(0.0))
-        cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_stow_command())
-        block_until_arm_arrives(cmd_client, cmd_id, 6.0)
+        stow_arm(cmd_client, timeout_sec=6.0)
 
         print("\n" + "=" * 60)
         print("SPIKE SUMMARY")

@@ -33,9 +33,3 @@ def test_as_dict_with_set_fields():
     assert d["turn_index"] == 5
     assert d["last_action_taken"] == "go_to lobby"
     assert 7 <= d["seconds_since_last_comment"] <= 9  # tolerate small drift
-
-
-def test_mouth_and_arm_defaults_safe():
-    s = SessionState()
-    assert s.arm_deployed is False
-    assert s.mouth_enabled is False

@@ -71,4 +71,18 @@ def test_close_forces_zero():
     d = MouthDriver(cmd_client=None, fps=10, dry_run=True)
     d.enable()
     d.close()
+    d.wait()  # close() is async (worker thread issues the 0.0)
     assert d.log[-1][1] == 0.0
+
+
+def test_close_supersedes_running_play():
+    # A close() mid-play must drop remaining frames and end on 0.0 — the
+    # safety path (stop/estop) relies on this.
+    d = MouthDriver(cmd_client=None, fps=10, dry_run=True)
+    d.enable()
+    d.play([1.0] * 50, t0=time.monotonic())  # 5s of frames
+    time.sleep(0.05)
+    d.close()
+    d.wait()
+    assert d.log[-1][1] == 0.0
+    assert len(d.log) < 50  # superseded, not all frames sent
