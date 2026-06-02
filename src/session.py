@@ -169,3 +169,19 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
         except Exception:
             pass
         lease_keepalive.shutdown()
+
+
+def deploy_arm_safe(cmd_client, timeout_sec: float = 5.0):
+    """Deploy the arm to the ready pose (chest-height carry). Caller must
+    have motors powered and the robot standing. Returns True on arrival."""
+    from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
+    cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_ready_command())
+    return block_until_arm_arrives(cmd_client, cmd_id, timeout_sec)
+
+
+def stow_arm(cmd_client, timeout_sec: float = 5.0):
+    """Close the gripper then stow the arm. Safe to call when already stowed."""
+    from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
+    cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0))
+    cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_stow_command())
+    return block_until_arm_arrives(cmd_client, cmd_id, timeout_sec)

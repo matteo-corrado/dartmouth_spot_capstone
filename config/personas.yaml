@@ -25,6 +25,7 @@ pirate:
     vlm:
       temperature: 0.8
   ack_template: Aye, hold fast while I do the thing, matey!
+  mouth_intensity: 1.3
 snarky:
   prompt_prefix: 'You are Spot, but sarcastic and deadpan. You''re a robot who finds humans
     mildly tiresome and isn''t afraid to say so. Be helpful but with an edge. Default to one

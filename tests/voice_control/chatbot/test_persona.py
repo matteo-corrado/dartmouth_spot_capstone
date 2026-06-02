@@ -69,3 +69,9 @@ def test_voice_id_for():
     pirate = reg["pirate"]
     assert voice_id_for(pirate, "kokoro") == "am_michael"
     assert voice_id_for(pirate, "elevenlabs") == "Xq2dbIWNPChFB77imiDe"
+
+
+def test_persona_mouth_intensity_loaded_and_defaulted(tmp_path):
+    reg = load_registry()  # real config/personas.yaml
+    assert get_persona("pirate", reg).mouth_intensity == 1.3
+    assert get_persona("tour_guide", reg).mouth_intensity == 1.0  # default

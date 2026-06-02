@@ -11,7 +11,7 @@ actions-list ::= "[" ws ( action ( "," ws action )* )? ws "]"
 action ::= "{" ws "\"action\":" ws action-name ( "," ws "\"params\":" ws params )? ws "}"
 
 # set_persona = Stage 2E.1 forward-compat; dispatcher handler lands in 2E.1 T16.
-action-name ::= "\"stop\"" | "\"freeze\"" | "\"estop\"" | "\"stand\"" | "\"sit\"" | "\"selfright\"" | "\"walk\"" | "\"strafe\"" | "\"turn\"" | "\"body_height\"" | "\"set_speed\"" | "\"set_volume\"" | "\"go_to\"" | "\"tour\"" | "\"patrol\"" | "\"come_back\"" | "\"save_location\"" | "\"list_locations\"" | "\"load_map\"" | "\"list_maps\"" | "\"go_to_object\"" | "\"follow_me\"" | "\"describe\"" | "\"check_obstacles\"" | "\"battery_status\"" | "\"status\"" | "\"power_off\"" | "\"set_persona\"" | "\"add_persona\"" | "\"set_backend\""
+action-name ::= "\"stop\"" | "\"freeze\"" | "\"estop\"" | "\"stand\"" | "\"sit\"" | "\"selfright\"" | "\"walk\"" | "\"strafe\"" | "\"turn\"" | "\"body_height\"" | "\"set_speed\"" | "\"set_volume\"" | "\"go_to\"" | "\"tour\"" | "\"patrol\"" | "\"come_back\"" | "\"save_location\"" | "\"list_locations\"" | "\"load_map\"" | "\"list_maps\"" | "\"go_to_object\"" | "\"follow_me\"" | "\"describe\"" | "\"check_obstacles\"" | "\"battery_status\"" | "\"status\"" | "\"power_off\"" | "\"set_persona\"" | "\"add_persona\"" | "\"set_backend\"" | "\"enable_mouth\"" | "\"disable_mouth\""
 
 params ::= "{" ws ( param ( "," ws param )* )? ws "}"
 param ::= string ":" ws value

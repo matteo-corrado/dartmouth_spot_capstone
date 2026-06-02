@@ -38,6 +38,7 @@ class Persona:
     # Keys: action | freeform | vlm. Values merge on top of
     # SAMPLING_PROFILES from brain/llamacpp_backend.py.
     ack_template: str = "Give me a second."  # spoken in CURRENT persona while add_persona runs
+    mouth_intensity: float = 1.0
 
 
 def load_registry(path: str = DEFAULT_REGISTRY_PATH) -> dict:
@@ -73,6 +74,7 @@ def load_registry(path: str = DEFAULT_REGISTRY_PATH) -> dict:
             voices=voices,
             sampling_overrides=sampling_overrides,
             ack_template=entry.get("ack_template", "Give me a second."),
+            mouth_intensity=float(entry.get("mouth_intensity", 1.0)),
         )
     return registry
 
@@ -82,6 +84,7 @@ _EMERGENCY_PERSONA = Persona(
     prompt_prefix="You are Spot, a Boston Dynamics quadruped robot.",
     voices={},
     sampling_overrides={},
+    mouth_intensity=1.0,
 )
 
 
