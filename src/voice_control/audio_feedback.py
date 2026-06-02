@@ -129,6 +129,14 @@ class AudioFeedback:
         samples = _tone(659, 60, 0.15)
         self._play(samples, "chain_next")
 
+    def thinking(self):
+        """Working blip — utterance captured, ASR+LLM running (A4 -> D5, 130ms)."""
+        a4 = _tone(440, 60, 0.18)
+        gap = np.zeros(int(SAMPLE_RATE * 0.015), dtype=np.float32)
+        d5 = _tone(587, 60, 0.18)
+        samples = np.concatenate([a4[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, d5])
+        self._play(samples, "thinking")
+
     def ready(self):
         """Power-on chime — pipeline initialized (C4 -> C5 -> C6, 240ms)."""
         c4 = _tone(261, 80, 0.25)
