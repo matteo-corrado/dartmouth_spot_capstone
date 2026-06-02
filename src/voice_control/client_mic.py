@@ -1110,10 +1110,29 @@ def main():
         cleanup_spot()
 
 
-def _drain_audio_queue():
-    """Discard stale audio frames that accumulated during processing,
-    but keep the most recent ~1 second so new speech isn't lost."""
-    # Drain everything into a list first
+def partition_drain(frames, keep_count):
+    """Split drained frames into (kept, dropped_count).
+
+    keep_count > 0 keeps the most recent `keep_count` frames (used after a
+    wake fire so an in-breath command isn't lost); keep_count == 0 keeps
+    nothing (used after a response so post-decision speech can't replay).
+    """
+    if not frames:
+        return [], 0
+    if keep_count <= 0:
+        return [], len(frames)
+    dropped = max(0, len(frames) - keep_count)
+    return frames[dropped:], dropped
+
+
+def _drain_audio_queue(keep_tail: bool = True):
+    """Discard stale audio frames accumulated during processing.
+
+    keep_tail=True keeps the most recent ~1s (a wake fire's in-breath command
+    could be in there). keep_tail=False drains everything — used after a
+    response so speech uttered while Spot was thinking/speaking is never
+    replayed as a phantom command.
+    """
     frames = []
     while not audio_queue.empty():
         try:
@@ -1121,19 +1140,14 @@ def _drain_audio_queue():
         except queue.Empty:
             break
 
-    if not frames:
-        return
+    keep_count = max(1000 // FRAME_MS, 1) if keep_tail else 0  # ~33 frames at 30ms
+    kept, dropped = partition_drain(frames, keep_count)
 
-    # Keep the last ~1 second of audio (could contain new speech)
-    keep_count = max(1000 // FRAME_MS, 1)  # ~33 frames at 30ms
-    drained = max(0, len(frames) - keep_count)
-
-    # Put the kept frames back into the queue
-    for frame in frames[drained:]:
+    for frame in kept:
         audio_queue.put(frame)
 
-    if drained:
-        print(f"[Drained {drained} stale audio chunks, kept {len(frames) - drained}]")
+    if dropped:
+        print(f"[Drained {dropped} stale audio chunks, kept {len(kept)}]")
 
 
 MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
