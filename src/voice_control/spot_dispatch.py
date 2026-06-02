@@ -596,7 +596,7 @@ def do_set_persona(params: dict, brain) -> dict:
     from src.voice_control.chatbot.persona import get_persona
     persona = get_persona(name, brain._persona_registry)
     brain.session_state.current_persona = persona.name
-    threading.Thread(target=brain.warm_up, daemon=True).start()
+    brain.warm_up_async()  # dedup'd bg warm-up; never stacks threads / collides with a live turn
     print(f"[Dispatch] Persona switched to '{persona.name}' (warming new prefix in bg)")
     return {"ok": True, "persona": persona.name}
 

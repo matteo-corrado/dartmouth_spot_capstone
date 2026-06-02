@@ -14,6 +14,7 @@ Architecture inspired by Boston Dynamics' Robots That Can Chat.
 import json
 import os
 import re
+import threading
 import time
 import collections
 import requests
@@ -260,6 +261,16 @@ class LLMBrain:
         self.history: "collections.deque[Dict[str, Any]]" = collections.deque(maxlen=MAX_HISTORY)
         self._available = None  # cached availability check
         self._first_request = True
+        # Serializes every backend.chat() across threads. The llama-server runs
+        # with a single slot (-np 1), so a turn's process() and a background
+        # warm_up() must never hit it at once — concurrent requests contend on
+        # the one slot and have crashed the server. Also guards the shared
+        # self.history deque from a mutate-during-iterate race.
+        self._backend_lock = threading.Lock()
+        # Tracks the in-flight warm-up so rapid persona switches don't stack a
+        # pile of warm_up threads (each firing its own LLM request).
+        self._warm_lock = threading.Lock()
+        self._warm_thread: Optional[threading.Thread] = None
 
         # Stage 2E.1: persona registry + cross-turn session state.
         try:
@@ -307,27 +318,52 @@ class LLMBrain:
         """
         if not self.is_available():
             return
-        backend = _backend()
-        print(f"[Brain] Warming up backend '{backend.name}'...")
-        t0 = time.time()
+        # Non-blocking: warm-up is best-effort priming. If a real turn holds the
+        # backend lock, skip rather than queue a second request behind it on the
+        # single-slot server. Worst case the next turn pays its own prefill —
+        # exactly the pre-warm-up behavior.
+        if not self._backend_lock.acquire(blocking=False):
+            print("[Brain] Warm-up skipped — backend busy with a live turn")
+            return
         try:
-            warm_state = {"battery_percent": "unknown", "is_powered": True,
-                          "is_standing": "unknown", "saved_locations": "none"}
-            messages = self._build_messages("ping", warm_state)
-            system = messages[0]["content"]
-            user_history = messages[1:]
-            backend.chat(
-                system,
-                user_history,
-                profile="freeform",
-                max_tokens=10,
-                timeout=FIRST_REQUEST_TIMEOUT,
-            )
-            elapsed = time.time() - t0
-            self._first_request = False
-            print(f"[Brain] Backend warm in {elapsed:.1f}s (prompt cached)")
-        except Exception as e:
-            print(f"[Brain] Warm-up error: {type(e).__name__}: {e}")
+            backend = _backend()
+            print(f"[Brain] Warming up backend '{backend.name}'...")
+            t0 = time.time()
+            try:
+                warm_state = {"battery_percent": "unknown", "is_powered": True,
+                              "is_standing": "unknown", "saved_locations": "none"}
+                messages = self._build_messages("ping", warm_state)
+                system = messages[0]["content"]
+                user_history = messages[1:]
+                backend.chat(
+                    system,
+                    user_history,
+                    profile="freeform",
+                    max_tokens=10,
+                    timeout=FIRST_REQUEST_TIMEOUT,
+                )
+                elapsed = time.time() - t0
+                self._first_request = False
+                print(f"[Brain] Backend warm in {elapsed:.1f}s (prompt cached)")
+            except Exception as e:
+                print(f"[Brain] Warm-up error: {type(e).__name__}: {e}")
+        finally:
+            self._backend_lock.release()
+
+    def warm_up_async(self):
+        """Run warm_up() in a background daemon thread without stacking threads.
+
+        If a prior warm-up is still in flight, skip — rapid persona switches
+        ("be a pirate… no, a butler… no, a cowboy") must not spawn an unbounded
+        pile of concurrent warm_up threads, each firing its own LLM request at
+        the single-slot server. Replaces the fire-and-forget thread that the
+        set_persona handler used to start directly.
+        """
+        with self._warm_lock:
+            if self._warm_thread is not None and self._warm_thread.is_alive():
+                return
+            self._warm_thread = threading.Thread(target=self.warm_up, daemon=True)
+            self._warm_thread.start()
 
     def warm_up_vlm(self):
         """No-op since LLM and VLM are now the same model (gemma4:e4b).
@@ -409,13 +445,14 @@ class LLMBrain:
         persona = get_persona(self.session_state.current_persona, self._persona_registry)
         overrides = persona.sampling_overrides.get(profile) or None
         t0 = time.time()
-        raw = backend.chat(
-            system,
-            user_history,
-            on_token=getattr(self, "on_token_callback", None),
-            profile=profile,
-            sampling_overrides=overrides,
-        )
+        with self._backend_lock:
+            raw = backend.chat(
+                system,
+                user_history,
+                on_token=getattr(self, "on_token_callback", None),
+                profile=profile,
+                sampling_overrides=overrides,
+            )
         elapsed_ms = int((time.time() - t0) * 1000)
 
         try:

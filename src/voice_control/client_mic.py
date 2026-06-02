@@ -1299,6 +1299,23 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             t_llm_start = time.time()
             try:
                 result = brain.process(clean, state)
+            except Exception as e:
+                # A failed LLM call (server crash/restart → ConnectionError,
+                # slot contention → ReadTimeout, 5xx → HTTPError) must NOT kill
+                # the voice process. Bail this utterance and keep listening.
+                import traceback
+                print(f"[Brain] process() failed: {type(e).__name__}: {e}")
+                traceback.print_exc()
+                try:
+                    beep.error()
+                except Exception:
+                    pass
+                if tts is not None:
+                    try:
+                        tts.speak("Sorry, my brain hiccuped. Try that again.")
+                    except Exception:
+                        pass
+                return None
             finally:
                 if chunker is not None:
                     chunker.flush()
