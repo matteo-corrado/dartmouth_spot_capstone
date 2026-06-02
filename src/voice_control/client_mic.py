@@ -122,7 +122,8 @@ def _find_device_by_name(substring: str, kind: str = "input") -> int | None:
 class VoiceState(Enum):
     WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
     LISTENING = auto()   # Wake word heard, waiting for speech
-    RECORDING = auto()   # Speech detected, accumulating audio
+    THINKING = auto()    # Utterance captured — ASR + LLM running (mic gated)
+    RESPONDING = auto()  # TTS playing the response (mic gated)
 
 
 LISTENING_TIMEOUT = 15.0  # seconds before requiring wake word again
