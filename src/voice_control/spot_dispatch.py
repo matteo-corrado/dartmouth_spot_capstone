@@ -573,6 +573,57 @@ def _handle_set_backend(params):
         return False
 
 
+def _close_mouth():
+    """Stage 2E.2: force the gripper mouth closed + cancel playback. Safe
+    no-op if TTS/mouth isn't initialized. Called from stop/freeze/estop."""
+    try:
+        from src.voice_control.spot_tts import get_tts
+        _t = get_tts()
+        if _t is not None and _t.mouth is not None:
+            _t.mouth.close()
+    except Exception:
+        pass
+
+
+def _handle_enable_mouth(params):
+    """Deploy the arm and enable gripper mouth animation (Stage 2E.2)."""
+    try:
+        from src.voice_control.spot_tts import get_tts
+        from src.session import deploy_arm_safe
+        tts = get_tts()
+        if tts is None or tts.mouth is None:
+            print("[Spot] enable_mouth: mouth driver not initialized")
+            return False
+        session = ensure_spot_session()
+        if not session["robot"].has_arm():
+            print("[Spot] enable_mouth: no arm installed")
+            return False
+        deploy_arm_safe(session["cmd"])
+        tts.mouth.enable()
+        print("[Spot] ✓ Mouth enabled (arm deployed)")
+        return True
+    except Exception as e:
+        print(f"[Spot] ✗ enable_mouth failed: {e}")
+        return False
+
+
+def _handle_disable_mouth(params):
+    """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
+    try:
+        from src.voice_control.spot_tts import get_tts
+        from src.session import stow_arm
+        tts = get_tts()
+        if tts is not None and tts.mouth is not None:
+            tts.mouth.disable()
+        session = ensure_spot_session()
+        stow_arm(session["cmd"])
+        print("[Spot] ✓ Mouth disabled (arm stowed)")
+        return True
+    except Exception as e:
+        print(f"[Spot] ✗ disable_mouth failed: {e}")
+        return False
+
+
 def do_set_persona(params: dict, brain) -> dict:
     """Switch active persona via runtime action.
 
@@ -596,6 +647,14 @@ def do_set_persona(params: dict, brain) -> dict:
     from src.voice_control.chatbot.persona import get_persona
     persona = get_persona(name, brain._persona_registry)
     brain.session_state.current_persona = persona.name
+    # Stage 2E.2: scale gripper-mouth swing to this persona.
+    try:
+        from src.voice_control.spot_tts import get_tts
+        _t = get_tts()
+        if _t is not None and _t.mouth is not None:
+            _t.mouth.intensity = getattr(persona, "mouth_intensity", 1.0)
+    except Exception:
+        pass
     brain.warm_up_async()  # dedup'd bg warm-up; never stacks threads / collides with a live turn
     print(f"[Dispatch] Persona switched to '{persona.name}' (warming new prefix in bg)")
     return {"ok": True, "persona": persona.name}
@@ -706,9 +765,15 @@ def dispatch_intent(intent, brain=None):
         session = ensure_spot_session()
         cmd_client = session["cmd"]
         
+        if name == "enable_mouth":
+            return _handle_enable_mouth(params)
+        if name == "disable_mouth":
+            return _handle_disable_mouth(params)
+
         if name == "stop":
             # Stop current movement/action
             print("[Spot] Stopping current action...")
+            _close_mouth()
             _cancel_nav()
             try:
                 cmd_client.robot_command(RobotCommandBuilder.stop_command())
@@ -721,6 +786,7 @@ def dispatch_intent(intent, brain=None):
         elif name == "freeze":
             # Freeze robot - stop all movement and hold current position
             print("[Spot] Freezing robot in place...")
+            _close_mouth()
             _cancel_nav()
             try:
                 # First stop any current movement
@@ -1006,6 +1072,7 @@ def dispatch_intent(intent, brain=None):
         elif name == "estop":
             # Emergency stop (software e-stop)
             print("[Spot] ⚠️  EMERGENCY STOP triggered!")
+            _close_mouth()
             _cancel_nav()
             try:
                 cmd_client.robot_command(RobotCommandBuilder.stop_command())
