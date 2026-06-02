@@ -42,6 +42,20 @@ def test_no_robot_is_noop():
     assert leds.enabled is False
 
 
+def test_retries_until_session_available():
+    # robot is None before the first command connects (LED must NOT trigger a
+    # connect), then becomes available; the next state change activates LEDs.
+    box = {"robot": None}
+    av = FakeAvClient()
+    leds = StateLeds(get_robot=lambda: box["robot"], start_thread=False)
+    leds.set_state(VoiceState.THINKING)          # session not up yet
+    assert leds.enabled is False
+    box["robot"] = FakeRobot(has_av=True, av_client=av)  # a command brought it up
+    leds.set_state(VoiceState.THINKING)          # retry now succeeds
+    assert leds.enabled is True
+    assert av.ran[-1] == "spotvoice_thinking"
+
+
 def test_robot_without_av_system_degrades():
     robot = FakeRobot(has_av=False, av_client=FakeAvClient())
     leds = StateLeds(get_robot=lambda: robot, start_thread=False)

@@ -578,12 +578,20 @@ WAKE_PHRASE_PATTERN = re.compile(
 
 
 def _enter_state(new_state):
-    """Play the entry chime + set LEDs for a state transition. Best-effort."""
-    name = chime_for(new_state)
-    if name is not None:
-        getattr(beep, name)()
+    """Play the entry chime + set LEDs for a state transition. Best-effort —
+    a chime or LED failure must NEVER crash the voice loop, so each indicator
+    is isolated in its own try/except (the loop only catches KeyboardInterrupt)."""
+    try:
+        name = chime_for(new_state)
+        if name is not None:
+            getattr(beep, name)()
+    except Exception as e:
+        print(f"[Indicator] chime failed: {type(e).__name__}: {e}")
     if _state_leds is not None:
-        _state_leds.set_state(new_state)
+        try:
+            _state_leds.set_state(new_state)
+        except Exception as e:
+            print(f"[Indicator] LED failed: {type(e).__name__}: {e}")
 
 
 # ============================================================================
@@ -742,11 +750,18 @@ def main():
         _state_leds = None
     else:
         from src.voice_control.spot_leds import StateLeds
-        from src.voice_control.spot_dispatch import ensure_spot_session
+        import src.voice_control.spot_dispatch as _spot_dispatch
 
         def _led_robot():
+            # Return the ALREADY-established Spot session's robot, or None.
+            # Never call ensure_spot_session() here: it would connect (and
+            # possibly stand) the robot synchronously on the mic-loop thread,
+            # freezing voice control for ~30s — and could fire on a noise burst.
+            # LEDs stay off until a real command brings the session up, then
+            # activate on the next state change.
             try:
-                return ensure_spot_session()["robot"]
+                sess = getattr(_spot_dispatch, "_spot_session", None)
+                return sess["robot"] if sess else None
             except Exception:
                 return None
 
@@ -1102,9 +1117,16 @@ def main():
                                 _mic_gated = True
                                 _enter_state(VoiceState.THINKING)
                                 state = VoiceState.THINKING
-                            result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                       brain, safety_only=safety_only, tts=tts,
-                                                       has_wake_detector=bool(wake_detector))
+                            try:
+                                result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                                                           brain, safety_only=safety_only, tts=tts,
+                                                           has_wake_detector=bool(wake_detector))
+                            except Exception as e:
+                                # A per-utterance failure (ASR/LLM/TTS) must drop the
+                                # turn, not crash voice control. result=None routes to
+                                # the idle-based gate release so the mic reopens.
+                                print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
+                                result = None
                             is_speaking = False
                             speech_buffer.clear()
                             speech_float_buffer.clear()
@@ -1152,9 +1174,16 @@ def main():
                                     _mic_gated = True
                                     _enter_state(VoiceState.THINKING)
                                     state = VoiceState.THINKING
-                                result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                           brain, safety_only=safety_only, tts=tts,
-                                                           has_wake_detector=bool(wake_detector))
+                                try:
+                                    result = process_utterance(stub, speech_buffer, speech_float_buffer,
+                                                               brain, safety_only=safety_only, tts=tts,
+                                                               has_wake_detector=bool(wake_detector))
+                                except Exception as e:
+                                    # A per-utterance failure (ASR/LLM/TTS) must drop the
+                                    # turn, not crash voice control. result=None routes to
+                                    # the idle-based gate release so the mic reopens.
+                                    print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
+                                    result = None
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()

@@ -63,15 +63,20 @@ class StateLeds:
 
     # -- public ----------------------------------------------------------
     def set_state(self, state: VoiceState) -> None:
-        """Show `state` on the LEDs. Swallows all errors (degrade)."""
-        if self._failed:
-            return
-        if not self._ensure():
-            return
-        name = _behavior_name(state)
-        with self._lock:
-            self._active = name
-        self._run(name)
+        """Show `state` on the LEDs. Swallows ALL errors (degrade) — a LED
+        failure must never propagate into the voice loop."""
+        try:
+            if self._failed:
+                return
+            if not self._ensure():
+                return
+            name = _behavior_name(state)
+            with self._lock:
+                self._active = name
+            self._run(name)
+        except Exception as e:
+            print(f"[LEDs] Disabled (set_state error: {type(e).__name__}: {e}).")
+            self._failed = True
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -86,12 +91,14 @@ class StateLeds:
         """Lazily init the AV client + register behaviors. Degrades on failure."""
         if self._initialized:
             return self.enabled
-        self._initialized = True
         try:
             robot = self._get_robot()
             if robot is None:
-                self._failed = True
+                # Session not up yet (before the first command connects). Do NOT
+                # mark initialized/failed — retry on a later state change so LEDs
+                # activate once a real command has brought the session up.
                 return False
+            self._initialized = True
             hw = robot.get_cached_hardware_hardware_configuration()
             if not getattr(hw, "has_audio_visual_system", False):
                 print("[LEDs] Robot has no audio-visual system — LED indicator off.")
