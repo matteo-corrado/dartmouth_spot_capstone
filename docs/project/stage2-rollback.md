@@ -143,3 +143,27 @@ git reset --hard <pre-2e1-tag>
 ```
 
 Pre-2E.1 commit hash: `d9468bf` — branch off this point.
+
+## Stage 2E.2 — gripper puppet mouth (tag `stage2e2-complete`)
+
+Mouth animation is **disabled by default** — `MouthDriver` starts `enabled=False` and is only created/enabled by the `enable_mouth` action (which also deploys the arm). So the safe state is the default; nothing to roll back unless the arm misbehaves.
+
+### Layer: instant kill (voice)
+
+Say *"stop moving your mouth"* → `disable_mouth` action: stops the gripper, closes it, stows the arm. Any safety command (`stop` / `freeze` / `estop`) also closes the gripper first via `_close_mouth()`.
+
+### Layer: disable the actions (LLM can't trigger)
+
+Remove `| "\"enable_mouth\"" | "\"disable_mouth\""` from the `action-name` rule in `src/voice_control/grammar/spot_action.gbnf`. The LLM then cannot emit them; TTS + playback are unchanged.
+
+### Layer: full feature off (code)
+
+The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver is only created inside `enable_mouth`, simply never enabling it leaves the feature dormant. To hard-disable, comment out the `enable_mouth`/`disable_mouth` branches in `dispatch_intent` (`spot_dispatch.py`).
+
+### Hard rollback (full 2E.2 revert)
+
+```bash
+git revert ac9c227 26610db 40bf3a2 b849a44 a00d9e7
+```
+
+Touches only the 2E.2 surface (`animation/mouth.py`, `spot_tts.py` play-callback hooks, `spot_dispatch.py` actions, `session.py` arm helpers, `audio_player.py` on_play_end-on-error guard, `session_state.py`, `persona.py`, `personas.yaml`, grammar). Pre-2E.2 commit: `7f875ac`.
