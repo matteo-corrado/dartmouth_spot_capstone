@@ -197,6 +197,9 @@ def _build_parser() -> argparse.ArgumentParser:
                              "(MALLOC_CHECK_=3 + PYTHONFAULTHANDLER=1).")
     parser.add_argument("--skip-services", action="store_true",
                         help="Forwarded to voice control: do not auto-start Riva/Ollama.")
+    parser.add_argument("--enable-arm", action="store_true",
+                        help="Forwarded to voice control: deploy the arm + enable "
+                             "the gripper mouth at startup.")
     return parser
 
 
@@ -224,6 +227,8 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
         cmd.append("--debug-crash")
     if args.skip_services:
         cmd.append("--skip-services")
+    if args.enable_arm:
+        cmd.append("--enable-arm")
     if resolved_map is not None:
         cmd.extend(["--map", str(resolved_map)])
     return cmd

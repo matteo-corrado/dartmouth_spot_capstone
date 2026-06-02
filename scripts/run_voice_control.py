@@ -262,6 +262,9 @@ def main():
     parser.add_argument("--map", type=str, default=None,
                         help="Path to a GraphNav map directory to upload at "
                              "startup (default: don't upload).")
+    parser.add_argument("--enable-arm", action="store_true",
+                        help="Forwarded to voice control: deploy arm + enable "
+                             "gripper mouth at startup.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -332,6 +335,8 @@ def main():
         client_cmd.extend(["--volume", str(args.volume)])
     if args.map:
         client_cmd.extend(["--map", args.map])
+    if args.enable_arm:
+        client_cmd.append("--enable-arm")
 
     client_env = os.environ.copy()
     if args.debug_crash:

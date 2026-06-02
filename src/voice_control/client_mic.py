@@ -579,6 +579,8 @@ def main():
                         help="TTS + beep output gain (0.0-1.5, default 1.0)")
     parser.add_argument("--map", type=str, default=None,
                         help="GraphNav map path to upload during session bring-up.")
+    parser.add_argument("--enable-arm", action="store_true",
+                        help="Deploy the arm + enable gripper-mouth animation at startup (Stage 2E.2).")
     parser.add_argument(
         "--latency",
         choices=["off", "summary", "file", "all"],
@@ -828,6 +830,17 @@ def main():
     print("=" * 60 + "\n")
 
     beep.ready()
+
+    # Stage 2E.2: --enable-arm deploys the arm + enables the gripper mouth at
+    # startup (reuses the safety-gated enable_mouth action, which forces session
+    # bring-up + power/estop checks). Skipped in dry-run.
+    if getattr(args, "enable_arm", False) and not args.dry_run:
+        try:
+            from src.voice_control.spot_dispatch import dispatch_intent
+            print("[client_mic] --enable-arm: deploying arm + enabling mouth...")
+            dispatch_intent({"intent": "enable_mouth"})
+        except Exception as e:
+            print(f"[client_mic] --enable-arm failed: {e}")
 
     # ========================================================================
     # Main Loop State
