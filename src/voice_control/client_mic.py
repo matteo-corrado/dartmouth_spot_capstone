@@ -928,6 +928,19 @@ def main():
     player_was_busy = False
     response_pending = False
 
+    # Stage 2F P6: True once the current turn has announced THINKING — i.e. a
+    # real transcript reached the brain (past STT + the safety/wake early-returns).
+    # Gates the RESPONDING indicator and the reopen chime so a noise/empty-STT
+    # turn stays fully silent.
+    gate_announced = False
+
+    def _announce_thinking():
+        # Passed into process_utterance; fired the moment a real transcript is
+        # dispatched to the brain, so THINKING never chimes on noise/empty STT.
+        nonlocal gate_announced
+        gate_announced = True
+        _enter_state(VoiceState.THINKING)
+
     # Wake word state
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
     listening_start_time = time.time()
@@ -974,7 +987,9 @@ def main():
                     _drain_audio_queue(keep_tail=False)  # drop the settle-window audio
                     state = VoiceState.LISTENING
                     listening_start_time = time.time()
-                    _enter_state(VoiceState.LISTENING)
+                    if gate_announced:
+                        _enter_state(VoiceState.LISTENING)  # ready chime + green
+                    gate_announced = False
                     print(">>> Listening for follow-up (no wake needed)...")
             # Get audio from queue. Short timeout so we still cycle (and stay
             # responsive to SIGTERM / KeyboardInterrupt) even when the audio
@@ -1125,15 +1140,17 @@ def main():
                             print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
                             safety_only = (state == VoiceState.WAKE_WORD)
                             if not safety_only:
-                                # Commit to processing: gate the mic and show THINKING
-                                # before ASR+LLM so nothing said meanwhile is captured.
+                                # Commit: mute the mic now (gate at STT start), but defer
+                                # the THINKING indicator until process_utterance confirms
+                                # real words bound for the LLM (via on_thinking) — a
+                                # noise/empty transcript never chimes.
                                 _mic_gated = True
-                                _enter_state(VoiceState.THINKING)
-                                state = VoiceState.THINKING
+                                gate_announced = False
                             try:
                                 result = process_utterance(stub, speech_buffer, speech_float_buffer,
                                                            brain, safety_only=safety_only, tts=tts,
-                                                           has_wake_detector=bool(wake_detector))
+                                                           has_wake_detector=bool(wake_detector),
+                                                           on_thinking=(None if safety_only else _announce_thinking))
                             except Exception as e:
                                 # A per-utterance failure (ASR/LLM/TTS) must drop the
                                 # turn, not crash voice control. result=None routes to
@@ -1143,7 +1160,7 @@ def main():
                             is_speaking = False
                             speech_buffer.clear()
                             speech_float_buffer.clear()
-                            if result != "wake_detected" and not safety_only:
+                            if result != "wake_detected" and not safety_only and gate_announced:
                                 response_pending = True
                                 _enter_state(VoiceState.RESPONDING)
                                 state = VoiceState.RESPONDING
@@ -1182,15 +1199,17 @@ def main():
                                 print(f"\n>>> Processing...")
                                 safety_only = (state == VoiceState.WAKE_WORD)
                                 if not safety_only:
-                                    # Commit to processing: gate the mic and show THINKING
-                                    # before ASR+LLM so nothing said meanwhile is captured.
+                                    # Commit: mute the mic now (gate at STT start), but defer
+                                    # the THINKING indicator until process_utterance confirms
+                                    # real words bound for the LLM (via on_thinking) — a
+                                    # noise/empty transcript never chimes.
                                     _mic_gated = True
-                                    _enter_state(VoiceState.THINKING)
-                                    state = VoiceState.THINKING
+                                    gate_announced = False
                                 try:
                                     result = process_utterance(stub, speech_buffer, speech_float_buffer,
                                                                brain, safety_only=safety_only, tts=tts,
-                                                               has_wake_detector=bool(wake_detector))
+                                                               has_wake_detector=bool(wake_detector),
+                                                               on_thinking=(None if safety_only else _announce_thinking))
                                 except Exception as e:
                                     # A per-utterance failure (ASR/LLM/TTS) must drop the
                                     # turn, not crash voice control. result=None routes to
@@ -1200,7 +1219,7 @@ def main():
                                 is_speaking = False
                                 speech_buffer.clear()
                                 speech_float_buffer.clear()
-                                if result != "wake_detected" and not safety_only:
+                                if result != "wake_detected" and not safety_only and gate_announced:
                                     response_pending = True
                                     _enter_state(VoiceState.RESPONDING)
                                     state = VoiceState.RESPONDING
@@ -1285,7 +1304,7 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
-                      has_wake_detector=False):
+                      has_wake_detector=False, on_thinking=None):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
@@ -1411,6 +1430,12 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 # Just the wake phrase with no command — ignore
                 print(f"[Wake phrase only — no command after stripping]")
                 return None
+
+    # Stage 2F P6: the utterance survived STT (real words, not a safety command,
+    # not a bare wake phrase) and is about to be dispatched to the brain — signal
+    # THINKING now (not before STT) so noise/empty transcripts never chime.
+    if on_thinking is not None:
+        on_thinking()
 
     rec = get_recorder()
     trace = rec.begin_utterance() if rec else None
