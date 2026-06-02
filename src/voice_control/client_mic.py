@@ -43,7 +43,6 @@ import signal
 import argparse
 import subprocess
 import threading
-from enum import Enum, auto
 import numpy as np
 import sounddevice as sd
 from sherpa_onnx import VoiceActivityDetector, VadModelConfig, SileroVadModelConfig
@@ -94,9 +93,8 @@ from latency import init_recorder, get_recorder
 from src.voice_control import startup_status  # noqa: F401 — available for later use
 from src.voice_control.response_gate import (
     should_arm_reopen, should_reopen_mic, RESPONSE_REOPEN_DELAY_S)
-# NB: state_feedback imports VoiceState from this module, so it must be imported
-# AFTER the VoiceState class is defined below (else a partial-init circular
-# import). The deferred import lives just under that class definition.
+from src.voice_control.voice_state import VoiceState
+from src.voice_control.state_feedback import chime_for
 
 
 # ============================================================================
@@ -124,17 +122,9 @@ def _find_device_by_name(substring: str, kind: str = "input") -> int | None:
                 return i
     return None
 
-class VoiceState(Enum):
-    WAKE_WORD = auto()   # Waiting for "hey spot" (detected via ASR, not a separate model)
-    LISTENING = auto()   # Wake word heard, waiting for speech
-    THINKING = auto()    # Utterance captured — ASR + LLM running (mic gated)
-    RESPONDING = auto()  # TTS playing the response (mic gated)
-
-
-# Imported here (not with the other top-level imports) because state_feedback
-# does `from src.voice_control.client_mic import VoiceState`; placing it after
-# the class above breaks the otherwise-circular import at module load.
-from src.voice_control.state_feedback import chime_for  # noqa: E402
+# VoiceState moved to src/voice_control/voice_state.py (leaf module) and
+# chime_for is imported up top — see the import block near the file header.
+# Both broke the old client_mic <-> state_feedback circular import.
 
 
 LISTENING_TIMEOUT = 15.0  # seconds before requiring wake word again

@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 import time
 
-from src.voice_control.client_mic import VoiceState
+from src.voice_control.voice_state import VoiceState
 from src.voice_control.state_feedback import led_color_for, LED_PERIOD_S
 
 REFRESH_S = 2.0          # re-run cadence; end_time = now + REFRESH_S + margin

@@ -8,7 +8,7 @@ unit-testable and the loop stays thin.
 """
 from __future__ import annotations
 
-from src.voice_control.client_mic import VoiceState
+from src.voice_control.voice_state import VoiceState
 
 # Chime fired when ENTERING a state. None = silent transition.
 # Names map to methods on the audio_feedback `beep` singleton.

@@ -17,8 +17,8 @@ from bosdyn.util import now_sec
 
 
 def main():
-    # Delayed imports to avoid circular dep between client_mic and state_feedback.
-    from src.voice_control.client_mic import VoiceState
+    # Delayed imports: keep heavy voice-pipeline modules out of script parse.
+    from src.voice_control.voice_state import VoiceState
     from src.voice_control.spot_leds import _build_pulse_behavior, _behavior_name
     from src.voice_control.state_feedback import led_color_for, LED_PERIOD_S
 

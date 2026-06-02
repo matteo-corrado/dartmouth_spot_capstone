@@ -78,6 +78,11 @@ def _on_sigquit(signum, frame):
         flush=True,
     )
     _emergency_requested.set()
+    # Pre-spawn there is no robot to cut yet, so also trip the shutdown event
+    # estop_session watches as its abort_event — otherwise Ctrl+\ during the
+    # auth bring-up loop would be ignored until auth_timeout. Post-spawn this is
+    # harmless: _wait_for_child checks _emergency_requested first.
+    _shutdown_requested.set()
 
 # Make `import src.*` work when wakespot.py is run directly.
 if str(PROJECT_ROOT) not in sys.path:
@@ -377,7 +382,8 @@ def main() -> int:
         # itself decides whether to issue keepalive.stop() (the CUT) based on
         # whether the user requested a graceful or emergency shutdown.
         cmd = _build_voice_control_cmd(args, resolved_map)
-        with estop_session(name="wakespot_estop", cut_on_exit=False) as estop_ctx:
+        with estop_session(name="wakespot_estop", cut_on_exit=False,
+                           abort_event=_shutdown_requested) as estop_ctx:
             keepalive = estop_ctx["keepalive"]
             print("[wakespot] E-Stop active.")
             print("[wakespot]   Ctrl+C  = graceful shutdown (sit, power off, "
@@ -394,6 +400,12 @@ def main() -> int:
                 cmd, cwd=str(PROJECT_ROOT), start_new_session=True
             )
             return _wait_for_child(proc, keepalive)
+    except KeyboardInterrupt:
+        # estop_session's abort_event fired during bring-up (Ctrl+C / Ctrl+\
+        # before the robot was reachable). No endpoint was ever claimed.
+        print("[wakespot] Bring-up interrupted by user — aborted before the "
+              "robot was reachable. No E-Stop was claimed.", flush=True)
+        return 130
     finally:
         print("[wakespot] Released E-Stop and cleaned up.")
         _release_lockfile()

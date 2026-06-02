@@ -79,7 +79,8 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
                   timeout_sec: int = 3,
                   cut_on_exit: bool = True,
                   auth_timeout_sec: float = 90.0,
-                  auth_retry_interval: float = 3.0):
+                  auth_retry_interval: float = 3.0,
+                  abort_event=None):
     """Claim Spot's E-Stop and yield the live keepalive.
 
     Args:
@@ -93,6 +94,12 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
             contradicts a "graceful" shutdown. The caller is then
             responsible for calling ``keepalive.stop()`` itself when an
             emergency cut is actually wanted.
+        abort_event: Optional ``threading.Event``. When set, the
+            authenticate retry loop bails out immediately (raising
+            ``KeyboardInterrupt``) instead of blocking until
+            ``auth_timeout_sec``. Lets a caller's signal handler (e.g.
+            wakespot's Ctrl+C) cancel a hung bring-up against an
+            unreachable robot. ``None`` keeps the old plain-sleep behavior.
     """
     sdk = create_standard_sdk("dartmouth_spot_capstone_estop")
     robot = sdk.create_robot(hostname)
@@ -107,6 +114,8 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
     auth_deadline = time.monotonic() + auth_timeout_sec
     attempt = 0
     while True:
+        if abort_event is not None and abort_event.is_set():
+            raise KeyboardInterrupt("E-Stop bring-up aborted before authentication.")
         try:
             robot.authenticate(username, password)
             break
@@ -119,7 +128,15 @@ def estop_session(hostname: str = BOSDYN_ROBOT_IP,
             print(f"[E-Stop] Robot not ready yet ({type(e).__name__}, "
                   f"attempt {attempt}); retrying in {wait:.0f}s "
                   f"(~{remaining:.0f}s before giving up)...")
-            time.sleep(wait)
+            # Interruptible backoff: a caller-supplied abort_event breaks the
+            # retry loop immediately instead of stranding the user for the full
+            # auth_timeout_sec when the robot address is unreachable.
+            if abort_event is not None:
+                if abort_event.wait(wait):
+                    raise KeyboardInterrupt(
+                        "E-Stop bring-up aborted during retry backoff.")
+            else:
+                time.sleep(wait)
 
     # Time sync required before any robot_command (power_off recovery path).
     # wait_for_sync() defaults to a 3s budget and RAISES on expiry; on a cold
