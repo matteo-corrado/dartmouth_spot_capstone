@@ -111,6 +111,7 @@ class SpotTTS:
         self._tts = None
         self._available = None
         self._player = player if player is not None else AudioPlayer(output_device=output_device)
+        self.mouth = None  # set by client_mic after the Spot session is up (Stage 2E.2)
 
         self._load_model()
 
@@ -167,6 +168,12 @@ class SpotTTS:
         # not retroactively change the gain of an in-flight utterance.
         gain = self.volume
 
+        # Stage 2E.2: per-utterance holder for the gripper-mouth envelope.
+        # _render (worker thread) fills it; cb_play_start (same thread, later)
+        # reads it. Same worker → no cross-thread race.
+        frame_holder = {}
+        import time as _t
+
         def _render():
             backend = get_backend()
             # self.voice is a Kokoro slug by default (e.g. af_sarah). Passing it
@@ -192,6 +199,11 @@ class SpotTTS:
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if gain != 1.0:
                 samples = samples * gain
+            if self.mouth is not None and self.mouth.enabled:
+                from src.voice_control.animation.mouth import envelope
+                frame_holder["frames"] = envelope(
+                    samples, 24000, fps=self.mouth.fps,
+                    intensity=self.mouth.intensity)
             return samples, 24000
 
         # Latency hooks: stamp render/play boundaries on the current trace if
@@ -206,6 +218,23 @@ class SpotTTS:
             trace.mark("tts_enqueue")
         else:
             cb_render_start = cb_render_end = cb_play_start = cb_play_end = None
+
+        # Stage 2E.2: drive the gripper mouth from the play callbacks. Compose
+        # with (don't overwrite) any latency-trace callbacks set above.
+        _trace_play_start, _trace_play_end = cb_play_start, cb_play_end
+
+        def cb_play_start():
+            if _trace_play_start:
+                _trace_play_start()
+            frames = frame_holder.get("frames")
+            if self.mouth is not None and self.mouth.enabled and frames is not None and len(frames):
+                self.mouth.play(frames, _t.monotonic())
+
+        def cb_play_end():
+            if _trace_play_end:
+                _trace_play_end()
+            if self.mouth is not None:
+                self.mouth.close()
 
         self._player.enqueue_render(
             _render,
