@@ -586,19 +586,25 @@ def _close_mouth():
 
 
 def _handle_enable_mouth(params):
-    """Deploy the arm and enable gripper mouth animation (Stage 2E.2)."""
+    """Deploy the arm and enable gripper mouth animation (Stage 2E.2).
+
+    Lazily creates the MouthDriver on first enable using the live session's
+    arm command client, so it works regardless of session bring-up timing."""
     try:
         from src.voice_control.spot_tts import get_tts
+        from src.voice_control.animation.mouth import MouthDriver
         from src.session import deploy_arm_safe
         tts = get_tts()
-        if tts is None or tts.mouth is None:
-            print("[Spot] enable_mouth: mouth driver not initialized")
+        if tts is None:
+            print("[Spot] enable_mouth: TTS not initialized")
             return False
         session = ensure_spot_session()
         if not session["robot"].has_arm():
             print("[Spot] enable_mouth: no arm installed")
             return False
         deploy_arm_safe(session["cmd"])
+        if tts.mouth is None:
+            tts.mouth = MouthDriver(cmd_client=session["cmd"])
         tts.mouth.enable()
         print("[Spot] ✓ Mouth enabled (arm deployed)")
         return True
