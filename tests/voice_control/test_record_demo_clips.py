@@ -161,7 +161,7 @@ def test_quick_reply_records_chime_sidecar(tmp_path, monkeypatch):
     rdc_audio, t0, doa, chime = rdc.record_clip(0, p, None, output_device=7)
     assert played["dev"] == 7 and played["n"] > 0
     assert 0 <= chime["chime_start_s"] < chime["chime_end_s"] <= p.duration_s
-    assert chime["source"] in ("audio_feedback.ready", "generated_tone")
+    assert chime["source"] in ("audio_feedback.listen_cue", "audio_feedback.ready", "generated_tone")
     # sidecar written through run_session
     rdc.run_session([p], tmp_path, lambda q: (rdc_audio, t0, doa, chime), input_fn=_seq(["", ""]))
     side = json.loads((tmp_path / f"{p.clip}.chime.json").read_text())
