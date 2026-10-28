@@ -6,6 +6,7 @@ Usage:
   spot-env/bin/python scripts/xvf_probe.py clap    # speak at FRONT/LEFT/BACK/RIGHT -> mic_yaw_offset_deg / mic_yaw_sign
   spot-env/bin/python scripts/xvf_probe.py leds    # index calibration, then cycle effects, measure set_ring writes/s
   spot-env/bin/python scripts/xvf_probe.py index   # LED index/orientation -> ring_offset_leds / ring_reverse
+  spot-env/bin/python scripts/xvf_probe.py show    # preview candidate turn-signal patterns (Enter = next)
 
 Runtime writes only; never saves config or reboots the device.
 """
@@ -212,39 +213,102 @@ def cmd_leds(mic):
         mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
 
 
+# ---- `show`: preview candidate turn signals on the ring (nothing here is used by the pipeline)
+RING_N = 12
+SHOW_OFFSET = 6  # measured 2026-10-28: ring_offset_leds 6, not reversed
+GREEN, AMBER, BLUE, WHITE, RED = 0x00FF00, 0xFF8000, 0x0040FF, 0xFFFFFF, 0xFF0000
+
+
+def _led_for(mic_deg):
+    return (round(mic_deg / 30.0) + SHOW_OFFSET) % RING_N
+
+
+def _ldist(a, b):
+    d = abs(a - b) % RING_N
+    return min(d, RING_N - d)
+
+
+def _scale(color, f):
+    r, g, b = (color >> 16) & 255, (color >> 8) & 255, color & 255
+    return (int(r * f) << 16) | (int(g * f) << 8) | int(b * f)
+
+
+def _sweep_fill(target, color):
+    """Car indicator: fills from the opposite side toward the target, hold, off."""
+    frames = [[color if _ldist(i, target) >= 6 - k else 0 for i in range(RING_N)] for k in range(7)]
+    return frames + [[color] * RING_N] + [[0] * RING_N] * 2, 0.07
+
+
+def _sweep_converge(target, color):
+    """Two dots run from the back round both sides and meet at the target, dim trail behind."""
+    frames = [[color if _ldist(i, target) == 6 - k else
+               (_scale(color, 0.25) if _ldist(i, target) > 6 - k else 0) for i in range(RING_N)]
+              for k in range(7)]
+    return frames + [[0] * RING_N], 0.08
+
+
+def _arc_pulse(target, color):
+    """5-LED arc toward the target, centre brightest, pulsing."""
+    frames = []
+    for f in (0.2, 0.4, 0.7, 1.0, 1.0, 0.7, 0.4, 0.2):
+        frames.append([_scale(color, f * (1.0 if _ldist(i, target) == 0 else
+                                          0.5 if _ldist(i, target) <= 2 else 0)) for i in range(RING_N)])
+    return frames, 0.08
+
+
+def _solid(color):
+    return [[color] * RING_N], 1.0
+
+
+def _breathe(color, lo=0.15):
+    seq = [lo + (1 - lo) * x / 10 for x in range(11)]
+    return [[_scale(color, f)] * RING_N for f in seq + seq[::-1]], 0.08
+
+
+def _play(mic, frames, dt, stop):
+    while not stop.is_set():
+        for fr in frames:
+            if stop.is_set():
+                return
+            mic.set_ring(fr)
+            time.sleep(dt)
+
+
 def cmd_show(mic):
-    """Step through the real turn signals (state_feedback.ring_for), Enter to advance."""
-    from src.voice_control.state_feedback import ring_for
-    from src.voice_control.voice_state import VoiceState as S
-    from src.voice_control.tuning import get_tuning
-    t = get_tuning()
-    # measured 2026-10-28: offset 6, not reversed (used until Tuning carries the fields)
-    off = getattr(t, "ring_offset_leds", 6)
-    rev = getattr(t, "ring_reverse", False)
-    # mic-frame angles measured with `clap` (front 179, left 89, back 356, right 296)
-    steps = [
-        ("IDLE / waiting for wake phrase (breath, dim white)", S.WAKE_WORD, None, False),
-        ("LISTENING, speaker at Spot's FRONT (green arc)", S.LISTENING, 179.0, False),
-        ("LISTENING, speaker at Spot's LEFT", S.LISTENING, 89.0, False),
-        ("LISTENING, speaker BEHIND Spot", S.LISTENING, 356.0, False),
-        ("LISTENING, speaker at Spot's RIGHT", S.LISTENING, 273.0, False),
-        ("LISTENING, no direction known (solid green)", S.LISTENING, None, False),
-        ("THINKING (breath, amber)", S.THINKING, None, False),
-        ("SPEAKING (solid blue)", S.RESPONDING, None, False),
-        ("MUTED by operator (solid red)", S.WAKE_WORD, None, True),
+    """Loop each candidate pattern until Enter. Angles are the measured mic-frame ones."""
+    import threading
+    front, left, back, right = _led_for(179), _led_for(89), _led_for(356), _led_for(273)
+    patterns = [
+        ("IDLE A: breathing white", _breathe(WHITE)),
+        ("IDLE B: breathing soft blue-white", _breathe(0x8090FF)),
+        ("IDLE C: steady dim white", _solid(_scale(WHITE, 0.35))),
+        ("LISTEN 1 car-indicator fill -> FRONT", _sweep_fill(front, GREEN)),
+        ("LISTEN 1 car-indicator fill -> LEFT", _sweep_fill(left, GREEN)),
+        ("LISTEN 1 car-indicator fill -> RIGHT", _sweep_fill(right, GREEN)),
+        ("LISTEN 1 car-indicator fill -> BACK", _sweep_fill(back, GREEN)),
+        ("LISTEN 2 converging dots -> LEFT", _sweep_converge(left, GREEN)),
+        ("LISTEN 2 converging dots -> RIGHT", _sweep_converge(right, GREEN)),
+        ("LISTEN 3 pulsing arc -> LEFT", _arc_pulse(left, GREEN)),
+        ("LISTEN 3 pulsing arc -> RIGHT", _arc_pulse(right, GREEN)),
+        ("THINKING: breathing amber", _breathe(AMBER, lo=0.2)),
+        ("SPEAKING: solid blue", _solid(BLUE)),
+        ("MUTED: solid red", _solid(RED)),
     ]
     try:
-        for label, state, deg, muted in steps:
-            spec = ring_for(state, deg, muted, ring_offset_leds=off, reverse=rev)
-            mic.set_led_effect(spec.effect)
-            if spec.ring is not None:
-                mic.set_ring(spec.ring)
-            elif spec.color is not None:
-                mic.set_led_color(spec.color)
-            input(f"{label}  -- check from front / side / 3 m, then Enter ")
+        mic.set_led_effect(5)  # ring mode: per-LED colours
+        for i, (label, (frames, dt)) in enumerate(patterns, 1):
+            stop = threading.Event()
+            t = threading.Thread(target=_play, args=(mic, frames, dt, stop), daemon=True)
+            t.start()
+            try:
+                input(f"[{i}/{len(patterns)}] {label}  -- Enter for next ")
+            finally:
+                stop.set()
+                t.join(1.0)
         return 0
     finally:
         mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
+
 
 
 def main():
