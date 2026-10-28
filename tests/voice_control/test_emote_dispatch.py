@@ -49,8 +49,6 @@ def env(monkeypatch):
     monkeypatch.setattr(d, "_arm_pose", "talk")
     monkeypatch.setattr(d, "_pose_before_walk", None)
     monkeypatch.setattr(d, "_last_routine", None)
-    import bosdyn.client.robot_command as rc
-    monkeypatch.setattr(rc, "blocking_stand", lambda c, timeout_sec=10: None)
     monkeypatch.setattr(oq, "nearest_obstacle_in_body_frame", lambda r, max_radius_m=3.0: None)
     yield SimpleNamespace(cmd=cmd, choreo=choreo, sess=sess)
     d._cancel_nav()
@@ -68,7 +66,7 @@ def test_emote_runs_routine_with_arm_stowed_then_restores(env):
     name, t0, slice0 = env.choreo.executed[0]
     assert slice0 == 0 and t0 > time.time() - 5
     k = env.cmd.kinds()
-    assert k == ["gripper", "arm_stow", "arm_ready"]  # stow before, restore after
+    assert k == ["mobility", "gripper", "arm_stow", "arm_ready"]  # stand, stow, restore
     assert d.get_arm_pose() == "talk"
 
 
@@ -120,7 +118,7 @@ def test_unknown_routine_refused(env):
 def test_stop_mid_dance_stops_and_never_restores(env):
     env.choreo.block = threading.Event()  # dances until released
     d.dispatch_intent({"intent": "emote", "params": {"name": "performance_bow"}})
-    for _ in range(50):
+    for _ in range(250):
         if env.choreo.executed:
             break
         time.sleep(0.02)
@@ -130,7 +128,7 @@ def test_stop_mid_dance_stops_and_never_restores(env):
     k = env.cmd.kinds()
     i = k.index("stop")
     assert "arm_ready" not in k[i:]
-    assert k[-2:] == ["gripper", "arm_stow"]
+    assert k[i:] == ["stop", "stop"]  # arm already stowed for the dance; stop re-sent
     assert d.get_arm_pose() == "stowed"
     assert not d.is_navigating()
 
@@ -139,3 +137,25 @@ def test_grammar_has_emote_on_one_line():
     g = pathlib.Path(d.project_root, "src/voice_control/grammar/spot_action.gbnf").read_text()
     lines = [l for l in g.splitlines() if l.startswith("action-name ::=")]
     assert len(lines) == 1 and '"\\"emote\\""' in lines[0]
+
+
+def test_stop_not_delayed_by_emote_arm_wait(env, monkeypatch):
+    def slow_never(c, i, t):
+        time.sleep(t)
+        return False
+    monkeypatch.setattr(d, "block_until_arm_arrives", slow_never)
+    d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
+    time.sleep(1.8)  # past the stand wait, parked in the arm-stow wait
+    t = time.time()
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    assert time.time() - t < 1.0
+    _join()
+    assert env.choreo.executed == []
+
+
+def test_stale_completed_status_not_trusted(env):
+    env.choreo.polls = 0  # first polls report COMPLETED (left over)
+    t = time.time()
+    d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
+    _join()
+    assert time.time() - t > 4.0  # waited past the grace window

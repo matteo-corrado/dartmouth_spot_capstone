@@ -257,3 +257,16 @@ def test_visual_nav_velocity_clamped(monkeypatch):
     mob = c.sent[0][1].synchronized_command.mobility_command
     v = mob.se2_velocity_request.velocity.linear
     assert v.x == pytest.approx(0.5) and v.y == pytest.approx(-0.5)
+
+
+def test_stop_when_stowed_sends_only_stop(fake, monkeypatch):
+    monkeypatch.setattr(d, "_arm_pose", "stowed")
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    assert fake.kinds() == ["stop"]
+
+
+def test_sit_stows_before_sitting(fake):
+    assert arm_policy_for("sit", "talk") == ("stowed", "stowed")
+    d.dispatch_intent({"intent": "sit", "params": {}})
+    assert fake.kinds() == ["gripper", "arm_stow", "mobility"]
+    assert d.get_arm_pose() == "stowed"

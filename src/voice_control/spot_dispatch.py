@@ -71,7 +71,7 @@ LOCOMOTION_INTENTS = frozenset({
     "come_back", "go_to_object", "follow_me",
 })
 SAFETY_INTENTS = frozenset({"stop", "freeze", "estop"})
-SHUTDOWN_INTENTS = frozenset({"power_off", "shutdown"})
+SHUTDOWN_INTENTS = frozenset({"power_off", "shutdown", "sit"})  # stow before
 
 _arm_pose = "stowed"        # live arm pose: "stowed" | "talk" | "walk"
 _pose_before_walk = None    # pose to restore once the current locomotion ends
@@ -121,10 +121,17 @@ def _arm_send(cmd_client, pose: str, stop_event=None, timeout_s: float = 5.0,
         _set_arm_pose(pose)
     if timeout_s is None or timeout_s <= 0:
         return True
-    return bool(block_until_arm_arrives(cmd_client, cmd_id, timeout_s))
+    if stop_event is None:
+        return bool(block_until_arm_arrives(cmd_client, cmd_id, timeout_s))
+    # Wait in short slices so a stop's _cancel_nav() join is never held up.
+    deadline = time.time() + timeout_s
+    while not stop_event.is_set() and time.time() < deadline:
+        if block_until_arm_arrives(cmd_client, cmd_id, 0.3):
+            return True
+    return False
 
 
-def _stow_after_safety(cmd_client, was_emote: bool = False):
+def _stow_after_safety(cmd_client, was_emote: bool = False, name: str = "stop"):
     """Runs AFTER stop/freeze/estop sent their motion stop. Never waits for the
     arm. If a routine was running, the stop is re-sent under the lock so a
     choreography request that raced the first stop is overridden too."""
@@ -133,7 +140,11 @@ def _stow_after_safety(cmd_client, was_emote: bool = False):
         with _arm_lock:
             if was_emote:
                 cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                if name == "freeze":
+                    cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
             _pose_before_walk = None
+            if _arm_pose == "stowed":
+                return  # already stowed: never send arm commands to e.g. a sitting robot
             send_arm_pose(cmd_client, "stowed")
             _set_arm_pose("stowed")
         print("[Spot] Arm stowing after stop")
@@ -904,6 +915,10 @@ def do_add_persona(params: dict, brain) -> dict:
     )
     brain._persona_registry[name] = persona
     brain.session_state.current_persona = name
+    # describe_persona's side-call evicts the llama-server single-slot cache.
+    warm = getattr(brain, "warm_up_async", None)
+    if warm is not None:
+        warm()
     print(f"[Dispatch] Persona '{name}' added (voice={new_voice_id}, kokoro={kokoro_slug})")
     return {"ok": True, "persona": name, "voice_id": new_voice_id}
 
@@ -960,14 +975,16 @@ def _emote_routine(session, routine, prev_pose, stop_event):
     Every robot command is gated on stop_event under _arm_lock, so a
     stop/freeze/estop (which sets the event first) can never be followed by a
     routine start or an arm restore from here."""
-    from bosdyn.client.robot_command import blocking_stand
     from bosdyn.choreography.client.choreography import ChoreographyClient
     cmd = session["cmd"]
     stowed_here = False
     try:
-        if stop_event.is_set():
+        with _arm_lock:  # stand if needed (no-op when already standing)
+            if stop_event.is_set():
+                return
+            cmd.robot_command(RobotCommandBuilder.synchro_stand_command())
+        if stop_event.wait(1.5):
             return
-        blocking_stand(cmd, timeout_sec=10)
         if prev_pose != "stowed":
             if not _arm_send(cmd, "stowed", stop_event, timeout_s=5.0):
                 print("[Spot] emote: arm did not stow — not dancing")
@@ -980,13 +997,17 @@ def _emote_routine(session, routine, prev_pose, stop_event):
             choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
                                         choreography_starting_slice=0)
         print(f"[Spot] ✓ Routine '{routine}' started")
-        deadline = time.time() + EMOTE_TIMEOUT_S
+        t0 = time.time()
+        deadline = t0 + EMOTE_TIMEOUT_S
+        seen_running = False
         stop_event.wait(1.0)
         while not stop_event.is_set() and time.time() < deadline:
             try:
                 status, _ = choreo.get_choreography_status()
-                if status.status not in _CHOREO_RUNNING:
-                    break
+                if status.status in _CHOREO_RUNNING:
+                    seen_running = True
+                elif seen_running or time.time() > t0 + 4.0:
+                    break  # ignore a stale terminal status from the last routine
             except Exception as e:
                 print(f"[Spot] emote status poll failed: {e}")
             stop_event.wait(0.5)
@@ -1139,7 +1160,7 @@ def dispatch_intent(intent, brain=None, speak=None):
         was_emote = _nav_mode == "emote"
         ok = _dispatch_core(intent, brain, speak)  # motion stop first, unchanged
         if _spot_session is not None:
-            _stow_after_safety(_spot_session["cmd"], was_emote)
+            _stow_after_safety(_spot_session["cmd"], was_emote, name)
         return ok
 
     if name not in LOCOMOTION_INTENTS:
@@ -1189,7 +1210,7 @@ def dispatch_intent(intent, brain=None, speak=None):
 def _dispatch_core(intent, brain=None, speak=None):
     """The per-intent branches. Called only through dispatch_intent (which
     applies the arm policy) or for nested re-dispatch."""
-    global _nav_thread, _nav_stop_event, _nav_mode, _last_traj
+    global _nav_thread, _nav_stop_event, _nav_mode, _last_traj, _pose_before_walk
 
     if not intent:
         return False
@@ -1290,6 +1311,13 @@ def _dispatch_core(intent, brain=None, speak=None):
         elif name == "sit":
             # Sit the robot down
             print("[Spot] Sitting down...")
+            _cancel_nav()
+            _pose_before_walk = None
+            if _arm_pose != "stowed":
+                try:
+                    _arm_send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
+                except Exception as e:
+                    print(f"[Spot] ⚠️  Arm stow before sit failed: {e}")
             try:
                 cmd = RobotCommandBuilder.synchro_sit_command()
                 cmd_client.robot_command(cmd)
