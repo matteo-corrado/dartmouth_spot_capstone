@@ -389,3 +389,48 @@ def test_stand_fault_recovery_never_self_rights(fake):
     assert d.dispatch_intent({"intent": "stand", "params": {}}) is True
     # selfright is a full-body command; only synchro stands are allowed here
     assert calls == ["mobility", "mobility"]
+
+
+# ---------------------------------------------------------------- round 2
+def test_safety_and_aborting_intents_use_held_session(fake, monkeypatch):
+    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    for n in ("stop", "freeze", "estop", "sit", "stow"):
+        d.dispatch_intent({"intent": n, "params": {}})
+
+
+def test_closing_refuses_bring_up(monkeypatch):
+    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(d, "_closing", True)
+    monkeypatch.setattr(d, "spot_session", lambda **k: pytest.fail("no bring-up"))
+    with pytest.raises(RuntimeError):
+        d.ensure_spot_session()
+    assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
+
+
+def test_close_session_sets_closing_and_aborts(fake, monkeypatch):
+    import bosdyn.client.robot_command as rc
+    monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
+    monkeypatch.setattr(d.time, "sleep", lambda s: None)
+    monkeypatch.setattr(d, "_closing", False)
+
+    class Ctx:
+        def __exit__(self, *a):
+            pass
+
+    class R:
+        def power_off(self, **k):
+            pass
+    d._spot_session["robot"] = R()
+    monkeypatch.setattr(d, "_session_context", Ctx())
+    g = d._safety_gen
+    d.close_spot_session()
+    assert d._closing is True and d._safety_gen == g + 1
+    assert fake.kinds()[0] == "stop"
+    assert d._spot_session is None
+
+
+def test_spawn_nav_refuses_after_stop():
+    started = []
+    gen = d._safety_gen - 1  # a stop arrived since this dispatch began
+    assert d._spawn_nav(lambda ev: started.append(1), gen=gen) is False
+    assert started == [] and not d.is_navigating()

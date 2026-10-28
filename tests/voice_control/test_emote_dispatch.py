@@ -239,3 +239,9 @@ def test_stale_completed_status_not_trusted(env):
     _join()
     assert time.time() - t > 4.0  # waited past the grace window
     assert "stop" in env.cmd.kinds() and d.get_arm_pose() == "stowed"  # untrusted: no restore
+
+
+def test_orphan_emote_thread_never_starts_routine(env):
+    stale = d._safety_gen - 1  # a stop landed after the dispatch was checked
+    d._emote_routine(env.sess, "tail_wag", "talk", threading.Event(), None, stale)
+    assert env.choreo.executed == []

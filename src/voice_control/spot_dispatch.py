@@ -95,6 +95,7 @@ _last_traj = None           # (cmd_id, deadline) of the last trajectory sent
 _safety_gen = 0             # bumped by every aborting intent (any thread)
 _dispatch_gen = None        # _safety_gen when the current locked dispatch began
 _mouth_resume = False       # re-enable the mouth when the arm returns to "talk"
+_closing = False            # set by close_spot_session: no new bring-up after that
 
 
 def arm_policy_for(intent_name: str, current_pose: str) -> tuple[str, str]:
@@ -278,20 +279,33 @@ def _wait_trajectory_done(cmd_client, cmd_id, deadline, stop_event):
     return False
 
 
-def _start_restore_watch(cmd_client, cmd_id, deadline):
+_nav_lock = threading.Lock()  # guards the (_nav_thread, _nav_stop_event, _nav_mode) triple
+
+
+def _spawn_nav(fn, mode=None, gen=None) -> bool:
+    """Start fn(stop_event) as THE nav thread. The abort check and the
+    registration happen under _nav_lock, and stop bumps _safety_gen before its
+    _cancel_nav() takes the same lock, so a thread is either registered (and
+    then cancelled by the stop) or never started: no orphan can keep moving."""
+    global _nav_thread, _nav_stop_event, _nav_mode
+    with _nav_lock:
+        if _aborted(gen):
+            print("[Spot] Motion not started: a stop arrived")
+            return False
+        ev = threading.Event()
+        t = threading.Thread(target=fn, args=(ev,), daemon=True)
+        _nav_thread, _nav_stop_event, _nav_mode = t, ev, mode
+        t.start()
+    return True
+
+
+def _start_restore_watch(cmd_client, cmd_id, deadline, gen=None):
     """Register a watcher as the nav thread: waits for the trajectory, then
     restores the arm. is_navigating() is True meanwhile (gaze/emote gate)."""
-    global _nav_thread, _nav_stop_event, _nav_mode
-    stop_event = threading.Event()
-    _nav_stop_event = stop_event
-    _nav_mode = "walk"
-    _nav_thread = threading.Thread(
-        target=_thread_then_restore,
-        args=(lambda: _wait_trajectory_done(cmd_client, cmd_id, deadline, stop_event),
-              stop_event),
-        daemon=True,
-    )
-    _nav_thread.start()
+    return _spawn_nav(
+        lambda ev: _thread_then_restore(
+            lambda: _wait_trajectory_done(cmd_client, cmd_id, deadline, ev), ev),
+        mode="walk", gen=gen)
 
 
 def is_navigating() -> bool:
@@ -467,9 +481,13 @@ def ensure_spot_session(map_path=None):
 
     if _spot_session is not None:
         return _spot_session
+    if _closing:
+        raise RuntimeError("Spot session is shutting down; not bringing it up")
     with _session_lock:  # HTTP threads + main loop must not both bring it up
         if _spot_session is not None:
             return _spot_session
+        if _closing:
+            raise RuntimeError("Spot session is shutting down; not bringing it up")
         try:
             _session_context = spot_session(
                 stand_on_enter=True,
@@ -490,8 +508,11 @@ def ensure_spot_session(map_path=None):
 
 
 def close_spot_session():
-    """Close the Spot session (sit and power off)."""
-    global _spot_session, _session_context
+    """Close the Spot session (sit and power off). After this no command can
+    bring a new session up (ensure_spot_session raises while _closing)."""
+    global _spot_session, _session_context, _closing, _safety_gen
+    _closing = True
+    _safety_gen += 1  # abort any locomotion still being set up
     
     if _spot_session is not None and _session_context is not None:
         _send_stop(_spot_session["cmd"])  # stop first, then stow, then sit
@@ -515,15 +536,18 @@ def close_spot_session():
 
 
 def _cancel_nav():
-    """Cancel any in-progress navigation thread."""
+    """Cancel any in-progress navigation thread (sets its event, then joins
+    for up to 2 s outside the registry lock)."""
     global _nav_thread, _nav_stop_event, _nav_mode
-    if _nav_stop_event:
-        _nav_stop_event.set()
-    if _nav_thread and _nav_thread.is_alive():
-        _nav_thread.join(timeout=2.0)
-    _nav_thread = None
-    _nav_stop_event = None
-    _nav_mode = None
+    with _nav_lock:
+        t, ev = _nav_thread, _nav_stop_event
+        _nav_thread = None
+        _nav_stop_event = None
+        _nav_mode = None
+        if ev:
+            ev.set()
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=2.0)
 
 
 def _ensure_localized(graph_nav_client, session) -> bool:
@@ -752,26 +776,13 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
 def _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
     """Cancel any existing nav and start a new multi-waypoint navigation thread.
     Returns False (and starts nothing) if a stop arrived since this dispatch began."""
-    global _nav_thread, _nav_stop_event
-
     _cancel_nav()
     gen = _dispatch_gen
-    if _aborted(gen):
-        print("[Spot] Navigation not started: a stop arrived")
-        return False
-
-    _nav_stop_event = threading.Event()
-    stop_event = _nav_stop_event
-
-    _nav_thread = threading.Thread(
-        target=_thread_then_restore,
-        args=(lambda: _navigate_waypoint_sequence(
-                  graph_nav_client, waypoint_ids, location_names, stop_event, repeat, gen),
-              stop_event),
-        daemon=True,
-    )
-    _nav_thread.start()
-    return True
+    return _spawn_nav(
+        lambda ev: _thread_then_restore(
+            lambda: _navigate_waypoint_sequence(
+                graph_nav_client, waypoint_ids, location_names, ev, repeat, gen), ev),
+        mode="graphnav", gen=gen)
 
 
 def _handle_set_volume(params):
@@ -894,7 +905,7 @@ def _handle_enable_mouth(params):
         return False
 
 
-def _handle_disable_mouth(params):
+def _handle_disable_mouth(params, session=None):
     """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
     global _pose_before_walk, _mouth_resume
     _mouth_resume = False
@@ -903,7 +914,8 @@ def _handle_disable_mouth(params):
         tts = get_tts()
         if tts is not None and tts.mouth is not None:
             tts.mouth.disable()
-        session = ensure_spot_session()
+        if session is None:
+            session = ensure_spot_session()
         if is_navigating():
             # Arm is tucked for walking; stow when the walk ends instead.
             _pose_before_walk = "stowed"
@@ -1062,7 +1074,8 @@ def gaze_at_bearing(body_deg: float | None) -> bool:
                 return False
             cmd_client.robot_command(RobotCommandBuilder.arm_gaze_command(
                 x, y, z, "body",
-                max_linear_vel=GAZE_MAX_LINEAR_VEL, max_angular_vel=GAZE_MAX_ANGULAR_VEL))
+                max_linear_vel=GAZE_MAX_LINEAR_VEL, max_angular_vel=GAZE_MAX_ANGULAR_VEL),
+                timeout=RPC_TIMEOUT_S)
         return True
     except Exception as e:
         print(f"[Spot] gaze_at_bearing failed: {e}")
@@ -1121,7 +1134,7 @@ def _standing_and_powered(session) -> bool:
         return False
 
 
-def _emote_routine(session, routine, prev_pose, stop_event, speak=None):
+def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None):
     """Background thread: stow arm (mouth latched off), re-check clearance,
     run the routine, restore the arm only after it completed. Every robot
     command is gated on stop_event under _arm_lock, so a stop/freeze/estop
@@ -1145,7 +1158,7 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None):
             return
         choreo = session["robot"].ensure_client(ChoreographyClient.default_service_name)
         with _arm_lock:
-            if stop_event.is_set():
+            if stop_event.is_set() or _aborted(gen):
                 return
             started = True
             choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
@@ -1195,7 +1208,7 @@ def _handle_emote(params, session, speak=None):
     """emote {"name": str}: refuse while moving, sitting or crowded, then run
     the routine on a background thread registered as the nav thread (so stop
     cancels it)."""
-    global _last_routine, _nav_thread, _nav_stop_event, _nav_mode
+    global _last_routine
     from src.voice_control.emotes import resolve_routine
     if _nav_mode == "emote" and is_navigating():
         _say(speak, "One dance at a time!")
@@ -1215,17 +1228,15 @@ def _handle_emote(params, session, speak=None):
     if refusal is not None:
         _say(speak, refusal)
         return False
-    if _aborted(_dispatch_gen):
+    gen = _dispatch_gen
+    if _aborted(gen):
         return False
     _last_routine = routine
     _cancel_nav()
-    stop_event = threading.Event()
-    _nav_stop_event = stop_event
-    _nav_mode = "emote"
-    _nav_thread = threading.Thread(
-        target=_emote_routine, args=(session, routine, _arm_pose, stop_event, speak),
-        daemon=True)
-    _nav_thread.start()
+    prev = _arm_pose
+    if not _spawn_nav(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
+                      mode="emote", gen=gen):
+        return False
     print(f"[Spot] emote: running '{routine}'")
     return True
 
@@ -1331,7 +1342,8 @@ def dispatch_intent(intent, brain=None, speak=None):
         return _dispatch_safety(intent, brain, speak)
     if name in _UNLOCKED_INTENTS:
         return _dispatch_core(intent, brain, speak)
-    if name in ABORTING_INTENTS and _spot_session is None:
+    held = _spot_session
+    if name in ABORTING_INTENTS and held is None:
         print(f"[Spot] {name}: no robot session — not connecting just to {name}")
         return False
     with _dispatch_lock:
@@ -1341,6 +1353,8 @@ def dispatch_intent(intent, brain=None, speak=None):
         try:
             if name in LOCOMOTION_INTENTS:
                 return _dispatch_locomotion(intent, brain, speak)
+            if name in ABORTING_INTENTS:  # sit/power_off/stow never bring up a session
+                return _dispatch_core(intent, brain, speak, session=held)
             return _dispatch_core(intent, brain, speak)
         finally:
             _dispatch_gen = outer
@@ -1357,7 +1371,7 @@ def _dispatch_safety(intent, brain=None, speak=None):
     cmd_client = sess["cmd"]
     was_emote = _nav_mode == "emote"
     _send_stop(cmd_client)  # FIRST, before any thread join
-    ok = _dispatch_core(intent, brain, speak)  # original branch (stops again)
+    ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
     _stow_now(cmd_client, resend_stop=was_emote,
               then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
     return ok
@@ -1412,16 +1426,17 @@ def _dispatch_locomotion(intent, brain=None, speak=None):
     if is_navigating():
         return ok  # the nav thread restores the arm after a natural finish
     if ok and _last_traj is not None:
-        _start_restore_watch(cmd_client, *_last_traj)
+        if not _start_restore_watch(cmd_client, *_last_traj, gen=gen):
+            return _abort_motion(cmd_client, name)
     else:
         _restore_after_motion()  # nothing moved
     return ok
 
 
-def _dispatch_core(intent, brain=None, speak=None):
+def _dispatch_core(intent, brain=None, speak=None, session=None):
     """The per-intent branches. Called only through dispatch_intent (which
     applies the arm policy) or for nested re-dispatch."""
-    global _nav_thread, _nav_stop_event, _nav_mode, _last_traj, _pose_before_walk
+    global _last_traj, _pose_before_walk
 
     if not intent:
         return False
@@ -1445,7 +1460,8 @@ def _dispatch_core(intent, brain=None, speak=None):
         return _handle_list_locations(speak)
 
     try:
-        session = ensure_spot_session()
+        if session is None:  # safety/aborting callers pass the session they hold
+            session = ensure_spot_session()
         cmd_client = session["cmd"]
         
         if name == "enable_mouth":
@@ -1454,8 +1470,14 @@ def _dispatch_core(intent, brain=None, speak=None):
             return _handle_disable_mouth(params)
         if name == "emote":
             return _handle_emote(params, session, speak)
-        if name == "stow":  # spotctl stow: mouth off, arm stowed (deferred if walking)
-            return _handle_disable_mouth(params)
+        if name == "stow":  # spotctl stow: mouth off, arm stowed
+            # NOTE: stow also interrupts a running walk/patrol/tour/follow/emote
+            # (it is an ABORTING_INTENT): the robot is stopped first, then the
+            # nav cancelled, then the arm stowed. Fails safe.
+            if is_navigating():
+                _send_stop(cmd_client)
+                _cancel_nav()
+            return _handle_disable_mouth(params, session)
 
         if name == "stop":
             # Stop current movement/action
@@ -1864,10 +1886,10 @@ def _dispatch_core(intent, brain=None, speak=None):
             # (3) YOLO fallback
             print(f"[Spot] Looking for '{description}' with YOLO-World...")
 
-            def _visual_nav_thread():
+            def _visual_nav_thread(ev):
                 try:
                     from src.voice_control.visual_nav import navigate_to_object
-                    result = navigate_to_object(description, session, _nav_stop_event)
+                    result = navigate_to_object(description, session, ev)
                     if result:
                         print(f"[Spot] ✓ Arrived near '{description}'")
                     else:
@@ -1879,14 +1901,9 @@ def _dispatch_core(intent, brain=None, speak=None):
                     print(f"[Spot] ✗ Visual nav failed: {e}")
 
             _cancel_nav()
-            if _aborted(_dispatch_gen):
-                return False
-            _nav_stop_event = threading.Event()
-            _nav_thread = threading.Thread(
-                target=_thread_then_restore, args=(_visual_nav_thread, _nav_stop_event),
-                daemon=True)
-            _nav_thread.start()
-            return True
+            return _spawn_nav(
+                lambda ev: _thread_then_restore(lambda: _visual_nav_thread(ev), ev),
+                mode="visual_nav", gen=_dispatch_gen)
 
         elif name == "check_obstacles":
             # Query Spot's native LocalGrid obstacle field via the
@@ -1950,10 +1967,10 @@ def _dispatch_core(intent, brain=None, speak=None):
             # Follow the nearest person using YOLO person detection
             print("[Spot] Starting follow mode...")
 
-            def _follow_thread():
+            def _follow_thread(ev):
                 try:
                     from src.voice_control.visual_nav import follow_person
-                    result = follow_person(session, _nav_stop_event)
+                    result = follow_person(session, ev)
                     if result:
                         print("[Spot] ✓ Follow mode ended cleanly")
                     else:
@@ -1965,15 +1982,9 @@ def _dispatch_core(intent, brain=None, speak=None):
                     print(f"[Spot] ✗ Follow failed: {e}")
 
             _cancel_nav()
-            if _aborted(_dispatch_gen):
-                return False
-            _nav_stop_event = threading.Event()
-            _nav_mode = "follow"
-            _nav_thread = threading.Thread(
-                target=_thread_then_restore, args=(_follow_thread, _nav_stop_event),
-                daemon=True)
-            _nav_thread.start()
-            return True
+            return _spawn_nav(
+                lambda ev: _thread_then_restore(lambda: _follow_thread(ev), ev),
+                mode="follow", gen=_dispatch_gen)
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)
