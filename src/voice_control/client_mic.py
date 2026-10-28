@@ -647,7 +647,7 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
 _STATE_ONLY_INTENTS = {"set_persona", "add_persona", "set_volume", "set_backend"}
 
 
-def execute_on_spot(intent: dict, brain=None) -> bool:
+def execute_on_spot(intent: dict, brain=None, speak=None) -> bool:
     """Execute parsed intent on Spot robot.
 
     `brain` is forwarded to dispatch_intent so handlers needing across-turn
@@ -660,7 +660,7 @@ def execute_on_spot(intent: dict, brain=None) -> bool:
         return True
     try:
         from src.voice_control.spot_dispatch import dispatch_intent
-        return dispatch_intent(intent, brain=brain)
+        return dispatch_intent(intent, brain=brain, speak=speak)
     except Exception as e:
         print(f"[Spot error: {e}]")
         return False
@@ -752,25 +752,27 @@ def _wait_for_nav_complete(timeout: float = 120.0):
             return  # operator stop — don't keep the chain waiting
 
 
-# Safety commands that bypass the LLM for zero-latency execution.
-# ORDER MATTERS: estop must be checked before stop so "e stop" / "e-stop"
-# matches the more-specific estop pattern, not the bare stop pattern.
-SAFETY_PATTERNS = [
-    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
-    (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
-    (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
-]
+# Safety commands (stop/freeze/estop) bypass the LLM. The rule + patterns live
+# in intent.py (single source); re-exported here because tests and the
+# barge-in eval import check_safety_command from client_mic.
+from src.voice_control.intent import check_safety_command, is_filler_only  # noqa: E402
 
 
-def check_safety_command(text: str):
-    """Check if text is a safety command (zero-latency, no LLM needed).
-
-    Returns intent dict if safety command, None otherwise.
-    """
-    for pattern, intent_name in SAFETY_PATTERNS:
-        if pattern.search(text):
-            return {"intent": intent_name, "params": {}, "raw": text}
-    return None
+def _run_safety(text: str) -> bool:
+    """If `text` is a safety command, execute it now and return True.
+    Also aborts any action chain in progress."""
+    safety = check_safety_command(text)
+    if not safety:
+        return False
+    print(f"[SAFETY] {safety['intent']} — executing immediately")
+    _abort_chain.set()
+    if execute_on_spot(safety):
+        beep.command_ok()
+        print(">>> SAFETY COMMAND EXECUTED")
+    else:
+        beep.error()
+        print(">>> SAFETY COMMAND FAILED")
+    return True
 
 
 # Wake phrase pattern — fallback for ASR-based detection if dedicated detector unavailable
@@ -832,19 +834,13 @@ class RingThrottle:
 _ring_throttle = RingThrottle(_tuning.ring_max_hz)
 
 
-def ring_deg_for_leds(deg, reverse: bool):
-    """Mic-frame degrees as seen by the LED ring (ring_reverse flips the
-    LED index direction relative to DoA degrees)."""
-    if deg is None or not reverse:
-        return deg
-    return (360.0 - deg) % 360.0
-
-
 def _current_ring_spec():
     if _ring_for is None or _ring_state is None:
         return None
-    return _ring_for(_ring_state, ring_deg_for_leds(_lock.angle, _tuning.ring_reverse),
-                     _operator_muted, ring_offset_leds=_tuning.ring_offset_leds)
+    # Lock angle is MIC frame, which is what ring_for/ring_toward expect.
+    return _ring_for(_ring_state, _lock.angle, _operator_muted,
+                     ring_offset_leds=_tuning.ring_offset_leds,
+                     reverse=_tuning.ring_reverse)
 
 
 def _write_ring(effect, color, ring):
@@ -1105,7 +1101,17 @@ def main():
     if not args.no_brain:
         print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
         brain = LLMBrain(model=DEFAULT_MODEL)
-        if brain.is_available():
+        # After a reboot llama-server answers 503 while loading: wait for it
+        # instead of disabling the brain for the session.
+        wait = getattr(brain, "wait_available", None)
+        if wait is not None:
+            print("[Brain] waiting up to 90s for llama-server...")
+            ready = wait(timeout_s=90.0)
+        else:
+            ready = brain.is_available()
+        global _brain_ok
+        _brain_ok = bool(ready)
+        if ready:
             print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
             # Warm the single brain model (gemma4:e4b handles both LLM and VLM after
             # Phase 2 collapse). Cold-start ~15-20s blocks AudioPlayer + TTS init, but
@@ -1115,9 +1121,11 @@ def main():
             with ctx:
                 brain.warm_up()
         else:
-            print(f"[Brain] Ollama not available — falling back to regex-only mode")
-            print(f"[Brain] To enable: sudo systemctl start ollama && ollama pull {DEFAULT_MODEL}")
-            brain = None
+            # Keep the brain object: process_utterance re-checks before each
+            # utterance and switches to the LLM as soon as it answers.
+            print("[Brain] llama-server not available yet — regex-only until it answers "
+                  "(re-checked every utterance)")
+            print("[Brain] Check: systemctl status llama-server (port 11435)")
     else:
         print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
 
@@ -1754,6 +1762,97 @@ def _drain_audio_queue(keep_tail: bool = True):
         print(f"[Drained {dropped} stale audio chunks, kept {len(kept)}]")
 
 
+THINKING_FILLER_LINE = "Hmm, let me think."
+_PERSONA_INTENTS = ("set_persona", "add_persona")
+_PERSONA_ACTION_RE = re.compile(r'"action"\s*:\s*"(?:set_persona|add_persona)"')
+_RESPONSE_KEY_RE = re.compile(r'"response"\s*:\s*"')
+
+
+class ThinkingFiller:
+    """B12: speak one filler line if the brain is still silent after
+    `delay_s`. `cancel()` is idempotent; the line never plays over speech."""
+
+    def __init__(self, speak, delay_s, is_busy, timer_factory=None):
+        self._speak, self._is_busy = speak, is_busy
+        self._cancelled = threading.Event()
+        make = timer_factory or threading.Timer
+        self._timer = make(delay_s, self._fire)
+        self._timer.daemon = True
+
+    def start(self):
+        self._timer.start()
+
+    def cancel(self):
+        self._cancelled.set()
+        try:
+            self._timer.cancel()
+        except Exception:
+            pass
+
+    def _fire(self):
+        if self._cancelled.is_set() or self._is_busy():
+            return
+        self._cancelled.set()
+        try:
+            self._speak()
+        except Exception as e:
+            print(f"[Filler] failed: {e}")
+
+
+class _TokenWatch:
+    """Brain token callback wrapper around the streaming TTSChunker.
+
+    GBNF emits actions before "response", so when the response key arrives
+    we know the action list: a persona switch suppresses streamed speech
+    (B6 — spoken after the switch in the new voice), and the thinking filler
+    is cancelled as soon as the reply text starts (B12)."""
+
+    def __init__(self, chunker, filler=None):
+        self._chunker, self._filler = chunker, filler
+        self._head = []
+        self._seen_response = False
+
+    def __call__(self, delta: str) -> None:
+        if not self._seen_response:
+            self._head.append(delta)
+            head = "".join(self._head)
+            if _RESPONSE_KEY_RE.search(head):
+                self._seen_response = True
+                if _PERSONA_ACTION_RE.search(head):
+                    self._chunker.suppressed = True
+                if self._filler is not None:
+                    self._filler.cancel()
+        self._chunker.accept(delta)
+
+
+_brain_ok = False
+
+
+def _brain_ready(brain) -> bool:
+    """Positive availability is cached; a not-yet-ready llama-server (503
+    while loading after a reboot) is re-checked on each utterance instead
+    of disabling the brain for the whole session."""
+    global _brain_ok
+    if _brain_ok:
+        return True
+    try:
+        _brain_ok = bool(brain.is_available())
+    except Exception:
+        _brain_ok = False
+    if _brain_ok:
+        print("[Brain] llama-server is up — LLM brain active")
+    else:
+        print("[Brain] llama-server still not ready — regex fallback for this utterance")
+    return _brain_ok
+
+
+def _resolve_voice(brain):
+    """Voice ID for the brain's current persona on the active TTS backend."""
+    from src.voice_control.tts import get_active_backend_name
+    persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
+    return voice_id_for(persona, get_active_backend_name()) or None
+
+
 MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
 
 
@@ -1833,15 +1932,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # 1. Safety fast-path: stop/freeze/estop bypass LLM (zero latency)
     #    Safety commands ALWAYS execute, regardless of wake word state.
     # ------------------------------------------------------------------
-    safety = check_safety_command(clean)
-    if safety:
-        print(f"[SAFETY] {safety['intent']} — executing immediately")
-        if execute_on_spot(safety):
-            beep.command_ok()
-            print(">>> SAFETY COMMAND EXECUTED")
-        else:
-            beep.error()
-            print(">>> SAFETY COMMAND FAILED")
+    if _run_safety(clean):
         return None
 
     # ------------------------------------------------------------------
@@ -1866,6 +1957,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 # Command follows wake phrase — process it now ("Hey Spot stand")
                 print(f"[Wake] Command: \"{remainder}\"")
                 clean = remainder
+                if _run_safety(clean):  # "Hey Spot, stop ..." — re-check after strip
+                    return None
                 safety_only = False  # Allow full processing below
                 wake_activated = True
             else:
@@ -1889,6 +1982,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if remainder and len(remainder) >= 2:
                 print(f"[Wake strip] \"{clean}\" → \"{remainder}\"")
                 clean = remainder
+                if _run_safety(clean):  # re-check after strip, before LLM/regex
+                    return None
             else:
                 # Just the wake phrase with no command — ignore
                 print(f"[Wake phrase only — no command after stripping]")
@@ -1897,6 +1992,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # Stage 2F P6: the utterance survived STT (real words, not a safety command,
     # not a bare wake phrase) and is about to be dispatched to the brain — signal
     # THINKING now (not before STT) so noise/empty transcripts never chime.
+    # B11: "uh um hmm" — nothing worth a turn.
+    if is_filler_only(clean):
+        print(f"[Filler only \"{clean}\" — skipping]")
+        return None
+
     info["reached_llm"] = True
     if on_thinking is not None:
         on_thinking()
@@ -1907,19 +2007,15 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         # ------------------------------------------------------------------
         # 2. LLM Brain mode (primary)
         # ------------------------------------------------------------------
-        if brain is not None:
+        if brain is not None and _brain_ready(brain):
             # Collect current robot state for context
             state = get_spot_state()
 
-            # Stage 2E.1: resolve persona-mapped voice ID once per turn so
-            # every sentence chunk (and any fallback tts.speak below) shares
-            # the same voice. Persona swaps that fire mid-turn don't apply
-            # until the next turn — UX is "switch to pirate" spoken in the
-            # current voice, then pirate voice from the next response on.
-            from src.voice_control.tts import get_active_backend_name
-            backend_name = get_active_backend_name()
-            persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
-            voice_id = voice_id_for(persona, backend_name) or None
+            # Stage 2E.1: resolve the persona-mapped voice ID for this turn.
+            # B6: if the reply switches persona, the streamed speech is held
+            # back (see _TokenWatch), the switch runs first, and the reply is
+            # spoken in the NEW voice.
+            voice_id = _resolve_voice(brain)
 
             # Streaming TTS: chunker emits response sentences as they arrive.
             # Suppresses itself if a describe action appears in the action list
@@ -1927,8 +2023,14 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # camera description never reaches the speaker — client_mic.py
             # speaks a stock ack instead (see describe_action branch below).
             chunker = tts.enqueue_streaming(voice=voice_id) if tts and tts.is_available() else None
+            filler = None
             if chunker is not None:
-                brain.on_token_callback = chunker.accept
+                # B12: one neutral line if nothing has been said after
+                # Tuning.thinking_filler_s; cancelled when the reply starts.
+                filler = ThinkingFiller(lambda: tts.speak(THINKING_FILLER_LINE, voice=voice_id),
+                                        _tuning.thinking_filler_s, _speech_busy)
+                brain.on_token_callback = _TokenWatch(chunker, filler)
+                filler.start()
 
             t_llm_start = time.time()
             try:
@@ -1946,11 +2048,13 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                     pass
                 if tts is not None:
                     try:
-                        tts.speak("Sorry, my brain hiccuped. Try that again.")
+                        tts.speak("Sorry, I lost my train of thought. Could you say that again?")
                     except Exception:
                         pass
                 return None
             finally:
+                if filler is not None:
+                    filler.cancel()
                 if chunker is not None:
                     chunker.flush()
                     brain.on_token_callback = None
@@ -1976,12 +2080,24 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 None,
             )
             if describe_action:
-                query = describe_action.get("params", {}).get("query", "")
+                query = str(describe_action.get("params", {}).get("query", "")).replace("_", " ").strip()
                 response = (
                     f"Let me take a look for the {query}..."
                     if query
                     else random.choice(_DESCRIBE_ACKS)
                 )
+
+            # B6: run persona switches BEFORE speaking so the announcing reply
+            # uses the new voice (the chunker held it back — _TokenWatch).
+            persona_actions = [a for a in actions if a.get("intent") in _PERSONA_INTENTS]
+            if persona_actions:
+                for a in persona_actions:
+                    execute_on_spot(a, brain=brain)
+                actions = [a for a in actions if a.get("intent") not in _PERSONA_INTENTS]
+                voice_id = _resolve_voice(brain)
+                if tts and response:
+                    tts.speak(response, voice=voice_id)
+                    response = ""  # spoken; don't repeat below
 
             # Show what the robot "says"
             if response:
@@ -2073,7 +2189,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 tts.wait()
                                 tts.speak(fallback, voice=voice_id)
                     else:
-                        if execute_on_spot(intent, brain=brain):
+                        if execute_on_spot(intent, brain=brain,
+                                           speak=(tts.speak if tts else None)):
                             print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
                         else:
                             beep.error()

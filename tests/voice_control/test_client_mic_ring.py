@@ -29,12 +29,6 @@ def test_throttle():
     assert t.allow(0.0) and not t.allow(0.05) and t.allow(0.11)
 
 
-def test_ring_reverse():
-    assert cm.ring_deg_for_leds(90.0, False) == 90.0
-    assert cm.ring_deg_for_leds(90.0, True) == 270.0
-    assert cm.ring_deg_for_leds(None, True) is None
-
-
 def _setup(monkeypatch, mic, ring_for):
     monkeypatch.setattr(cm, "_mic", mic)
     monkeypatch.setattr(cm, "_ring_for", ring_for)
@@ -47,20 +41,21 @@ def _setup(monkeypatch, mic, ring_for):
 def test_enter_state_writes_ring_spec(monkeypatch):
     mic, seen = FakeMic(), []
 
-    def ring_for(state, deg, muted, ring_offset_leds=0):
-        seen.append((state, deg, muted, ring_offset_leds))
+    def ring_for(state, deg, muted, ring_offset_leds=0, reverse=False):
+        seen.append((state, deg, muted, ring_offset_leds, reverse))
         return Spec(5, None, [1] * 12, 255)
 
     _setup(monkeypatch, mic, ring_for)
     cm._lock.release()
     cm._enter_state(VoiceState.LISTENING)
     assert seen[-1][0] == VoiceState.LISTENING and seen[-1][2] is False
+    assert seen[-1][3:] == (cm._tuning.ring_offset_leds, cm._tuning.ring_reverse)
     assert mic.calls == [("effect", 5), ("ring", [1] * 12)]
 
 
 def test_throttled_write_is_pending_then_flushed(monkeypatch):
     mic = FakeMic()
-    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0: Spec(3, 0x0040FF, None, 255))
+    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False: Spec(3, 0x0040FF, None, 255))
     monkeypatch.setattr(cm, "_ring_throttle", cm.RingThrottle(0.001))  # ~1000 s interval
     cm._enter_state(VoiceState.RESPONDING)
     cm._enter_state(VoiceState.THINKING)
@@ -82,14 +77,14 @@ def test_ring_write_error_never_raises(monkeypatch):
             raise RuntimeError("usb gone")
 
     mic = Boom()
-    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0: Spec(3, 1, None, 255))
+    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False: Spec(3, 1, None, 255))
     cm._enter_state(VoiceState.LISTENING)
     assert ("color", 1) in mic.calls
 
 
 def test_reject_flashes_red_then_restores(monkeypatch):
     mic = FakeMic()
-    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0: Spec(5, None, [7] * 12, 255))
+    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False: Spec(5, None, [7] * 12, 255))
     started = []
 
     class T:
