@@ -279,6 +279,10 @@ _DESCRIBE_ACTION_RE = re.compile(r'"action"\s*:\s*"describe"')
 # resolve abbreviation vs. sentence-end (e.g. "Dr. " fires False,
 # "Dr. L" fires True).
 _POST_PUNCT_WORD_RE = re.compile(r"[.!?]\s+\w")
+# JSON single-char escapes, decoded for speech. Newlines/tabs become spaces
+# so they act as word breaks instead of being read out.
+_JSON_ESCAPES = {"n": " ", "t": " ", "r": " ", "b": " ", "f": " ",
+                 '"': '"', "\\": "\\", "/": "/"}
 
 class TTSChunker:
     """Buffer streaming LLM tokens; flush a sentence to TTS on each boundary.
@@ -296,16 +300,27 @@ class TTSChunker:
         self.buf: list[str] = []
         self.in_response = False
         self.escape = False
+        self.unicode_hex: str | None = None  # hex digits of a pending \uXXXX
         self.json_buf: list[str] = []
         self.suppressed = False
 
     def __call__(self, delta: str) -> None:
         self.accept(delta)
 
+    def feed(self, text: str) -> None:
+        """Feed raw (still JSON-escaped) response-string text directly,
+        without the surrounding ``{"response": "`` envelope."""
+        self.in_response = True
+        self.accept(text)
+
     def _emit(self, chunk: str) -> None:
         if self.suppressed:
             return
-        self._tts.speak(chunk, voice=self._voice)
+        speak = getattr(self._tts, "speak", None)
+        if speak is not None:
+            speak(chunk, voice=self._voice)
+        else:
+            self._tts(chunk)  # plain callable sink (tests, tools)
 
     def accept(self, delta: str) -> None:
         for ch in delta:
@@ -323,9 +338,24 @@ class TTSChunker:
                         self.suppressed = True
                     self.in_response = True
                 continue
-            if self.escape:
-                self.buf.append(ch)
+            if self.unicode_hex is not None:
+                # Collecting the 4 hex digits of a \uXXXX escape.
+                self.unicode_hex += ch
+                if len(self.unicode_hex) == 4:
+                    try:
+                        cp = int(self.unicode_hex, 16)
+                    except ValueError:
+                        cp = 0x20
+                    # Lone surrogates (emoji halves) can't be spoken or encoded.
+                    if not 0xD800 <= cp <= 0xDFFF:
+                        self.buf.append(chr(cp))
+                    self.unicode_hex = None
+            elif self.escape:
                 self.escape = False
+                if ch == "u":
+                    self.unicode_hex = ""
+                else:
+                    self.buf.append(_JSON_ESCAPES.get(ch, ch))
             elif ch == "\\":
                 self.escape = True
             elif ch == '"':

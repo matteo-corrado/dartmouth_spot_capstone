@@ -49,6 +49,17 @@ class LlamaCppBackend:
     def __init__(self, url: str = LLAMACPP_URL):
         self.url = url
 
+    def is_available(self) -> bool:
+        """True if llama-server answers its /health endpoint."""
+        try:
+            r = requests.get(f"{self.url}/health", timeout=3)
+            if r.status_code != 200:
+                print(f"[Brain] llama-server /health returned {r.status_code}")
+            return r.status_code == 200
+        except Exception as e:
+            print(f"[Brain] llama-server check failed: {type(e).__name__}: {e}")
+            return False
+
     def chat(
         self,
         system: str,
@@ -86,6 +97,9 @@ class LlamaCppBackend:
             stream=True,
         ) as r:
             r.raise_for_status()
+            # SSE responses carry no charset, so requests would decode as
+            # ISO-8859-1 and mangle em dashes / curly quotes. Force UTF-8.
+            r.encoding = "utf-8"
             for raw_line in r.iter_lines(decode_unicode=True):
                 if not raw_line or not raw_line.startswith("data:"):
                     continue

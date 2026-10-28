@@ -15,12 +15,10 @@ from typing import Any, Dict, List, Tuple, Pattern
 # - literal values (kept as-is)
 # - strings of the form "$name" to substitute a named capture group
 # - callables(match) to compute a value from the match
+# Safety commands (stop / freeze / estop) are NOT in this table: they go
+# through check_safety_command() below, the single source of truth that
+# client_mic also uses for its zero-latency bypass.
 COMMANDS = [
-    # === SAFETY & STOP ===
-    (r"\b(?:stop|halt)\b",                          "stop", {}),
-    (r"\bfreeze\b",                                 "freeze", {}),
-    (r"\b(?:emergency\s+stop|e[\s-]?stop)\b",       "estop", {}),
-
     # === POSTURE ===
     (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
     (r"\b(?:sit|sit down|lay down)\b",             "sit", {}),
@@ -91,6 +89,49 @@ COMMANDS = [
     (r"\b(?:list|show|what)\s+(?:are\s+)?(?:the\s+)?(?:available\s+)?maps\b", "list_maps", {}),
 ]
 
+# Safety commands that bypass the LLM for zero-latency execution.
+# ORDER MATTERS: estop must be checked before stop so "e stop" / "e-stop"
+# matches the more-specific estop pattern, not the bare stop pattern.
+SAFETY_PATTERNS = [
+    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
+    (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
+    (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
+]
+
+# A safety word at the very start of the utterance ("stop walking towards...").
+_LEADING_SAFETY_RE = re.compile(
+    r"^\W*(?:emergency\s+stop|e[\s-]?stop|stop|halt|freeze)\b", re.IGNORECASE)
+_SAFETY_MAX_WORDS = 4
+
+
+def check_safety_command(text: str):
+    """Return {"intent", "params", "raw"} for a safety command, else None.
+
+    Fires only for short command-like utterances (<= 4 words) or when the
+    utterance starts with a safety word, so "what's the next stop on the
+    tour" does not halt the robot. The safety keyword spotter and
+    ``spotctl stop`` remain the guaranteed stop paths.
+    """
+    if not text:
+        return None
+    if len(text.split()) > _SAFETY_MAX_WORDS and not _LEADING_SAFETY_RE.match(text):
+        return None
+    for pattern, intent_name in SAFETY_PATTERNS:
+        if pattern.search(text):
+            return {"intent": intent_name, "params": {}, "raw": text}
+    return None
+
+
+FILLER_WORDS = frozenset({"uh", "um", "er", "ah", "hmm", "like", "so", "okay"})
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def is_filler_only(text: str) -> bool:
+    """True if fewer than 2 words remain after removing filler words."""
+    words = [w for w in _WORD_RE.findall((text or "").lower()) if w not in FILLER_WORDS]
+    return len(words) < 2
+
+
 # Precompile with IGNORECASE for more robust matching
 COMMAND_PATTERNS: List[Tuple[Pattern, str, Dict[str, Any]]] = [
     (re.compile(pat, re.IGNORECASE), intent, params) for pat, intent, params in COMMANDS
@@ -158,6 +199,9 @@ def parse_intent(text: str):
     # Clean up Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
     t = re.sub(r'\.\s*', ' ', text).strip()
     t = re.sub(r'\s+', ' ', t)
+    safety = check_safety_command(t)
+    if safety is not None:
+        return {**safety, "raw": text}
     for pat, intent_name, params in COMMAND_PATTERNS:
         m = pat.search(t)
         if not m:
