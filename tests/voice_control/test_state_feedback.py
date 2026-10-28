@@ -38,7 +38,13 @@ def test_chime_names_are_audio_feedback_methods():
 
 def test_ring_toward_front_and_wrap():
     r = ring_toward(0, 0x00C000); assert r[0] and r[1] and r[11] and not r[6]
-    r = ring_toward(345, 0x00C000); assert r[0] and r[11] and r[10]
+    r = ring_toward(330, 0x00C000); assert r[0] and r[11] and r[10]
+
+
+def test_ring_toward_reverse():
+    r = ring_toward(90, 0x00C000, reverse=True)   # centre -3 % 12 = 9
+    assert r[8] and r[9] and r[10] and not r[3]
+    assert ring_for(VoiceState.LISTENING, 90, False, reverse=True).ring == r
 
 
 def test_ring_toward_shape_and_offset():
