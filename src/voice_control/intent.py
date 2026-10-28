@@ -93,33 +93,56 @@ COMMANDS = [
 # ORDER MATTERS: estop must be checked before stop so "e stop" / "e-stop"
 # matches the more-specific estop pattern, not the bare stop pattern.
 SAFETY_PATTERNS = [
-    (re.compile(r"\b(?:emergency\s+stop|e[\s-]?stop)\b", re.IGNORECASE), "estop"),
+    (re.compile(r"emergency\W+stop|\be\W?stop\b|\bestop\b", re.IGNORECASE), "estop"),
     (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
     (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
 ]
 
-# A safety word at the very start of the utterance ("stop walking towards...").
-_LEADING_SAFETY_RE = re.compile(
-    r"^\W*(?:emergency\s+stop|e[\s-]?stop|stop|halt|freeze)\b", re.IGNORECASE)
-_SAFETY_MAX_WORDS = 4
+_ESTOP_RE = SAFETY_PATTERNS[0][0]
+_HALT_RE = re.compile(r"\bhalt\b", re.IGNORECASE)
+_FREEZE_RE = SAFETY_PATTERNS[2][0]
+# "stop" only as a whole word: "stops" / "stopped" / "stopping" don't match.
+_STOP_WORD_RE = re.compile(r"\bstop\b", re.IGNORECASE)
+_PREV_WORD_RE = re.compile(r"(\w+)\W*$")
+# Words that make the following "stop" a noun ("the next stop", "bus stop").
+_STOP_NOUN_PRECEDERS = frozenset({
+    "the", "a", "next", "last", "first", "final", "bus", "one", "that", "this",
+    "each", "every", "our", "your", "my", "another", "pit", "full",
+})
+_DASHES = str.maketrans({"–": "-", "—": "-", "‑": "-"})
+
+
+def _has_command_stop(text: str) -> bool:
+    """True if any whole-word "stop" is NOT a noun use."""
+    for m in _STOP_WORD_RE.finditer(text):
+        prev = _PREV_WORD_RE.search(text[:m.start()])
+        if prev is None or prev.group(1).lower() not in _STOP_NOUN_PRECEDERS:
+            return True
+    return False
 
 
 def check_safety_command(text: str):
     """Return {"intent", "params", "raw"} for a safety command, else None.
 
-    Fires only for short command-like utterances (<= 4 words) or when the
-    utterance starts with a safety word, so "what's the next stop on the
-    tour" does not halt the robot. The safety keyword spotter and
-    ``spotctl stop`` remain the guaranteed stop paths.
+    Errs toward stopping ("fire unless benign"):
+    - estop ("emergency stop", "e-stop", "estop") always fires and wins.
+    - halt (-> stop) and freeze fire anywhere.
+    - stop fires anywhere unless every "stop" is a noun use ("the next stop",
+      "bus stop"), so "what's the next stop on the tour" doesn't halt Spot.
+    Never raises; None for empty / non-text input.
     """
-    if not text:
+    if not isinstance(text, str) or not text.strip():
         return None
-    if len(text.split()) > _SAFETY_MAX_WORDS and not _LEADING_SAFETY_RE.match(text):
+    t = text.translate(_DASHES)
+    if _ESTOP_RE.search(t):
+        intent_name = "estop"
+    elif _HALT_RE.search(t) or _has_command_stop(t):
+        intent_name = "stop"
+    elif _FREEZE_RE.search(t):
+        intent_name = "freeze"
+    else:
         return None
-    for pattern, intent_name in SAFETY_PATTERNS:
-        if pattern.search(text):
-            return {"intent": intent_name, "params": {}, "raw": text}
-    return None
+    return {"intent": intent_name, "params": {}, "raw": text}
 
 
 FILLER_WORDS = frozenset({"uh", "um", "er", "ah", "hmm", "like", "so", "okay"})

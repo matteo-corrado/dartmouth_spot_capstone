@@ -1,29 +1,69 @@
-"""A13: the stop regex fires only for short or stop-led utterances."""
+"""A13: safety rule fires unless 'stop' is a noun use; estop always wins."""
+import pytest
+
 from src.voice_control.intent import check_safety_command, parse_intent
 
+FIRE_STOP = [
+    "stop", "STOP!", "stop.", "spot stop", "hey spot stop",
+    "hey spot please stop now", "hey spot, stop right now",
+    "spot could you please stop", "okay spot can you stop", "no no no stop it",
+    "stop walking towards the table please", "Hey Spot, stop. Come back.",
+    "halt",
+]
+FIRE_ESTOP = [
+    "please do an emergency stop", "Emergency! Stop!", "e-stop",
+    "e–stop", "e—stop", "estop", "e stop",
+]
+FIRE_FREEZE = ["freeze", "spot freeze now"]
+NO_FIRE = [
+    "what's the next stop on the tour", "is this the last stop",
+    "where is the bus stop", "that was the first stop", "the robot stopped",
+    "it stops here", "hello there", "",
+]
 
-def test_stop_inside_question_not_safety():
-    assert check_safety_command("what's the next stop on the tour") is None
+
+@pytest.mark.parametrize("text", FIRE_STOP)
+def test_fires_stop(text):
+    assert check_safety_command(text)["intent"] == "stop"
 
 
-def test_short_stop_is_safety():
-    assert check_safety_command("stop")["intent"] == "stop"
-    assert check_safety_command("spot stop now")["intent"] == "stop"
+@pytest.mark.parametrize("text", FIRE_ESTOP)
+def test_fires_estop(text):
+    assert check_safety_command(text)["intent"] == "estop"
 
 
-def test_leading_stop_long_is_safety():
-    assert check_safety_command("stop walking towards the table please")["intent"] == "stop"
+def test_e_comma_stop_fires():
+    assert check_safety_command("E, stop")["intent"] in ("estop", "stop")
 
 
-def test_estop_wins():
-    assert check_safety_command("e-stop")["intent"] == "estop"
-    assert check_safety_command("e stop")["intent"] == "estop"
+@pytest.mark.parametrize("text", FIRE_FREEZE)
+def test_fires_freeze(text):
+    assert check_safety_command(text)["intent"] == "freeze"
 
 
-def test_freeze_and_shape():
+@pytest.mark.parametrize("text", NO_FIRE)
+def test_benign_does_not_fire(text):
+    assert check_safety_command(text) is None
+
+
+def test_estop_wins_over_stop_and_freeze():
+    assert check_safety_command("stop stop emergency stop freeze")["intent"] == "estop"
+
+
+def test_noun_and_command_stop_mixed_fires():
+    assert check_safety_command("this is the last stop so stop")["intent"] == "stop"
+
+
+@pytest.mark.parametrize("text", [None, "...", "!!", "   ", 42])
+def test_never_raises_on_junk(text):
+    assert check_safety_command(text) is None
+
+
+def test_shape():
     assert check_safety_command("freeze") == {"intent": "freeze", "params": {}, "raw": "freeze"}
 
 
 def test_regex_fallback_uses_same_rule():
     assert parse_intent("what's the next stop on the tour") is None
     assert parse_intent("e-stop")["intent"] == "estop"
+    assert parse_intent("hey spot please stop now")["intent"] == "stop"
