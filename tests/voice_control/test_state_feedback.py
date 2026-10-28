@@ -73,6 +73,13 @@ def test_ring_for_full_table():
     assert (muted.effect, muted.color, muted.ring) == (3, 0xC00000, None)
 
 
+def test_non_finite_lock_deg_is_solid_green():
+    for bad in (float("nan"), float("inf"), float("-inf"), None):
+        spec = ring_for(VoiceState.LISTENING, bad, False)
+        assert (spec.effect, spec.color, spec.ring) == (3, 0x00C000, None)
+    assert ring_toward(float("nan"), 0x00C000) == [0x00C000] * 12
+
+
 def test_every_state_has_an_led_color():
     for st in VoiceState:
         r, g, b = led_color_for(st)

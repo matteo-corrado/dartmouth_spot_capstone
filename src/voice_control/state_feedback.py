@@ -8,6 +8,7 @@ unit-testable and the loop stays thin.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -78,6 +79,13 @@ class RingSpec:
     brightness: int
 
 
+def _finite(deg) -> bool:
+    try:
+        return deg is not None and math.isfinite(float(deg))
+    except (TypeError, ValueError):
+        return False
+
+
 def ring_toward(deg: float, color: int, width: int = 3,
                 ring_offset_leds: int = 0, reverse: bool = False) -> list:
     """12 LED colours lighting ``width`` LEDs centred on the LED nearest
@@ -86,7 +94,10 @@ def ring_toward(deg: float, color: int, width: int = 3,
     ``deg`` is in the MIC frame (the XVF3800's own DoA frame), where LED
     index i sits at i*30 deg. ``ring_offset_leds`` shifts the index and
     ``reverse`` flips the direction when the physical LED order differs
-    (calibrated with ``xvf_probe leds``; Tuning carries the values)."""
+    (calibrated with ``xvf_probe leds``; Tuning carries the values).
+    A missing or non-finite ``deg`` (None, NaN, inf) lights the whole ring."""
+    if not _finite(deg):
+        return [color] * RING_LEDS
     step = round(deg / 30.0) * (-1 if reverse else 1)
     centre = (step + ring_offset_leds) % RING_LEDS
     ring = [0] * RING_LEDS
@@ -102,7 +113,7 @@ def ring_for(state: VoiceState, lock_deg: Optional[float], muted: bool,
     if muted:
         return RingSpec(LED_EFFECT_SOLID, COLOR_MUTED, None, RING_BRIGHTNESS)
     if state == VoiceState.LISTENING:
-        if lock_deg is None:
+        if not _finite(lock_deg):   # None / NaN / inf -> solid green
             return RingSpec(LED_EFFECT_SOLID, COLOR_LISTEN, None, RING_BRIGHTNESS)
         return RingSpec(LED_EFFECT_RING, None,
                         ring_toward(lock_deg, COLOR_LISTEN,
