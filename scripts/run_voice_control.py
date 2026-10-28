@@ -267,6 +267,11 @@ def main():
                              "gripper mouth at startup.")
     parser.add_argument("--latency", choices=["off", "summary", "file", "all"], default=None,
                         help="Forwarded to voice control: latency telemetry mode.")
+    parser.add_argument("--latency-out", type=str, default=None,
+                        help="Forwarded to voice control: latency JSONL path "
+                             "(with --latency file/all).")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Forwarded to voice control: skip robot dispatch.")
     parser.add_argument("--mic-channel", type=int, default=None,
                         help="Forwarded to voice control: XVF3800 input channel "
                              "(default Tuning.mic_channel).")
@@ -350,6 +355,10 @@ def main():
         client_cmd.append("--enable-arm")
     if args.latency is not None:
         client_cmd.extend(["--latency", args.latency])
+    if args.latency_out:
+        client_cmd.extend(["--latency-out", args.latency_out])
+    if args.dry_run:
+        client_cmd.append("--dry-run")
     if args.mic_channel is not None:
         client_cmd.extend(["--mic-channel", str(args.mic_channel)])
     if args.no_transcript_log:

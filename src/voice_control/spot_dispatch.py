@@ -1140,6 +1140,7 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
     command is gated on stop_event under _arm_lock, so a stop/freeze/estop
     (which sets the event before its own stop) is never followed by a routine
     start or an arm restore from here."""
+    global _last_routine
     from bosdyn.choreography.client.choreography import ChoreographyClient
     cmd = session["cmd"]
     outcome = "aborted"  # "done" | "timeout" | "abnormal" | "aborted"
@@ -1163,6 +1164,7 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
             started = True
             choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
                                         choreography_starting_slice=0, timeout=RPC_TIMEOUT_S)
+        _last_routine = routine  # only a routine that actually started counts as "last"
         print(f"[Spot] ✓ Routine '{routine}' started")
         t0 = time.time()
         deadline = t0 + EMOTE_TIMEOUT_S
@@ -1208,7 +1210,6 @@ def _handle_emote(params, session, speak=None):
     """emote {"name": str}: refuse while moving, sitting or crowded, then run
     the routine on a background thread registered as the nav thread (so stop
     cancels it)."""
-    global _last_routine
     from src.voice_control.emotes import resolve_routine
     if _nav_mode == "emote" and is_navigating():
         _say(speak, "One dance at a time!")
@@ -1217,7 +1218,10 @@ def _handle_emote(params, session, speak=None):
         _say(speak, "I can't dance while I'm on the move.")
         return False
     try:
-        routine = resolve_routine((params or {}).get("name"), _last_routine)
+        name = (params or {}).get("name")
+        if isinstance(name, str):
+            name = name.strip().lower().replace(" ", "_")  # "Happy Wiggle" -> happy_wiggle
+        routine = resolve_routine(name or None, _last_routine)
     except ValueError:
         _say(speak, "I don't know that one yet.")
         return False
@@ -1231,7 +1235,6 @@ def _handle_emote(params, session, speak=None):
     gen = _dispatch_gen
     if _aborted(gen):
         return False
-    _last_routine = routine
     _cancel_nav()
     prev = _arm_pose
     if not _spawn_nav(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),

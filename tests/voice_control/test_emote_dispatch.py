@@ -265,3 +265,23 @@ def test_orphan_emote_thread_never_starts_routine(env):
     stale = d._safety_gen - 1  # a stop landed after the dispatch was checked
     d._emote_routine(env.sess, "tail_wag", "talk", threading.Event(), None, stale)
     assert env.choreo.executed == []
+
+
+def test_emote_name_normalised_before_resolve(env):
+    assert d.dispatch_intent({"intent": "emote", "params": {"name": " Tail Wag "}}) is True
+    _join()
+    assert [e[0] for e in env.choreo.executed] == ["tail_wag"]
+    assert d._last_routine == "tail_wag"
+
+
+def test_last_routine_only_set_when_routine_started(env, monkeypatch):
+    calls = []
+
+    def scan(r, max_radius_m):
+        calls.append(1)  # clear at dispatch, crowded at the thread's re-check
+        return (True, None) if len(calls) == 1 else (True, SimpleNamespace(distance_m=0.5))
+
+    monkeypatch.setattr(oq, "clearance_scan", scan)
+    assert d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}}) is True
+    _join()
+    assert env.choreo.executed == [] and d._last_routine is None
