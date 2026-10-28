@@ -265,6 +265,14 @@ def main():
     parser.add_argument("--enable-arm", action="store_true",
                         help="Forwarded to voice control: deploy arm + enable "
                              "gripper mouth at startup.")
+    parser.add_argument("--latency", choices=["off", "summary", "file", "all"], default=None,
+                        help="Forwarded to voice control: latency telemetry mode.")
+    parser.add_argument("--mic-channel", type=int, default=None,
+                        help="Forwarded to voice control: XVF3800 input channel "
+                             "(default Tuning.mic_channel).")
+    parser.add_argument("--no-transcript-log", action="store_true",
+                        help="Forwarded to voice control: conversation + utterance "
+                             "logs store transcript: null.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -337,8 +345,16 @@ def main():
         client_cmd.extend(["--map", args.map])
     if args.enable_arm:
         client_cmd.append("--enable-arm")
+    if args.latency is not None:
+        client_cmd.extend(["--latency", args.latency])
+    if args.mic_channel is not None:
+        client_cmd.extend(["--mic-channel", str(args.mic_channel)])
+    if args.no_transcript_log:
+        client_cmd.append("--no-transcript-log")
 
     client_env = os.environ.copy()
+    if args.no_transcript_log:
+        client_env["SPOT_NO_TRANSCRIPT_LOG"] = "1"  # ConversationLog reads it
     if args.debug_crash:
         # MALLOC_CHECK_=3 makes glibc abort *at* the bad free/corruption instead
         # of much later, so the backtrace points at the actual culprit.
