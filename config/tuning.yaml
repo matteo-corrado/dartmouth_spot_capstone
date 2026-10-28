@@ -1,0 +1,33 @@
+# Demo tunables. Every key is commented at its default; uncomment to override.
+# Unknown keys are ignored with a logged warning.
+# mic_channel: 0
+# min_speech_dbfs: -50.0
+# min_snr_db: 10.0
+# onset_frames: 3
+# end_silence_s: 1.5
+# end_silence_s_short: 1.2
+# max_utterance_s: 20.0
+# floor_window_s: 5.0
+# floor_percentile: 10.0
+# floor_rise_db_per_s: 1.0
+# reopen_delay_s: 0.5
+# speaker_tail_s: 0.15
+# kws_score: 1.5
+# kws_threshold: 0.05
+# kws_peak_target: 0.5
+# lock_window_deg: 35.0
+# lock_timeout_s: 20.0
+# lock_nudge: 0.3
+# mic_yaw_offset_deg: 0.0
+# mic_yaw_sign: 1
+# beam_steering: false
+# voiceprint_enabled: false
+# voiceprint_threshold: 0.5
+# thinking_filler_s: 4.0
+# walk_speed_cap: 0.5
+# dance_clearance_m: 1.5
+# mouth_lead_s: 0.0
+# mouth_max_open: 0.6
+# mouth_attack_s: 0.03
+# mouth_release_s: 0.10
+# mouth_rest_open: 0.08
