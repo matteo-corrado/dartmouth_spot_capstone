@@ -116,9 +116,8 @@ def _join_nav():
 # ---------------------------------------------------------------- dispatcher
 def test_stop_sends_motion_stop_first_then_stows(fake):
     assert d.dispatch_intent({"intent": "stop", "params": {}}) is True
-    k = fake.kinds()
-    assert k[0] == "stop"
-    assert k[1:] == ["gripper", "arm_stow"]
+    # stop FIRST (before any join), original branch's stop, then no-wait stow
+    assert fake.kinds() == ["stop", "stop", "gripper", "arm_stow"]
     assert d.get_arm_pose() == "stowed"
 
 
@@ -161,7 +160,7 @@ def test_stop_mid_walk_stows_and_never_restores(fake):
     time.sleep(0.6)
     k = fake.kinds()
     i = k.index("stop")
-    assert k[i + 1:] == ["gripper", "arm_stow"]
+    assert k[i:] == ["stop", "stop", "gripper", "arm_stow"]
     assert "arm_ready" not in k
     assert d.get_arm_pose() == "stowed"
 
@@ -262,11 +261,131 @@ def test_visual_nav_velocity_clamped(monkeypatch):
 def test_stop_when_stowed_sends_only_stop(fake, monkeypatch):
     monkeypatch.setattr(d, "_arm_pose", "stowed")
     d.dispatch_intent({"intent": "stop", "params": {}})
-    assert fake.kinds() == ["stop"]
+    assert fake.kinds() == ["stop", "stop"]
 
 
 def test_sit_stows_before_sitting(fake):
     assert arm_policy_for("sit", "talk") == ("stowed", "stowed")
     d.dispatch_intent({"intent": "sit", "params": {}})
-    assert fake.kinds() == ["gripper", "arm_stow", "mobility"]
+    assert fake.kinds() == ["stop", "gripper", "arm_stow", "mobility"]
     assert d.get_arm_pose() == "stowed"
+
+
+def test_stop_without_session_never_connects(monkeypatch):
+    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(d, "_close_mouth", lambda: None)
+    for n in ("stop", "freeze", "estop"):
+        assert d.dispatch_intent({"intent": n, "params": {}}) is False
+
+
+def test_unfinished_trajectory_stops_and_keeps_tuck(fake, monkeypatch):
+    fake.at_goal = False
+    monkeypatch.setattr(d, "_arm_pose", "walk")
+    monkeypatch.setattr(d, "_pose_before_walk", "talk")
+    d._start_restore_watch(fake, 1, time.time() + 0.4)
+    _join_nav()
+    assert fake.kinds() == ["stop"]       # stopped, no restore
+    assert d.get_arm_pose() == "walk"
+
+
+def test_unknown_body_status_not_trusted():
+    class Unknown(FakeCmd):
+        def robot_command_feedback(self, cmd_id):
+            fb = super().robot_command_feedback(cmd_id)
+            fb.feedback.synchronized_feedback.mobility_command_feedback \
+                .se2_trajectory_feedback.body_movement_status = 0
+            return fb
+    ev = threading.Event()
+    assert d._wait_trajectory_done(Unknown(), 1, time.time() + 0.3, ev) is False
+
+
+def test_stop_during_tuck_aborts_walk(fake, monkeypatch):
+    calls = {"n": 0}
+
+    def arrive_after_stop(c, i, t):
+        if calls["n"] == 0:  # another thread says "stop" while we tuck
+            calls["n"] += 1
+            d.dispatch_intent({"intent": "stop", "params": {}})
+        return True
+    monkeypatch.setattr(d, "block_until_arm_arrives", arrive_after_stop)
+    assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
+    k = fake.kinds()
+    assert "mobility" not in k and "arm_ready" not in k
+    assert k[-2:] == ["gripper", "arm_stow"]   # re-stowed
+    assert d.get_arm_pose() == "stowed"
+
+
+class _Mouth:
+    def __init__(self):
+        self.enabled = True
+        self.log = []
+
+    def disable(self):
+        self.enabled = False
+        self.log.append("off")
+
+    def enable(self):
+        self.enabled = True
+        self.log.append("on")
+
+
+def test_mouth_latched_off_while_walking_and_restored(fake, monkeypatch):
+    m = _Mouth()
+    import src.voice_control.spot_tts as tts_mod
+    monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
+    monkeypatch.setattr(d, "_mouth_resume", False)
+    fake.at_goal = False
+    d.dispatch_intent({"intent": "walk", "params": {}})
+    assert m.log == ["off"] and not m.enabled   # claw still while walking
+    fake.at_goal = True
+    _join_nav()
+    assert m.log == ["off", "on"] and d.get_arm_pose() == "talk"
+
+
+def test_sit_bumps_safety_gen(fake):
+    g = d._safety_gen
+    d.dispatch_intent({"intent": "sit", "params": {}})
+    assert d._safety_gen == g + 1
+
+
+def test_travel_params_keep_arrival_thresholds():
+    t = capped_travel_params(0.5)
+    assert t.max_distance == pytest.approx(0.5) and t.max_yaw == pytest.approx(0.5)
+
+
+def test_freeze_never_stands_a_sitting_robot(fake):
+    # FakeState reports behavior_state UNKNOWN (not standing)
+    d.dispatch_intent({"intent": "freeze", "params": {}})
+    assert "mobility" not in fake.kinds()
+
+
+def test_freeze_holds_stand_when_standing(fake, monkeypatch):
+    monkeypatch.setattr(d, "_is_standing", lambda s: True)
+    d.dispatch_intent({"intent": "freeze", "params": {}})
+    assert fake.kinds()[:3] == ["stop", "stop", "mobility"]
+
+
+@pytest.mark.parametrize("name", ["sit", "power_off", "stow"])
+def test_no_session_shutdown_intents_never_connect(monkeypatch, name):
+    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    assert d.dispatch_intent({"intent": name, "params": {}}) is False
+
+
+def test_stand_fault_recovery_never_self_rights(fake):
+    calls = []
+
+    class Faulty(FakeCmd):
+        def robot_command(self, cmd, end_time_secs=None, **kw):
+            calls.append(_kind(cmd))
+            if len(calls) == 1:
+                raise RuntimeError("BehaviorFaultError")
+            return 1
+
+        def clear_behavior_fault(self, behavior_fault_id):
+            pass
+    d._spot_session["cmd"] = Faulty()
+    assert d.dispatch_intent({"intent": "stand", "params": {}}) is True
+    # selfright is a full-body command; only synchro stands are allowed here
+    assert calls == ["mobility", "mobility"]

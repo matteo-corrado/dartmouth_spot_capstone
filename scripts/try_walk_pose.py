@@ -11,7 +11,8 @@ For each candidate the arm goes to the pose, then the claw opens and closes
 twice. Press Enter to advance. Record the winner in src/session.py WALK_POSE.
 
 REQUIRES a live E-Stop (run scripts/estop_run.py in another terminal first).
-Takes the lease via spot_session(); writes nothing.
+STOP voice control first: this takes the lease (spot_session forcefully takes
+it). The E-Stop is checked before the robot powers on or stands. Writes nothing.
 
     python scripts/try_walk_pose.py [--variants stow carry joints] [--open 0.6]
 """
@@ -23,7 +24,8 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from bosdyn.client.estop import EstopClient
-from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
+from bosdyn.client.robot_command import (
+    RobotCommandBuilder, block_until_arm_arrives, blocking_stand)
 
 from src.session import spot_session, move_arm_to, walk_pose_command
 
@@ -58,13 +60,16 @@ def main():
     ap.add_argument("--open", type=float, default=0.6, help="claw open fraction to test")
     args = ap.parse_args()
 
-    with spot_session(stand_on_enter=True, sit_on_exit=False) as s:
+    with spot_session(stand_on_enter=False, sit_on_exit=False) as s:
         robot, cmd = s["robot"], s["cmd"]
         if not robot.has_arm():
             print("No arm on this robot.")
             return 1
-        if not _estop_live(robot):
+        if not _estop_live(robot):  # BEFORE power-on / stand
             return 1
+        print("E-Stop live. Powering on and standing...")
+        robot.power_on(timeout_sec=20)
+        blocking_stand(cmd, timeout_sec=20)
         try:
             print("Deploying to talk pose first...")
             move_arm_to(cmd, "talk", timeout_s=6.0)

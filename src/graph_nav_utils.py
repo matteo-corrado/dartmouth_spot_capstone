@@ -10,6 +10,8 @@ from bosdyn.client.frame_helpers import get_odom_tform_body
 # Walk speed cap (Task 14): every velocity / trajectory / GraphNav command is
 # limited to Tuning.walk_speed_cap m/s linear. Turning is limited too.
 MAX_TURN_RATE = 1.0  # rad/s
+TRAVEL_MAX_DISTANCE_M = 0.5  # GraphNav "reached the waypoint" distance threshold
+TRAVEL_MAX_YAW_RAD = 0.5     # GraphNav "reached the waypoint" yaw threshold
 
 
 def walk_speed_cap() -> float:
@@ -38,7 +40,10 @@ def capped_mobility_params(cap: float = None):
 def capped_travel_params(cap: float = None):
     """GraphNav TravelParams with the walk speed cap applied."""
     cap = walk_speed_cap() if cap is None else float(cap)
-    return graph_nav_pb2.TravelParams(velocity_limit=_velocity_limit(cap))
+    # SDK helper so the arrival thresholds are set, not zeroed. 0.5 m / 0.5 rad
+    # match the BD GraphNav command-line example defaults.
+    return GraphNavClient.generate_travel_params(
+        TRAVEL_MAX_DISTANCE_M, TRAVEL_MAX_YAW_RAD, velocity_limit=_velocity_limit(cap))
 
 
 def clamp_speed(v: float, cap: float = None) -> float:

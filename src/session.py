@@ -205,7 +205,7 @@ def walk_pose_command(variant: str = None):
     raise ValueError(f"unknown walk pose variant: {variant!r}")
 
 
-def send_arm_pose(cmd_client, pose: str, walk_variant: str = None):
+def send_arm_pose(cmd_client, pose: str, walk_variant: str = None, rpc_timeout: float = None):
     """Send the command(s) for an arm pose without waiting. Returns the arm cmd id.
 
     "stowed" closes the gripper first, then stows. "talk" = ready pose.
@@ -213,13 +213,14 @@ def send_arm_pose(cmd_client, pose: str, walk_variant: str = None):
     candidate also closes the claw first, like "stowed".
     """
     from bosdyn.client.robot_command import RobotCommandBuilder
+    kw = {"timeout": rpc_timeout} if rpc_timeout else {}
     if pose == "stowed" or (pose == "walk" and (walk_variant or WALK_POSE) == "stow"):
-        cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0))
-        return cmd_client.robot_command(RobotCommandBuilder.arm_stow_command())
+        cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0), **kw)
+        return cmd_client.robot_command(RobotCommandBuilder.arm_stow_command(), **kw)
     if pose == "talk":
-        return cmd_client.robot_command(RobotCommandBuilder.arm_ready_command())
+        return cmd_client.robot_command(RobotCommandBuilder.arm_ready_command(), **kw)
     if pose == "walk":
-        return cmd_client.robot_command(walk_pose_command(walk_variant))
+        return cmd_client.robot_command(walk_pose_command(walk_variant), **kw)
     raise ValueError(f"unknown arm pose: {pose!r}")
 
 
