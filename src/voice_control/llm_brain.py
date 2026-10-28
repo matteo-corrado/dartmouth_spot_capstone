@@ -212,7 +212,7 @@ User: "Switch to your premium voice" / "Use elevenlabs"
 #      the demo and validate behind the existing `tour` action first.
 # ---------------------------------------------------------------------------
 _KNOWLEDGE_DIR = Path(__file__).parent / "knowledge"
-_KNOWLEDGE_FILES = ["thayer_knowledge.md", "tour_route.md"]
+_KNOWLEDGE_FILES = ["event_knowledge.md", "thayer_knowledge.md", "tour_route.md"]
 
 
 def _load_knowledge_packs() -> str:
@@ -227,7 +227,18 @@ def _load_knowledge_packs() -> str:
         except Exception as e:
             print(f"[Brain] Failed to load knowledge pack {path}: {e}")
             continue
-        chunks.append(f"=== KNOWLEDGE PACK: {name} ===\n{text}")
+        header = f"=== KNOWLEDGE PACK: {name} ==="
+        if name == "event_knowledge.md":
+            # Drop unfilled template slots; skip the pack if nothing real remains.
+            lines = [ln for ln in text.splitlines() if "FILL IN" not in ln]
+            if not any(ln.strip() and not ln.lstrip().startswith("#") for ln in lines):
+                continue
+            text = "\n".join(lines).strip()
+            header += (
+                "\nPRIMARY CONTEXT: you are at the event described below; "
+                "prefer this over tour material."
+            )
+        chunks.append(f"{header}\n{text}")
     if not chunks:
         return ""
     return "\n\n".join(chunks)

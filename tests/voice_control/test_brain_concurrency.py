@@ -39,7 +39,9 @@ class _FakeBackend:
         return '{"actions": [], "response": "ok"}'
 
 
-def _brain(monkeypatch):
+def _brain(monkeypatch, tmp_path):
+    from src.voice_control.chatbot import conversation_log
+    monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
     fake = _FakeBackend()
     monkeypatch.setattr(llm_brain, "_BACKEND", fake)
     brain = LLMBrain()
@@ -47,8 +49,8 @@ def _brain(monkeypatch):
     return brain, fake
 
 
-def test_warm_up_async_does_not_stack_threads(monkeypatch):
-    brain, fake = _brain(monkeypatch)
+def test_warm_up_async_does_not_stack_threads(monkeypatch, tmp_path):
+    brain, fake = _brain(monkeypatch, tmp_path)
     # Fire many rapid persona-switch warm-ups in a tight loop.
     for _ in range(8):
         brain.warm_up_async()
@@ -59,8 +61,8 @@ def test_warm_up_async_does_not_stack_threads(monkeypatch):
     assert fake.calls == 1
 
 
-def test_process_and_warm_up_never_run_concurrently(monkeypatch):
-    brain, fake = _brain(monkeypatch)
+def test_process_and_warm_up_never_run_concurrently(monkeypatch, tmp_path):
+    brain, fake = _brain(monkeypatch, tmp_path)
 
     def run_process():
         brain.process("walk forward", {})
@@ -75,3 +77,23 @@ def test_process_and_warm_up_never_run_concurrently(monkeypatch):
         t.join(timeout=3.0)
     # The single-slot server is never hit by two callers at once.
     assert fake.max_concurrent == 1
+
+
+def test_brain_construction_does_not_touch_real_logs(monkeypatch, tmp_path):
+    from src.voice_control.chatbot import conversation_log
+    real = conversation_log.DEFAULT_LOG_DIR
+    assert real.parts[-2:] == ("logs", "conversations")
+    before = sorted(real.glob("*.jsonl")) if real.exists() else []
+    brain, _ = _brain(monkeypatch, tmp_path)
+    assert brain._conversation_log.log_dir == tmp_path / "conversations"
+    after = sorted(real.glob("*.jsonl")) if real.exists() else []
+    assert before == after
+
+
+def test_no_transcript_log_writes_null(tmp_path):
+    import json
+    from src.voice_control.chatbot.conversation_log import ConversationLog
+    log = ConversationLog(tmp_path, store_transcript=False)
+    log.log_turn("secret", "hi", [], "p", "kokoro", "v", {})
+    rec = json.loads(next(tmp_path.glob("*.jsonl")).read_text())
+    assert rec["transcript"] is None
