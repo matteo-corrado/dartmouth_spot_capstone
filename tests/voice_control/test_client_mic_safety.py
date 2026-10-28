@@ -275,3 +275,17 @@ def test_raw_transcript_checked_first(monkeypatch):
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True)
     assert seen[0] == "Stop. Now."
     cm._abort_chain.clear()
+
+
+def test_halt_survives_hush_thread_start_failure(monkeypatch):
+    import src.voice_control.client_mic as cm
+
+    class Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(cm.threading, "Thread", Boom)
+    cm._start_hush()  # must not raise

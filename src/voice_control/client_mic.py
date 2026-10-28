@@ -516,8 +516,13 @@ def _on_safety_kw(kw: str) -> None:
 
 
 def _start_hush() -> None:
-    """Cut current speech on a daemon thread (never blocks the caller)."""
-    threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
+    """Cut current speech on a daemon thread (never blocks or breaks the caller).
+
+    Must never raise: callers send the halt right after this."""
+    try:
+        threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
+    except Exception as e:  # noqa: BLE001 - a failed hush must not lose the halt
+        print(f"[Safety] hush thread failed to start: {e}")
 
 
 def _mark_safety() -> None:
