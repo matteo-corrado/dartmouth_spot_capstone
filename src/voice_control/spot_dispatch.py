@@ -909,6 +909,44 @@ def do_add_persona(params: dict, brain) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Gaze toward the locked speaker (Task 19)
+# ---------------------------------------------------------------------------
+GAZE_MAX_LINEAR_VEL = 0.3   # m/s
+GAZE_MAX_ANGULAR_VEL = 1.0  # rad/s
+
+
+def gaze_at_bearing(body_deg: float | None) -> bool:
+    """Point the gripper toward a body-frame bearing (0 = ahead, +90 = left).
+
+    Only when the arm is in the "talk" pose and Spot is not walking or running
+    a routine. None -> back to the talk pose. Bearings behind (>120 deg) are
+    ignored. Non-blocking; never brings up a session; never raises.
+    """
+    sess = _spot_session
+    if sess is None or _arm_pose != "talk" or is_navigating():
+        return False
+    try:
+        cmd_client = sess["cmd"]
+        if body_deg is None:
+            return _arm_send(cmd_client, "talk", timeout_s=0, require_pose="talk")
+        from src.voice_control.gaze import gaze_target
+        target = gaze_target(float(body_deg))
+        if target is None:
+            return False
+        x, y, z = target
+        with _arm_lock:
+            if _arm_pose != "talk" or is_navigating():
+                return False
+            cmd_client.robot_command(RobotCommandBuilder.arm_gaze_command(
+                x, y, z, "body",
+                max_linear_vel=GAZE_MAX_LINEAR_VEL, max_angular_vel=GAZE_MAX_ANGULAR_VEL))
+        return True
+    except Exception as e:
+        print(f"[Spot] gaze_at_bearing failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Emotes / dances (Task 15)
 # ---------------------------------------------------------------------------
 _last_routine = None  # last routine run, so "dance again" never repeats it
