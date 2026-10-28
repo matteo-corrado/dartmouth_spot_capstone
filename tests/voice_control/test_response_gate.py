@@ -46,3 +46,12 @@ def test_no_pending_reopen_time():
 
 def test_delay_is_half_second():
     assert RESPONSE_REOPEN_DELAY_S == 0.5
+
+
+def test_reopen_uses_tuned_delay():
+    assert should_reopen_mic(True, reopen_at=10.0 + 0.2, now=10.25) is True
+
+
+def test_reopen_delay_comes_from_tuning():
+    from src.voice_control.tuning import get_tuning
+    assert RESPONSE_REOPEN_DELAY_S == get_tuning().reopen_delay_s

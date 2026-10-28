@@ -91,8 +91,11 @@ from spot_tts import SpotTTS
 from audio_feedback import beep
 from latency import init_recorder, get_recorder
 from src.voice_control import startup_status  # noqa: F401 — available for later use
-from src.voice_control.response_gate import (
-    should_arm_reopen, should_reopen_mic, RESPONSE_REOPEN_DELAY_S)
+from src.voice_control.response_gate import should_arm_reopen, should_reopen_mic
+from src.voice_control.tuning import get_tuning
+from src.voice_control.barge_in import should_reset_after_player
+
+_tuning = get_tuning()
 from src.voice_control.voice_state import VoiceState
 from src.voice_control.state_feedback import chime_for
 
@@ -201,10 +204,9 @@ _state_leds = None     # StateLeds instance (set in main); None = LEDs off
 
 # Cooldown after the player goes idle: the OS audio buffer keeps draining
 # for ~tens of ms after stream.write() returns, so the mic would otherwise
-# pick up the tail of Spot's own utterance. 150ms is enough headroom on
-# the USB speaker; raise it if you ever see TTS-tail bleed into ASR.
-SPEAKER_TAIL_COOLDOWN_S = 0.15
-_player_last_busy_at = 0.0  # monotonic timestamp of the most recent busy frame
+# pick up the tail of Spot's own utterance. Length = Tuning.speaker_tail_s,
+# measured from the last frame where Spot's SPEECH was busy.
+_player_last_busy_at = 0.0  # monotonic timestamp of the most recent speech-busy frame
 
 # Operator control (spotctl, Task 4). Plain module globals: the HTTP threads
 # read/flip them without locks so a slow request can never delay a stop.
@@ -229,6 +231,16 @@ _MOTION_COMMANDS = ("stop", "freeze", "sit", "stand", "stow")
 # motivated the refactor.
 
 
+def _speech_busy() -> bool:
+    """True while Spot's own SPEECH is queued/playing. Chimes (beep: labels)
+    don't count, so a turn cue never mutes the mic (Task 8)."""
+    p = _audio_player
+    if p is None:
+        return False
+    fn = getattr(p, "is_speech_busy", None) or p.is_busy  # pre-Gate-2 player lacks it
+    return fn()
+
+
 def audio_callback(indata, frames, time_info, status):
     """Sounddevice callback - converts stereo to mono PCM16.
 
@@ -243,10 +255,10 @@ def audio_callback(indata, frames, time_info, status):
     now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
     if _operator_muted:
         return  # operator mute (spotctl mute) — discard everything
-    if _mic_gated or (_audio_player is not None and _audio_player.is_busy()):
+    if _mic_gated or _speech_busy():
         _player_last_busy_at = now
-        return  # discard frame — gated for a response, or speaker active
-    if now - _player_last_busy_at < SPEAKER_TAIL_COOLDOWN_S:
+        return  # discard frame — gated for a response, or Spot is talking
+    if now - _player_last_busy_at < _tuning.speaker_tail_s:
         return  # cooldown — speaker buffer still draining
     if status:
         print(f"[Audio: {status}]")
@@ -1081,8 +1093,7 @@ def main():
             # Stage 2F P0a: on the player busy->idle edge after a TTS response,
             # reset streaming-detector state so the speaker tail + stale VAD/KWS
             # decisions can't corrupt the next detection. Never touches `state`.
-            from src.voice_control.barge_in import should_reset_after_player
-            busy = _audio_player.is_busy() if _audio_player is not None else False
+            busy = _speech_busy()  # chimes don't hold the gate or count as a response
             if should_reset_after_player(response_pending, player_was_busy, busy):
                 vad.reset()
                 if wake_detector:
@@ -1107,7 +1118,7 @@ def main():
                 if busy:
                     _mic_reopen_at = None  # still speaking/chiming — hold the gate
                 elif should_arm_reopen(_mic_gated, _mic_reopen_at, busy):
-                    _mic_reopen_at = now_m + RESPONSE_REOPEN_DELAY_S
+                    _mic_reopen_at = now_m + _tuning.reopen_delay_s
                 elif should_reopen_mic(_mic_gated, _mic_reopen_at, now_m):
                     _mic_gated = False
                     _mic_reopen_at = None
@@ -1115,11 +1126,15 @@ def main():
                     vad.reset()
                     if wake_detector:
                         wake_detector.reset()
-                    _drain_audio_queue(keep_tail=False)  # drop the settle-window audio
+                    # Keep no settle-window audio; pre-roll restarts on the
+                    # very next frame so a quick reply's first word is kept.
+                    _drain_audio_queue(keep_tail=False)
+                    preroll_buffer.clear()
                     state = VoiceState.LISTENING
                     listening_start_time = time.time()
-                    if gate_announced:
-                        _enter_state(VoiceState.LISTENING)  # ready chime + green
+                    # Always cue: the listen chime fires as the mic opens
+                    # (beeps no longer mute the mic, so nothing is lost).
+                    _enter_state(VoiceState.LISTENING)
                     gate_announced = False
                     print(">>> Listening for follow-up (no wake needed)...")
             # Get audio from queue. Short timeout so we still cycle (and stay

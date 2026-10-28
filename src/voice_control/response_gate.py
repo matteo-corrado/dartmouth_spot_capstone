@@ -9,9 +9,12 @@ actual drain/reset. No audio, no threads, no VoiceState.
 """
 from __future__ import annotations
 
+from src.voice_control.tuning import get_tuning
+
 # Seconds the mic stays gated after playback goes idle, before re-listening.
 # Covers the OS audio-buffer drain + room echo of Spot's own voice.
-RESPONSE_REOPEN_DELAY_S = 0.5
+# Single source: Tuning.reopen_delay_s (config/tuning.yaml).
+RESPONSE_REOPEN_DELAY_S = get_tuning().reopen_delay_s
 
 
 def should_arm_reopen(gated: bool, reopen_at, player_busy: bool) -> bool:
