@@ -62,21 +62,32 @@ LED_EFFECT_RING = 5
 RING_LEDS = 12
 RING_BRIGHTNESS = 255
 
-COLOR_IDLE = 0x202020       # dim white
-COLOR_LISTEN = 0x00C000     # green
-COLOR_THINK = 0xC06000      # amber
+COLOR_IDLE = 0x595959       # white scaled 0.35, steady
+COLOR_LISTEN = 0x00FF00     # green
+COLOR_THINK = 0xFFB000      # light amber
 COLOR_SPEAK = 0x0040FF      # blue
-COLOR_MUTED = 0xC00000      # red
+COLOR_MUTED = 0xFF0000      # red
+SWEEP_FRAME_S = 0.07
+BREATHE_FRAME_S = 0.04
 
 
 @dataclass(frozen=True)
 class RingSpec:
-    """What the mic ring should show. ``ring`` (12 colours) is only used by
-    the ring effect; ``color`` by breath/solid."""
+    """What the mic ring should show. All states use the per-LED ring effect.
+    ``ring`` is the static 12-colour frame (fallback for animated specs);
+    ``frames`` (if set) is a looping animation at ``frame_s`` per frame.
+    ``effect``/``color``/``brightness`` are kept for compatibility."""
     effect: int
     color: Optional[int]
     ring: Optional[list]
     brightness: int
+    frames: Optional[list] = None
+    frame_s: float = 0.07
+
+
+def scale_color(color: int, f: float) -> int:
+    r, g, b = (color >> 16) & 255, (color >> 8) & 255, color & 255
+    return (int(r * f) << 16) | (int(g * f) << 8) | int(b * f)
 
 
 def _finite(deg) -> bool:
@@ -106,21 +117,51 @@ def ring_toward(deg: float, color: int, width: int = 3,
     return ring
 
 
+def sweep_frames(deg, color, ring_offset_leds: int = 0, reverse: bool = False) -> list:
+    """Car-indicator fill toward ``deg`` (mic frame): 7 growing frames, one
+    all-lit frame, two all-off frames. Non-finite ``deg`` -> [solid colour]."""
+    if not _finite(deg):
+        return [[color] * RING_LEDS]
+    step = round(deg / 30.0) * (-1 if reverse else 1)
+    target = (step + ring_offset_leds) % RING_LEDS
+
+    def dist(i):
+        d = abs(i - target) % RING_LEDS
+        return min(d, RING_LEDS - d)
+
+    frames = [[color if dist(i) >= 6 - k else 0 for i in range(RING_LEDS)]
+              for k in range(7)]
+    return frames + [[color] * RING_LEDS] + [[0] * RING_LEDS] * 2
+
+
+def breathe_frames(color: int, lo: float = 0.2) -> list:
+    """22 all-LED frames ramping lo -> 1.0 -> lo."""
+    seq = [lo + (1 - lo) * x / 10 for x in range(11)]
+    return [[scale_color(color, f)] * RING_LEDS for f in seq + seq[::-1]]
+
+
 def ring_for(state: VoiceState, lock_deg: Optional[float], muted: bool,
              ring_offset_leds: int = 0, reverse: bool = False) -> RingSpec:
     """Ring spec for a voice state. Muted (solid red) overrides everything.
     ``lock_deg`` is in the MIC frame (XVF3800 DoA, LED i at i*30 deg)."""
+    def solid(color):
+        return RingSpec(LED_EFFECT_RING, color, [color] * RING_LEDS, RING_BRIGHTNESS)
+
     if muted:
-        return RingSpec(LED_EFFECT_SOLID, COLOR_MUTED, None, RING_BRIGHTNESS)
+        return solid(COLOR_MUTED)
     if state == VoiceState.LISTENING:
         if not _finite(lock_deg):   # None / NaN / inf -> solid green
-            return RingSpec(LED_EFFECT_SOLID, COLOR_LISTEN, None, RING_BRIGHTNESS)
-        return RingSpec(LED_EFFECT_RING, None,
+            return solid(COLOR_LISTEN)
+        return RingSpec(LED_EFFECT_RING, COLOR_LISTEN,
                         ring_toward(lock_deg, COLOR_LISTEN,
                                     ring_offset_leds=ring_offset_leds, reverse=reverse),
-                        RING_BRIGHTNESS)
+                        RING_BRIGHTNESS,
+                        sweep_frames(lock_deg, COLOR_LISTEN, ring_offset_leds, reverse),
+                        SWEEP_FRAME_S)
     if state == VoiceState.THINKING:
-        return RingSpec(LED_EFFECT_BREATH, COLOR_THINK, None, RING_BRIGHTNESS)
+        return RingSpec(LED_EFFECT_RING, COLOR_THINK,
+                        [scale_color(COLOR_THINK, 0.6)] * RING_LEDS, RING_BRIGHTNESS,
+                        breathe_frames(COLOR_THINK), BREATHE_FRAME_S)
     if state == VoiceState.RESPONDING:
-        return RingSpec(LED_EFFECT_SOLID, COLOR_SPEAK, None, RING_BRIGHTNESS)
-    return RingSpec(LED_EFFECT_BREATH, COLOR_IDLE, None, RING_BRIGHTNESS)
+        return solid(COLOR_SPEAK)
+    return solid(COLOR_IDLE)

@@ -50,9 +50,15 @@ def build_keyword_lines(phrases, tokenize, score=KWS_SCORE, threshold=KWS_THRESH
 def _bpe_tokenizer():
     import sherpa_onnx
     def tokenize(phrase):
-        return sherpa_onnx.text2token(
-            [phrase], tokens=str(MODEL_DIR / "tokens.txt"),
-            tokens_type="bpe", bpe_model=str(MODEL_DIR / "bpe.model"))[0]
+        try:
+            return sherpa_onnx.text2token(
+                [phrase], tokens=str(MODEL_DIR / "tokens.txt"),
+                tokens_type="bpe", bpe_model=str(MODEL_DIR / "bpe.model"))[0]
+        except ModuleNotFoundError:
+            # this sherpa_onnx imports pypinyin unconditionally; plain BPE needs only sentencepiece
+            import sentencepiece as spm
+            sp = spm.SentencePieceProcessor(model_file=str(MODEL_DIR / "bpe.model"))
+            return sp.encode(phrase.upper(), out_type=str)
     return tokenize
 
 
