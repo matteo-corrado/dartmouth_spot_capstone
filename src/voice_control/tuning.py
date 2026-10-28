@@ -26,12 +26,15 @@ class Tuning:
     speaker_tail_s: float = 0.15
     kws_score: float = 1.5
     kws_threshold: float = 0.05
-    kws_peak_target: float = 0.5
+    kws_peak_target: float = 0.9  # = wake/sherpa_onnx TARGET_PEAK (authoritative)
     lock_window_deg: float = 35.0
     lock_timeout_s: float = 20.0
     lock_nudge: float = 0.3
-    mic_yaw_offset_deg: float = 0.0
-    mic_yaw_sign: int = 1
+    mic_yaw_offset_deg: float = 179.0  # measured on the robot 2026-10-28
+    mic_yaw_sign: int = -1             # measured on the robot 2026-10-28
+    ring_offset_leds: int = 6          # measured on the device 2026-10-28 (LED0 ~12:30 from front)
+    ring_reverse: bool = False
+    ring_max_hz: float = 10.0
     beam_steering: bool = False
     voiceprint_enabled: bool = False
     voiceprint_threshold: float = 0.5
@@ -68,6 +71,9 @@ def load_tuning(path: Path | None = None) -> Tuning:
             log.warning("tuning: unknown key %r in %s ignored", key, path)
             continue
         kwargs[key] = _cast(value, types[key])
+    if kwargs.get("mic_yaw_sign", 1) not in (-1, 1):
+        log.warning("tuning: mic_yaw_sign must be -1 or 1, got %r; using 1", kwargs["mic_yaw_sign"])
+        kwargs["mic_yaw_sign"] = 1
     return Tuning(**kwargs)
 
 

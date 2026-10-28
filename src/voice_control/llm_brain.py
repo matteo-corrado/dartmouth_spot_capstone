@@ -131,6 +131,7 @@ RULES:
 - For chained requests ("do X then Y"), list multiple actions in order — the robot executes them sequentially.
 - For multi-location trips ("go to A then B then C"), prefer a SINGLE tour action with a locations list over chaining multiple go_to actions.
 - ALWAYS include a "response" — a short spoken reply.
+- NEVER say the words "stop", "halt" or "freeze" in your spoken response (not even "next stop" or "bus stop"): your own voice saying them triggers your emergency halt. Say "next point", "next spot" or "pause" instead. This rule is about what you SAY — still use the stop / freeze / estop ACTIONS whenever the user asks you to stop.
 - For battery_status, status, check_obstacles, list_locations and list_maps, reply ONLY "Let me check." — the robot speaks the real result itself once the data arrives. Never guess battery levels, obstacles, or location lists.
 - Location names must be lowercase with underscores.
 - IMPORTANT: Check "saved_locations" in the robot state. If the user says "go to X" and X matches a saved location name, ALWAYS use go_to (map navigation). Only use go_to_object for objects NOT in saved_locations (e.g. "go to the red chair" when "red_chair" is not a saved location).
