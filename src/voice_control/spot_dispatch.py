@@ -479,10 +479,10 @@ def ensure_spot_session(map_path=None):
     """
     global _spot_session, _session_context
 
+    if _closing:  # checked first: nothing may use the live session during close
+        raise RuntimeError("Spot session is shutting down; not bringing it up")
     if _spot_session is not None:
         return _spot_session
-    if _closing:
-        raise RuntimeError("Spot session is shutting down; not bringing it up")
     with _session_lock:  # HTTP threads + main loop must not both bring it up
         if _spot_session is not None:
             return _spot_session
@@ -1475,8 +1475,13 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # (it is an ABORTING_INTENT): the robot is stopped first, then the
             # nav cancelled, then the arm stowed. Fails safe.
             if is_navigating():
+                was_emote = _nav_mode == "emote"
                 _send_stop(cmd_client)
                 _cancel_nav()
+                if was_emote:
+                    # Re-stop under _arm_lock so a choreography request already
+                    # in flight can't start after this stop.
+                    _stow_now(cmd_client, resend_stop=True)
             return _handle_disable_mouth(params, session)
 
         if name == "stop":

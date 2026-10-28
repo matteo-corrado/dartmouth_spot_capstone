@@ -241,6 +241,26 @@ def test_stale_completed_status_not_trusted(env):
     assert "stop" in env.cmd.kinds() and d.get_arm_pose() == "stowed"  # untrusted: no restore
 
 
+def test_stow_mid_dance_re_stops(env):
+    env.choreo.block = threading.Event()
+    d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
+    _wait_executed(env)
+    d.dispatch_intent({"intent": "stow", "params": {}})
+    _join()
+    k = env.cmd.kinds()
+    i = k.index("stop")
+    assert k[i:i + 2] == ["stop", "stop"]  # first stop, then re-stop after the join
+    assert not d.is_navigating() and d.get_arm_pose() == "stowed"
+
+
+def test_closing_blocks_live_session_use(env, monkeypatch):
+    monkeypatch.setattr(d, "_closing", True)
+    assert d.dispatch_intent({"intent": "stand", "params": {}}) is False
+    assert env.cmd.kinds() == []
+    with pytest.raises(RuntimeError):
+        d.ensure_spot_session()
+
+
 def test_orphan_emote_thread_never_starts_routine(env):
     stale = d._safety_gen - 1  # a stop landed after the dispatch was checked
     d._emote_routine(env.sess, "tail_wag", "talk", threading.Event(), None, stale)
