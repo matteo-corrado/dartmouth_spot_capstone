@@ -22,6 +22,7 @@ ngccli_arm64.zip
 # Model weights (downloaded by setup scripts or ultralytics)
 models/tts/
 models/kws/
+models/speaker/
 yolov8*.pt
 
 # Spot logs (symlinked to SSD as of Stage 1.5)
