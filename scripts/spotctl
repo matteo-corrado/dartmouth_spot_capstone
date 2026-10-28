@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# spotctl — thin launcher for the operator control CLI. Derives its own location so it works in any worktree.
+DIR="$(dirname "$(readlink -f "$0")")"
+PY="$DIR/../spot-env/bin/python"
+[ -x "$PY" ] || PY="$(command -v python3)"
+exec "$PY" "$DIR/spotctl.py" "$@"
