@@ -20,7 +20,7 @@ class ConversationLog:
         # Privacy: store_transcript=False (or env SPOT_NO_TRANSCRIPT_LOG=1,
         # set by --no-transcript-log) writes transcript: null.
         if store_transcript is None:
-            store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "") not in ("1", "true", "yes")
+            store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "").strip().lower() not in ("1", "true", "yes", "on")
         self.store_transcript = store_transcript
         self.log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
         self.log_dir.mkdir(parents=True, exist_ok=True)

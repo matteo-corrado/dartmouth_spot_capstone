@@ -20,8 +20,7 @@ Anything left as [FILL IN] must be treated as unknown: say you don't know rather
 - [FILL IN name] - [FILL IN role]
 
 ## How Spot works
-Plain-language pipeline (microphone, speech recognition, language model, robot actions, speech out):
-[FILL IN]
+Plain-language pipeline (microphone, speech recognition, language model, robot actions, speech out): [FILL IN]
 
 ## FAQs
 Q1: [FILL IN]

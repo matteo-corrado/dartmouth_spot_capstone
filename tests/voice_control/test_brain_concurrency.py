@@ -83,10 +83,11 @@ def test_brain_construction_does_not_touch_real_logs(monkeypatch, tmp_path):
     from src.voice_control.chatbot import conversation_log
     real = conversation_log.DEFAULT_LOG_DIR
     assert real.parts[-2:] == ("logs", "conversations")
-    existed = real.exists()
-    _brain(monkeypatch, tmp_path)
-    assert (tmp_path / "conversations").exists()
-    assert real.exists() == existed
+    before = sorted(real.glob("*.jsonl")) if real.exists() else []
+    brain, _ = _brain(monkeypatch, tmp_path)
+    assert brain._conversation_log.log_dir == tmp_path / "conversations"
+    after = sorted(real.glob("*.jsonl")) if real.exists() else []
+    assert before == after
 
 
 def test_no_transcript_log_writes_null(tmp_path):

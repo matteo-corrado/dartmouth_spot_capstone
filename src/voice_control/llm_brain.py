@@ -229,6 +229,11 @@ def _load_knowledge_packs() -> str:
             continue
         header = f"=== KNOWLEDGE PACK: {name} ==="
         if name == "event_knowledge.md":
+            # Drop unfilled template slots; skip the pack if nothing real remains.
+            lines = [ln for ln in text.splitlines() if "FILL IN" not in ln]
+            if not any(ln.strip() and not ln.lstrip().startswith("#") for ln in lines):
+                continue
+            text = "\n".join(lines).strip()
             header += (
                 "\nPRIMARY CONTEXT: you are at the event described below; "
                 "prefer this over tour material."
