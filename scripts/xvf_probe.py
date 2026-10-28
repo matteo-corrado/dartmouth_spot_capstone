@@ -212,16 +212,52 @@ def cmd_leds(mic):
         mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
 
 
+def cmd_show(mic):
+    """Step through the real turn signals (state_feedback.ring_for), Enter to advance."""
+    from src.voice_control.state_feedback import ring_for
+    from src.voice_control.voice_state import VoiceState as S
+    from src.voice_control.tuning import get_tuning
+    t = get_tuning()
+    # measured 2026-10-28: offset 6, not reversed (used until Tuning carries the fields)
+    off = getattr(t, "ring_offset_leds", 6)
+    rev = getattr(t, "ring_reverse", False)
+    # mic-frame angles measured with `clap` (front 179, left 89, back 356, right 296)
+    steps = [
+        ("IDLE / waiting for wake phrase (breath, dim white)", S.WAKE_WORD, None, False),
+        ("LISTENING, speaker at Spot's FRONT (green arc)", S.LISTENING, 179.0, False),
+        ("LISTENING, speaker at Spot's LEFT", S.LISTENING, 89.0, False),
+        ("LISTENING, speaker BEHIND Spot", S.LISTENING, 356.0, False),
+        ("LISTENING, speaker at Spot's RIGHT", S.LISTENING, 273.0, False),
+        ("LISTENING, no direction known (solid green)", S.LISTENING, None, False),
+        ("THINKING (breath, amber)", S.THINKING, None, False),
+        ("SPEAKING (solid blue)", S.RESPONDING, None, False),
+        ("MUTED by operator (solid red)", S.WAKE_WORD, None, True),
+    ]
+    try:
+        for label, state, deg, muted in steps:
+            spec = ring_for(state, deg, muted, ring_offset_leds=off, reverse=rev)
+            mic.set_led_effect(spec.effect)
+            if spec.ring is not None:
+                mic.set_ring(spec.ring)
+            elif spec.color is not None:
+                mic.set_led_color(spec.color)
+            input(f"{label}  -- check from front / side / 3 m, then Enter ")
+        return 0
+    finally:
+        mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=("live", "clap", "leds", "index"))
+    ap.add_argument("mode", choices=("live", "clap", "leds", "index", "show"))
     args = ap.parse_args()
     mic = MicArray.open()
     if mic is None:
         print("XVF3800 (2886:001a) not found or pyusb missing")
         return 1
     try:
-        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds, "index": cmd_index}[args.mode](mic) or 0
+        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds, "index": cmd_index,
+                "show": cmd_show}[args.mode](mic) or 0
     finally:
         mic.close()
 
