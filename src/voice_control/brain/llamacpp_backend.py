@@ -53,7 +53,9 @@ class LlamaCppBackend:
         """True if llama-server answers its /health endpoint."""
         try:
             r = requests.get(f"{self.url}/health", timeout=3)
-            if r.status_code != 200:
+            if r.status_code == 503:
+                print("[Brain] llama-server still loading the model (503)")
+            elif r.status_code != 200:
                 print(f"[Brain] llama-server /health returned {r.status_code}")
             return r.status_code == 200
         except Exception as e:

@@ -116,11 +116,10 @@ AVAILABLE ACTIONS:
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
-- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: see KNOWN PERSONAS at the end of this prompt. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
 - enable_mouth: Turn on your gripper "mouth" that moves while you talk. No params. Use for "use your mouth", "talk with your mouth".
 - disable_mouth: Turn off the gripper mouth. No params. Use for "stop moving your mouth", "close your mouth".
-- emote: Perform a fun built-in routine (dance, bow, wag, etc.). Params: {"name": "<routine name>"}. Use only a routine name from the EMOTES list below.
-- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
+{{EMOTE_ACTION}}- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
 - add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
   • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
   • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
@@ -196,14 +195,41 @@ User: "Switch to your premium voice" / "Use elevenlabs"
 
 
 # Emote catalogue (static, so it stays inside the cached prompt prefix).
-# emotes.py lands in a parallel lane; until then the section is omitted.
+# Advertised ONLY when the grammar can emit "emote" (else the LLM would be
+# told about an action it can never produce) AND emotes.py is importable.
+_GRAMMAR_PATH = Path(__file__).parent / "grammar" / "spot_action.gbnf"
+_EMOTE_ACTION_LINE = (
+    '- emote: Perform a fun built-in routine (dance, bow, wag, etc.). '
+    'Params: {"name": "<routine name>"}. Use only a routine name from the '
+    'EMOTES list below.\n'
+)
+
+
+def _emote_prompt_parts(grammar_text: str, section: Optional[str]) -> tuple:
+    """(action bullet, EMOTES section) — both empty unless the grammar
+    mentions "emote" and a non-empty prompt_section() is available."""
+    if "emote" not in grammar_text or not section or not section.strip():
+        return "", ""
+    return _EMOTE_ACTION_LINE, section.strip()
+
+
+def _load_emote_section() -> Optional[str]:
+    try:
+        from src.voice_control.emotes import prompt_section
+        return prompt_section()
+    except ImportError:
+        return None
+
+
 try:
-    from src.voice_control.emotes import prompt_section as _emote_prompt_section
-    _EMOTES_TEXT = _emote_prompt_section().strip()
-except ImportError:
-    _EMOTES_TEXT = ""
+    _GRAMMAR_TEXT = _GRAMMAR_PATH.read_text(encoding="utf-8")
+except OSError:
+    _GRAMMAR_TEXT = ""
+_EMOTE_ACTION, _EMOTES_TEXT = _emote_prompt_parts(_GRAMMAR_TEXT, _load_emote_section())
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{{EMOTE_ACTION}}", _EMOTE_ACTION)
 if _EMOTES_TEXT:
-    SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\nEMOTES:\n" + _EMOTES_TEXT
+    # prompt_section() already starts with its own "EMOTES:" header.
+    SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + _EMOTES_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +354,20 @@ class LLMBrain:
         self._available = ok or None
         return ok
 
+    def wait_available(self, timeout_s: float = 90.0, poll_s: float = 2.0) -> bool:
+        """Cold boot: poll is_available() until the backend answers (llama-
+        server returns 503 while loading, or refuses connections before it
+        is up). Returns True as soon as it is available, False on timeout."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if self.is_available():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print(f"[Brain] backend still unavailable after {timeout_s:.0f}s")
+                return False
+            time.sleep(min(poll_s, remaining))
+
     def warm_up(self):
         """Send a trivial prompt through the ACTIVE backend to prime KV cache.
 
@@ -418,6 +458,9 @@ class LLMBrain:
                     max_tokens=60,
                     timeout=10.0,
                 )
+            # That call used a different system prompt and evicted the main
+            # prompt's KV cache on the single-slot server: re-prime it.
+            self.warm_up_async()
             try:
                 desc = str(json.loads(raw).get("response", "")).strip()
             except (json.JSONDecodeError, AttributeError):
@@ -442,8 +485,9 @@ class LLMBrain:
         # Dynamic persona-list — pre-warmed + runtime-added personas all appear as "known"
         known = ", ".join(sorted(self._persona_registry.keys()))
         system_content = (
-            f"{SYSTEM_PROMPT.replace('{{KNOWN_PERSONAS}}', known)}\n\n"
+            f"{SYSTEM_PROMPT}\n\n"
             f"{persona.prompt_prefix}\n\n"
+            f"KNOWN PERSONAS (use set_persona for these, add_persona for anything else): {known}\n\n"
             f"Current robot state:\n{state_lines}"
         )
         messages = [{"role": "system", "content": system_content}]
@@ -682,9 +726,10 @@ if __name__ == "__main__":
     brain = LLMBrain(model=model)
 
     if not brain.is_available():
-        print(f"\nOllama is not running or model '{model}' is not available.")
-        print(f"1. Start Ollama:  sudo systemctl start ollama")
-        print(f"2. Pull model:    ollama pull {model}")
+        print(f"\nBrain backend not available (SPOT_BRAIN_BACKEND="
+              f"{os.environ.get('SPOT_BRAIN_BACKEND', 'llamacpp')}).")
+        print("llamacpp: sudo systemctl start llama-server  (port 11435)")
+        print(f"ollama:   sudo systemctl start ollama && ollama pull {model}")
         sys.exit(1)
 
     print(f"Using model: {model}")
