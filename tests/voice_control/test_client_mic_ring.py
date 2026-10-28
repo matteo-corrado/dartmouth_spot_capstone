@@ -84,7 +84,8 @@ def test_ring_write_error_never_raises(monkeypatch):
 
 def test_reject_flashes_red_then_restores(monkeypatch):
     mic = FakeMic()
-    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False: Spec(5, None, [7] * 12, 255))
+    _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False:
+           Spec(cm.LED_SOLID, cm.REJECT_COLOR, None, 255) if m else Spec(5, None, [7] * 12, 255))
     started = []
 
     class T:

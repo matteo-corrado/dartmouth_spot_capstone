@@ -427,6 +427,118 @@ def _speech_busy() -> bool:
     return fn()
 
 
+# Always-on safety KWS (stop/freeze/estop). audio_callback feeds _safety_q
+# with every frame before any mute/gate check; a daemon thread is the ONLY
+# owner of the safety detector (the sherpa stream is never shared).
+SAFETY_QUEUE_MAX = 66            # ~2 s of 30 ms frames
+SAFETY_REFRACTORY_S = 1.5        # ignore audio this long after a hit
+_safety_q = queue.Queue(maxsize=SAFETY_QUEUE_MAX)
+_safety_stop = threading.Event()
+_safety_active = False           # True once the safety thread is running
+_SAFETY_LABELS = {"stop": "stop", "halt": "stop", "freeze": "freeze",
+                  "estop": "estop", "e stop": "estop", "e-stop": "estop",
+                  "emergency stop": "estop"}
+
+
+def safety_kws_loop(detector, q, stop_event, on_hit,
+                    refractory_s=SAFETY_REFRACTORY_S, clock=time.monotonic):
+    """Feed frames from `q` to `detector`; call on_hit(kw) per detection.
+    Frames during the refractory window after a hit are dropped. Returns
+    within ~0.1 s of stop_event being set."""
+    last_hit = None
+    while not stop_event.is_set():
+        try:
+            pcm = q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        if last_hit is not None and clock() - last_hit < refractory_s:
+            continue
+        try:
+            kw = detector.process_frame(pcm)
+        except Exception as e:
+            print(f"[SafetyKWS] detector error: {e}")
+            kw = ""
+        if not kw:
+            continue
+        last_hit = clock()
+        try:
+            on_hit(kw)
+        except Exception as e:
+            print(f"[SafetyKWS] handler error: {type(e).__name__}: {e}")
+        try:
+            detector.reset()
+        except Exception:
+            pass
+
+
+def _safety_intent_for(kw: str):
+    """Intent for a detector label: intent.py's rule, then the fixed label map."""
+    intent = check_safety_command(kw)
+    if intent:
+        return intent
+    name = _SAFETY_LABELS.get(kw.strip().lower())
+    return {"intent": name, "params": {}, "raw": kw} if name else None
+
+
+def _on_safety_kw(kw: str) -> None:
+    """Safety-KWS hit (runs on the safety thread): abort any chain, cut speech,
+    dispatch the halt. Lock-free; works while the main loop is blocked."""
+    intent = _safety_intent_for(kw)
+    if not intent:
+        print(f"[SAFETY-KWS] unmapped label {kw!r} — ignored")
+        return
+    print(f"[SAFETY-KWS] '{kw}' — executing {intent['intent']} immediately")
+    _abort_chain.set()
+    if _audio_player is not None:
+        try:
+            _audio_player.force_reset()  # hush: stop talking now
+        except Exception as e:
+            print(f"[SAFETY-KWS] hush failed: {e}")
+    _dispatch_safety(intent)
+
+
+def _dispatch_safety(intent) -> bool:
+    """Execute a safety intent; dry-run says so plainly (no success beep)."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        print(f"[dry-run] SAFETY would dispatch: {intent['intent']}")
+        return True
+    if execute_on_spot(intent):
+        beep.command_ok()
+        print(">>> SAFETY COMMAND EXECUTED")
+        return True
+    beep.error()
+    print(">>> SAFETY COMMAND FAILED")
+    return False
+
+
+def safety_startup_ok(have_detector: bool, dry_run: bool, allow_missing: bool) -> bool:
+    """Fail closed: on the robot the safety KWS is required unless the
+    operator explicitly passes --allow-no-safety-kws. Dry-run only warns."""
+    if have_detector or dry_run:
+        return True
+    if allow_missing:
+        print("[SafetyKWS] WARNING: running on the robot WITHOUT the always-on safety "
+              "keyword spotter (--allow-no-safety-kws). Spoken stop needs a wake first.")
+        return True
+    print("ERROR: the always-on safety keyword spotter (stop/freeze/estop) failed "
+          "to load, and the robot is reachable. Refusing to start.")
+    print("  Fix: run scripts/setup_safety_kws.py, or pass --allow-no-safety-kws "
+          "to run without it (operator's call), or --dry-run.")
+    return False
+
+
+def _start_safety_thread(detector):
+    """Start the safety-KWS daemon thread; returns it."""
+    global _safety_active
+    _safety_stop.clear()
+    t = threading.Thread(target=safety_kws_loop,
+                         args=(detector, _safety_q, _safety_stop, _on_safety_kw),
+                         name="safety-kws", daemon=True)
+    t.start()
+    _safety_active = True
+    return t
+
+
 def audio_callback(indata, frames, time_info, status):
     """Sounddevice callback - converts stereo to mono PCM16.
 
@@ -439,8 +551,22 @@ def audio_callback(indata, frames, time_info, status):
     """
     global _player_last_busy_at
     now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
+    # Select channel: 0=left (beamformed), 1=right (ASR) for stereo mics like XVF3800
+    if indata.shape[1] >= 2:
+        mono = indata[:, MIC_CHANNEL].astype(np.float32)
+    else:
+        mono = indata[:, 0].astype(np.float32)
+    pcm16 = (mono * 32767).astype(np.int16).tobytes()
+    # Safety tap FIRST: the safety-KWS thread hears every frame in every
+    # state — gated, Spot speaking, operator-muted — so a spoken stop/freeze
+    # always works. (Spot saying "stop" itself may halt it: acceptable.)
+    if _safety_active:
+        try:
+            _safety_q.put_nowait(pcm16)
+        except queue.Full:
+            pass
     if _operator_muted:
-        return  # operator mute (spotctl mute) — discard everything
+        return  # operator mute (spotctl mute) — discard everything else
     if _speech_busy():
         _player_last_busy_at = now
         return  # discard frame — Spot is talking
@@ -453,12 +579,6 @@ def audio_callback(indata, frames, time_info, status):
         return  # cooldown — speaker buffer still draining
     if status:
         print(f"[Audio: {status}]")
-    # Select channel: 0=left (beamformed), 1=right (ASR) for stereo mics like XVF3800
-    if indata.shape[1] >= 2:
-        mono = indata[:, MIC_CHANNEL].astype(np.float32)
-    else:
-        mono = indata[:, 0].astype(np.float32)
-    pcm16 = (mono * 32767).astype(np.int16).tobytes()
     try:
         audio_queue.put_nowait((now, pcm16))  # monotonic stamp (DoA/lock clock)
     except queue.Full:
@@ -772,12 +892,7 @@ def _run_safety(text: str) -> bool:
         return False
     print(f"[SAFETY] {safety['intent']} — executing immediately")
     _abort_chain.set()
-    if execute_on_spot(safety):
-        beep.command_ok()
-        print(">>> SAFETY COMMAND EXECUTED")
-    else:
-        beep.error()
-        print(">>> SAFETY COMMAND FAILED")
+    _dispatch_safety(safety)
     return True
 
 
@@ -864,10 +979,32 @@ _RejectSpec = collections.namedtuple("_RejectSpec", "effect color ring")
 _REJECT_SPEC = _RejectSpec(LED_SOLID, REJECT_COLOR, None)
 
 
+_anim = None  # RingAnimator (owns ring writes + throttling) when available
+
+
+def _make_ring_animator(mic):
+    """RingAnimator(mic, max_hz=30.0) if the module exists; None -> direct writes."""
+    try:
+        from src.voice_control.ring_animator import RingAnimator
+    except ImportError:
+        return None
+    try:
+        return RingAnimator(mic, max_hz=30.0)
+    except Exception as e:
+        print(f"[Indicator] ring animator failed: {e} — direct ring writes")
+        return None
+
+
 def _show_ring(spec) -> None:
-    """The ONE place turn-signal ring writes happen (swap point for a future
-    animator). spec has .effect/.color/.ring; None fields are skipped and each
-    device write is isolated."""
+    """The ONE place turn-signal ring writes happen. With a RingAnimator it
+    hands the spec over (non-blocking); otherwise writes .effect/.color/.ring
+    directly, skipping None fields, each device write isolated."""
+    if _anim is not None:
+        try:
+            _anim.show(spec)
+        except Exception as e:
+            print(f"[Indicator] ring animator show failed: {e}")
+        return
     for fn, val in ((_mic.set_led_effect, spec.effect), (_mic.set_led_color, spec.color),
                     (_mic.set_ring, spec.ring)):
         if val is None:
@@ -886,7 +1023,7 @@ def _update_ring() -> None:
         return
     try:
         now = time.monotonic()
-        if now < _reject_until or not _ring_throttle.allow(now):
+        if now < _reject_until or (_anim is None and not _ring_throttle.allow(now)):
             _ring_pending = True
             return
         _ring_pending = False
@@ -919,7 +1056,13 @@ def _signal_reject():
     if not _mic_usable():
         return
     _reject_until = time.monotonic() + REJECT_FLASH_S
-    _show_ring(_REJECT_SPEC)
+    spec = _REJECT_SPEC
+    if _ring_for is not None:
+        try:  # muted spec == solid red; a real RingSpec for the animator
+            spec = _ring_for(_ring_state or VoiceState.LISTENING, None, True)
+        except Exception:
+            pass
+    _show_ring(spec)
     t = threading.Timer(REJECT_FLASH_S, _end_reject_flash)
     t.daemon = True
     t.start()
@@ -1049,6 +1192,9 @@ def main():
                         help="XVF3800 input channel (0=beamformed, 1=ASR); default Tuning.mic_channel")
     parser.add_argument("--no-transcript-log", action="store_true",
                         help="Privacy: conversation + utterance logs store transcript: null")
+    parser.add_argument("--allow-no-safety-kws", action="store_true",
+                        help="Start on the robot even if the always-on safety keyword "
+                             "spotter fails to load (default: refuse)")
     args = parser.parse_args()
 
     global MIC_CHANNEL
@@ -1242,18 +1388,17 @@ def main():
         print("[WakeWord] Disabled (--no-wake-word) — always listening")
 
     # Stage 2F C1: always-on safety KWS — stop/freeze/estop fire at frame level
-    # in WAKE_WORD state with no wake required, even when the wake backend is
-    # livekit. Degraded (not fail-closed): if it cannot load, the frame-level
-    # cold-stop check is skipped and safety falls back to the VAD->ASR path
-    # (which needs a wake first in WAKE_WORD state); a future task adds a
-    # startup health gate to enforce this explicitly.
+    # in EVERY voice state (own thread, own queue fed before any mic gate),
+    # with no wake required. Fail-closed on the robot: if it cannot load,
+    # startup refuses (below) unless --allow-no-safety-kws is passed. In
+    # dry-run it only warns; then safety needs a transcript (wake first).
     safety_detector = None
     try:
         from src.voice_control.wake.safety_kws import make_safety_detector
         safety_detector = make_safety_detector()
         if not safety_detector.is_available():
-            print("[SafetyKWS] UNAVAILABLE — cold stop/freeze/estop will not work "
-                  "in WAKE_WORD state; run scripts/setup_safety_kws.py")
+            print("[SafetyKWS] UNAVAILABLE — spoken stop/freeze/estop only work via ASR "
+                  "after a wake; run scripts/setup_safety_kws.py")
             safety_detector = None
     except Exception as e:
         print(f"[SafetyKWS] import failed: {e}")
@@ -1308,9 +1453,18 @@ def main():
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
 
+    if not safety_startup_ok(safety_detector is not None, args.dry_run, args.allow_no_safety_kws):
+        cleanup_spot()
+        return
+
     # XVF3800 control (DoA for the speaker lock, LED ring). Optional.
-    global _mic
+    global _mic, _anim
     _mic = _open_mic_array()
+    _anim = _make_ring_animator(_mic)
+
+    if safety_detector is not None:
+        _start_safety_thread(safety_detector)
+        print("[SafetyKWS] safety thread running (every state, ignores mute/gate)")
 
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
@@ -1635,22 +1789,8 @@ def main():
                 _status["floor_dbfs"] = round(floor.floor_db, 1)
                 preroll_buffer.append((t_frame, frame, db, is_speech))
 
-                # Stage 2F C1: always-on safety check (cold stop/freeze/estop).
-                # Runs in WAKE_WORD state before the wake early-continue so a
-                # safety command halts the robot with no prior wake.
-                if state == VoiceState.WAKE_WORD and safety_detector:
-                    kw = safety_detector.process_frame(frame)
-                    if kw:
-                        intent = check_safety_command(kw)
-                        if intent:
-                            print(f"[SAFETY-KWS] '{kw}' — executing immediately")
-                            _abort_chain.set()
-                            if execute_on_spot(intent):
-                                beep.command_ok()
-                            else:
-                                beep.error()
-                            safety_detector.reset()
-                            continue
+                # Safety KWS runs on its own thread (safety_kws_loop) in every
+                # state; nothing to do here.
 
                 # Wake word (dedicated detector). Runs in LISTENING too, so a
                 # new speaker's wake re-locks onto them (Task 10 change 9).
@@ -1742,6 +1882,12 @@ def main():
             stream.close()
         except Exception:
             pass
+        _safety_stop.set()
+        if _anim is not None:
+            try:
+                _anim.stop()
+            except Exception:
+                pass
         cleanup_spot()
 
 
@@ -1959,7 +2105,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # 1. Safety fast-path: stop/freeze/estop bypass LLM (zero latency)
     #    Safety commands ALWAYS execute, regardless of wake word state.
     # ------------------------------------------------------------------
-    if _run_safety(clean):
+    if _run_safety(transcript) or _run_safety(clean):
         return None
 
     # ------------------------------------------------------------------

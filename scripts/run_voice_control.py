@@ -270,6 +270,9 @@ def main():
     parser.add_argument("--mic-channel", type=int, default=None,
                         help="Forwarded to voice control: XVF3800 input channel "
                              "(default Tuning.mic_channel).")
+    parser.add_argument("--allow-no-safety-kws", action="store_true",
+                        help="Forwarded to voice control: start on the robot even if "
+                             "the always-on safety keyword spotter fails to load.")
     parser.add_argument("--no-transcript-log", action="store_true",
                         help="Forwarded to voice control: conversation + utterance "
                              "logs store transcript: null.")
@@ -351,6 +354,8 @@ def main():
         client_cmd.extend(["--mic-channel", str(args.mic_channel)])
     if args.no_transcript_log:
         client_cmd.append("--no-transcript-log")
+    if args.allow_no_safety_kws:
+        client_cmd.append("--allow-no-safety-kws")
 
     client_env = os.environ.copy()
     if args.no_transcript_log:
