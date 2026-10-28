@@ -144,11 +144,11 @@ def ask_clock(k):  # noqa: ARG001
         try:
             v = float(raw)
         except ValueError:
-            print("  enter a number 1-12")
+            print("  enter a number 1-12 (halves ok, e.g. 12.5)")
             continue
-        if 0 <= v <= 12:
+        if 0 <= v < 13:
             return v or 12.0
-        print("  enter a number 1-12")
+        print("  enter a number 1-12 (halves ok, e.g. 12.5)")
 
 
 def cmd_index(mic):
