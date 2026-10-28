@@ -36,6 +36,7 @@ from src.voice_control.chatbot.persona import get_persona, voice_id_for
 
 import re
 import glob
+import collections
 import json
 import math
 import time
@@ -859,9 +860,16 @@ def _current_ring_spec():
                      reverse=_tuning.ring_reverse)
 
 
-def _write_ring(effect, color, ring):
-    for fn, val in ((_mic.set_led_effect, effect), (_mic.set_led_color, color),
-                    (_mic.set_ring, ring)):
+_RejectSpec = collections.namedtuple("_RejectSpec", "effect color ring")
+_REJECT_SPEC = _RejectSpec(LED_SOLID, REJECT_COLOR, None)
+
+
+def _show_ring(spec) -> None:
+    """The ONE place turn-signal ring writes happen (swap point for a future
+    animator). spec has .effect/.color/.ring; None fields are skipped and each
+    device write is isolated."""
+    for fn, val in ((_mic.set_led_effect, spec.effect), (_mic.set_led_color, spec.color),
+                    (_mic.set_ring, spec.ring)):
         if val is None:
             continue
         try:
@@ -884,7 +892,7 @@ def _update_ring() -> None:
         _ring_pending = False
         spec = _current_ring_spec()
         if spec is not None:
-            _write_ring(spec.effect, spec.color, spec.ring)
+            _show_ring(spec)
     except Exception as e:
         print(f"[Indicator] ring failed: {type(e).__name__}: {e}")
 
@@ -911,7 +919,7 @@ def _signal_reject():
     if not _mic_usable():
         return
     _reject_until = time.monotonic() + REJECT_FLASH_S
-    _write_ring(LED_SOLID, REJECT_COLOR, None)
+    _show_ring(_REJECT_SPEC)
     t = threading.Timer(REJECT_FLASH_S, _end_reject_flash)
     t.daemon = True
     t.start()
