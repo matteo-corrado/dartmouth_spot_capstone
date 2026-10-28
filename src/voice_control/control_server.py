@@ -31,9 +31,13 @@ Integration interface (for client_mic.py)
     srv.stop()
 
 - ``_on_immediate(name: str, arg: str | None) -> dict`` must handle every name
-  in ``IMMEDIATE`` (hush stop freeze sit stand stow status mute unmute). It runs
-  on the server thread, so it must only touch thread-safe things
-  (player, mouth, dispatcher).
+  in ``IMMEDIATE`` (hush stop freeze sit stand stow status mute unmute).
+  Threading contract: it runs on HTTP worker threads, possibly SEVERAL AT ONCE
+  (ThreadingHTTPServer, one thread per request), concurrently with the main
+  loop. So it must be re-entrant, must only touch thread-safe things (player,
+  mouth, dispatcher), and must NEVER hold a lock that stop/freeze also need
+  (a slow ``status`` or ``say`` must not be able to delay a ``stop``).
+  ``status`` must not block: read plain attributes, take no long-held locks.
 - ``_on_queued(name: str, arg: str | None) -> None`` handles every name in
   ``QUEUED`` (listen release reset say persona crowd voiceprint) on the main
   thread, between frames.
@@ -83,7 +87,7 @@ def parse_command(path: str, body: dict) -> tuple[str, Optional[str]]:
     prefix = "/cmd/"
     if not path.startswith(prefix):
         raise ValueError(f"bad path: {path!r}")
-    name = path[len(prefix):].strip("/").lower()
+    name = path[len(prefix):].split("?", 1)[0].strip("/").lower()
     cmd = COMMANDS.get(name)
     if cmd is None:
         raise ValueError(f"unknown command: {name!r}")
@@ -123,6 +127,7 @@ class ControlServer:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", port), self._make_handler())
         self._httpd.daemon_threads = True
         self._thread: Optional[threading.Thread] = None
+        self._closed = False
 
     @property
     def address(self) -> tuple:
@@ -139,10 +144,16 @@ class ControlServer:
         log.info("control server on http://127.0.0.1:%d", self.port)
 
     def stop(self) -> None:
-        self._httpd.shutdown()
-        self._httpd.server_close()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        """Idempotent; safe even if start() was never called."""
+        t, self._thread = self._thread, None
+        if t is not None and t.is_alive():
+            # shutdown() blocks until serve_forever exits, so only call it
+            # when serve_forever is actually running.
+            self._httpd.shutdown()
+            t.join(timeout=2.0)
+        if not self._closed:
+            self._closed = True
+            self._httpd.server_close()
 
     def _dispatch(self, name: str, arg: Optional[str]) -> dict:
         if COMMANDS[name].immediate:
@@ -172,7 +183,7 @@ class ControlServer:
                 self._reply(200, result if isinstance(result, dict) else {"result": result})
 
             def do_GET(self):
-                if self.path.rstrip("/") == "/status":
+                if self.path.split("?", 1)[0].rstrip("/") == "/status":
                     self._run("status", None)
                 else:
                     self._reply(404, {"error": f"not found: {self.path}"})

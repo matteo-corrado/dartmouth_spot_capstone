@@ -36,6 +36,10 @@ class Unreachable(Exception):
     pass
 
 
+class NoReply(Exception):
+    """Connected, but the server did not answer within the timeout."""
+
+
 # Never route localhost control traffic through an http_proxy env var.
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -45,7 +49,7 @@ def send(name: str, arg: str | None = None, host: str = DEFAULT_HOST,
     """POST /cmd/<name> (or GET /status) and return the decoded JSON reply.
 
     HTTP errors from the server (400/500) are returned as their JSON body.
-    Raises Unreachable if nothing is listening.
+    Raises Unreachable if nothing is listening, NoReply on a read timeout.
     """
     base = f"http://{host}:{port}"
     if name == "status":
@@ -56,19 +60,28 @@ def send(name: str, arg: str | None = None, host: str = DEFAULT_HOST,
                                      headers={"Content-Type": "application/json"})
     try:
         with _OPENER.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read() or b"{}")
+            raw = resp.read()
     except urllib.error.HTTPError as e:
         try:
             return json.loads(e.read() or b"{}")
         except ValueError:
             return {"error": f"HTTP {e.code}"}
-    except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+    except urllib.error.URLError as e:  # connect failed (refused, no route, connect timeout)
         raise Unreachable(
-            f"spotctl: cannot reach control server at {base} ({getattr(e, 'reason', e)}). "
+            f"spotctl: cannot reach control server at {base} ({e.reason}). "
             "Is the voice pipeline (client_mic.py) running?") from None
+    except TimeoutError:  # connected, but no reply in time
+        raise NoReply(f"spotctl: {name}: no reply within {timeout:g}s "
+                      "— the command may still be executing") from None
+    except (ConnectionError, OSError) as e:
+        raise Unreachable(f"spotctl: connection to {base} failed ({e})") from None
+    try:
+        return json.loads(raw or b"{}")
+    except ValueError:
+        return {"error": "non-JSON reply"}
 
 
-def _interactive(host: str, port: int) -> int:
+def _interactive(host: str, port: int, timeout: float) -> int:
     import termios
     import tty
 
@@ -90,9 +103,11 @@ def _interactive(host: str, port: int) -> int:
                 print(HELP, flush=True)
                 continue
             try:
-                reply = send(name, host=host, port=port)
-            except Unreachable as e:
+                reply = send(name, host=host, port=port, timeout=timeout)
+            except (Unreachable, NoReply) as e:
                 print(e, flush=True)
+                # drop keys mashed while we waited so they don't replay
+                termios.tcflush(fd, termios.TCIFLUSH)
                 continue
             print(f"{name}: {json.dumps(reply)}", flush=True)
     except KeyboardInterrupt:
@@ -106,18 +121,22 @@ def main(argv: list[str] | None = None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--host", default=DEFAULT_HOST)
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
+    p.add_argument("--timeout", type=float, default=5.0, help="seconds to wait for a reply")
     p.add_argument("name", nargs="?", help="command name; omit for hotkey mode")
     p.add_argument("arg", nargs="*", help="argument (say/persona); words are joined")
     a = p.parse_args(argv)
 
     if a.name is None:
-        return _interactive(a.host, a.port)
+        return _interactive(a.host, a.port, a.timeout)
     arg = " ".join(a.arg) if a.arg else None
     try:
-        reply = send(a.name.lower(), arg, host=a.host, port=a.port)
+        reply = send(a.name.lower(), arg, host=a.host, port=a.port, timeout=a.timeout)
     except Unreachable as e:
         print(e, file=sys.stderr)
         return 2
+    except NoReply as e:
+        print(e, file=sys.stderr)
+        return 3
     print(json.dumps(reply, indent=2))
     return 1 if "error" in reply else 0
 

@@ -5,6 +5,7 @@ import json
 import queue
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -20,13 +21,16 @@ _spec = importlib.util.spec_from_file_location("spotctl", _SPOTCTL)
 spotctl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(spotctl)
 
+# Proxy-less opener: never route test traffic through an http_proxy env var.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
 
 def _post(port, name, arg=None):
     body = json.dumps({"arg": arg} if arg is not None else {}).encode()
     req = urllib.request.Request(f"http://127.0.0.1:{port}/cmd/{name}", data=body,
                                  method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with _OPENER.open(req, timeout=5) as r:
             return r.status, json.loads(r.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
@@ -108,7 +112,7 @@ def test_http_errors_and_status(server):
     assert code == 500 and "boom" in body["error"]
     assert _post(srv.port, "say", "hi there") == (200, {"queued": True})
     assert q.get_nowait() == ("say", "hi there")
-    with urllib.request.urlopen(f"http://127.0.0.1:{srv.port}/status", timeout=5) as r:
+    with _OPENER.open(f"http://127.0.0.1:{srv.port}/status?x=1", timeout=5) as r:
         assert json.loads(r.read())["name"] == "status"
     assert ("status", None) in calls
 
@@ -143,3 +147,45 @@ def test_spotctl_unreachable_is_readable(capsys):
     assert spotctl.main(["--port", str(port), "hush"]) == 2
     err = capsys.readouterr().err
     assert "cannot reach control server" in err and "running" in err
+
+
+def test_parse_strips_query_string():
+    assert parse_command("/cmd/hush?verbose=1", {}) == ("hush", None)
+
+
+def test_stop_without_start_and_double_stop():
+    srv = ControlServer(port=0, on_immediate=lambda n, a: {}, queue=queue.Queue())
+    t0 = time.monotonic(); srv.stop(); srv.stop()
+    assert time.monotonic() - t0 < 1.0
+    srv2 = ControlServer(port=0, on_immediate=lambda n, a: {}, queue=queue.Queue())
+    srv2.start(); srv2.stop(); srv2.stop()
+
+
+def test_spotctl_timeout_is_not_unreachable(capsys):
+    gate = threading.Event()
+    srv = ControlServer(port=0, on_immediate=lambda n, a: gate.wait(3) or {}, queue=queue.Queue())
+    srv.start()
+    try:
+        assert spotctl.main(["--port", str(srv.port), "--timeout", "0.3", "hush"]) == 3
+        err = capsys.readouterr().err
+        assert "no reply within 0.3s" in err and "cannot reach" not in err
+    finally:
+        gate.set(); srv.stop()
+
+
+def test_spotctl_non_json_reply():
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.send_response(200); self.send_header("Content-Length", "5"); self.end_headers()
+            self.wfile.write(b"hello")
+        def log_message(self, *a):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    t = threading.Thread(target=httpd.serve_forever, daemon=True); t.start()
+    try:
+        assert spotctl.send("hush", port=httpd.server_address[1]) == {"error": "non-JSON reply"}
+    finally:
+        httpd.shutdown(); httpd.server_close()
