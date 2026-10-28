@@ -44,6 +44,13 @@ def test_no_stop_words_in_dispatcher_or_client_spoken_lines():
         assert bad == [], f"{fname}: {bad}"
 
 
+def test_startup_status_estop_clause_has_no_stop_words():
+    from src.voice_control.startup_status import _estop_clause
+    for state in ({"estop_holders_cut": "web"}, {"estop_endpoints": "panel"}):
+        line = _estop_clause(state)
+        assert line and not BAD.search(line), line
+
+
 def test_vlm_prompt_forbids_stop_words():
     src = (ROOT / "llm_brain.py").read_text()
     i = src.index("def query_vlm")
