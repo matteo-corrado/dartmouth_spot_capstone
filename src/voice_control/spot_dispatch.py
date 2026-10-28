@@ -39,9 +39,6 @@ from src.graph_nav_utils import (
 # so they can't drift.
 _ESTOP_STATE_NAMES = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
 
-# Set once at module import for uptime computation in get_robot_state_dict().
-_PROCESS_START_TS = time.time()
-
 # Camera source names for Spot's fisheye cameras
 CAMERA_SOURCES = {
     "front": "frontleft_fisheye_image",
@@ -245,10 +242,8 @@ def get_robot_state_dict() -> dict:
         "tts_volume_percent": _current_tts_volume_percent(),
         "available_maps": "unknown",
         "current_map": "unknown",
-        "uptime_s": int(time.time() - _PROCESS_START_TS),
         "estop_holder": "unknown",
         "num_saved_locations": len(saved_locs),
-        "process_pid": os.getpid(),
     }
 
     try:
@@ -866,7 +861,8 @@ def do_add_persona(params: dict, brain) -> dict:
     from src.voice_control.spot_tts import get_tts
 
     outgoing = get_persona(brain.session_state.current_persona, brain._persona_registry)
-    ack_text = (outgoing.ack_template or "Give me a second.").format(name=name)
+    spoken = name.replace("_", " ")
+    ack_text = (outgoing.ack_template or "Give me a second.").format(name=spoken)
 
     tts = get_tts()
 
@@ -890,7 +886,8 @@ def do_add_persona(params: dict, brain) -> dict:
         )
         print(f"[Dispatch] add_persona FAILED for '{name}': {reason}")
         if tts is not None:
-            tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
+            current = brain.session_state.current_persona.replace("_", " ")
+            tts.speak(f"I couldn't find a {spoken} voice, so I'll stay as {current}.")
         return {"ok": False, "error": reason}
 
     # Word-boundary match — substring would misfire ("female" contains "male").
@@ -903,7 +900,7 @@ def do_add_persona(params: dict, brain) -> dict:
         prompt_prefix=PROMPT_PREFIX_TEMPLATE.format(name=name, description=description),
         voices={"elevenlabs": new_voice_id, "kokoro_v1": kokoro_slug},
         sampling_overrides={},
-        ack_template=f"One moment as I become a {name}...",
+        ack_template=f"One moment while I become a {spoken}.",
     )
     brain._persona_registry[name] = persona
     brain.session_state.current_persona = name
@@ -1005,6 +1002,59 @@ def _handle_emote(params, session, speak=None):
         target=_emote_routine, args=(session, routine, _arm_pose, stop_event), daemon=True)
     _nav_thread.start()
     print(f"[Spot] emote: running '{routine}'")
+    return True
+
+
+INFO_INTENTS = frozenset({"battery_status", "status", "check_obstacles",
+                          "list_locations", "list_maps"})
+_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in soft stop"}
+
+
+def _spoken_list(names) -> str:
+    """["a_b", "c", "d"] -> "a b, c and d"."""
+    items = [str(n).replace("_", " ") for n in names]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _handle_list_maps(speak=None):
+    """Spoken list of maps on disk. No robot needed."""
+    try:
+        maps = list_available_maps(project_root)
+    except OSError as e:
+        print(f"[Spot] ✗ list_maps failed: {e}")
+        _say(speak, "I couldn't read my maps folder.")
+        return False
+    if not maps:
+        _say(speak, "I don't have any maps saved yet.")
+        return True
+    print(f"[Spot] Available maps ({len(maps)}): {', '.join(maps)}")
+    line = f"I have {len(maps)} map{'s' if len(maps) != 1 else ''}: {_spoken_list(maps)}."
+    current = read_last_used(project_root)
+    if current:
+        print(f"[Spot] Currently loaded: {current}")
+        line += f" The current one is {current.replace('_', ' ')}."
+    _say(speak, line)
+    return True
+
+
+def _handle_list_locations(speak=None):
+    """Spoken list of saved locations. No robot needed."""
+    try:
+        locations = _list_saved_locations()
+    except Exception as e:
+        print(f"[Spot] ✗ Failed to list locations: {e}")
+        _say(speak, "I couldn't read my saved places.")
+        return False
+    names = [n for n in locations if _is_named_location(n)]
+    if not names:
+        _say(speak, "I don't have any saved places yet.")
+        return True
+    for n in names:
+        print(f"[Spot]   - {n}")
+    _say(speak, f"I know {len(names)} place{'s' if len(names) != 1 else ''}: "
+                f"{_spoken_list(names)}.")
     return True
 
 
@@ -1118,6 +1168,11 @@ def _dispatch_core(intent, brain=None, speak=None):
         return _handle_set_volume(params)
     if name == "set_backend":
         return _handle_set_backend(params)
+
+    if name == "list_maps":
+        return _handle_list_maps(speak)
+    if name == "list_locations":
+        return _handle_list_locations(speak)
 
     try:
         session = ensure_spot_session()
@@ -1399,11 +1454,16 @@ def _dispatch_core(intent, brain=None, speak=None):
                 print(f"[Spot] ✓ Battery: {battery:.0f}%")
                 if hours > 0:
                     print(f"[Spot]   Estimated runtime: {hours}h {mins}m")
+                    left = f"{hours} hour{'s' if hours != 1 else ''} and {mins} minutes"
                 else:
                     print(f"[Spot]   Estimated runtime: {mins}m")
+                    left = f"{mins} minutes"
+                _say(speak, f"My battery is at {battery:.0f} percent, "
+                            f"with about {left} of walking left.")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Battery status failed: {e}")
+                _say(speak, "I couldn't read my battery just now.")
                 return False
 
         elif name == "status":
@@ -1425,9 +1485,15 @@ def _dispatch_core(intent, brain=None, speak=None):
                 print(f"[Spot] ✓ Status Report:")
                 print(f"[Spot]   Battery: {battery:.0f}%")
                 print(f"[Spot]   E-Stop: {estop}")
+                motors = "on" if (robot_state.power_state.motor_power_state
+                                  == robot_state.power_state.STATE_ON) else "off"
+                estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
+                _say(speak, f"All good. My battery is at {battery:.0f} percent, "
+                            f"my motors are {motors}, and my e-stop is {estop_words}.")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Status check failed: {e}")
+                _say(speak, "I couldn't check my status just now.")
                 return False
 
         elif name == "power_off":
@@ -1548,6 +1614,7 @@ def _dispatch_core(intent, brain=None, speak=None):
                 )
             except Exception as e:
                 print(f"[Spot] check_obstacles: perception module unavailable: {e}")
+                _say(speak, "I can't check my surroundings right now.")
                 return False
 
             robot_obj = session["robot"]
@@ -1555,11 +1622,13 @@ def _dispatch_core(intent, brain=None, speak=None):
                 hit = nearest_obstacle_in_body_frame(robot_obj, max_radius_m=3.0)
             except Exception as e:
                 print(f"[Spot] check_obstacles: query failed: {e}")
+                _say(speak, "I couldn't check my surroundings just now.")
                 return False
 
             if hit is None:
                 print("[Spot] check_obstacles: no obstacles within 3m "
                       "(or obstacle-grid unavailable on this firmware)")
+                _say(speak, "I don't see anything close to me right now.")
                 return True
 
             # Convert bearing (radians, 0=forward, +pi/2=left) to a
@@ -1586,6 +1655,7 @@ def _dispatch_core(intent, brain=None, speak=None):
                 f"[Spot] check_obstacles: nearest obstacle {hit.distance_m:.2f}m "
                 f"{direction} ({deg:.0f}°, source={hit.grid_name})"
             )
+            _say(speak, f"The closest thing is about {hit.distance_m:.1f} meters {direction}.")
             return True
 
         elif name == "follow_me":
@@ -1668,41 +1738,6 @@ def _dispatch_core(intent, brain=None, speak=None):
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ load_map failed: {e}")
-                return False
-
-        elif name == "list_maps":
-            try:
-                maps = list_available_maps(project_root)
-            except OSError as e:
-                print(f"[Spot] ✗ list_maps failed: {e}")
-                return False
-
-            if not maps:
-                print("[Spot] No maps found.")
-                return True
-
-            print(f"[Spot] Available maps ({len(maps)}): {', '.join(maps)}")
-            current = read_last_used(project_root)
-            if current:
-                print(f"[Spot] Currently loaded: {current}")
-            return True
-
-        elif name == "list_locations":
-            # List saved locations
-            print("[Spot] Listing saved locations...")
-            try:
-                from src.location_manager import list_locations
-                locations = list_locations()
-                if locations:
-                    print(f"[Spot] ✓ Saved locations:")
-                    for name, waypoint in locations.items():
-                        print(f"[Spot]   - {name}")
-                else:
-                    print("[Spot] No locations saved yet.")
-                    print("[Spot] Say 'save location [name]' to save current position.")
-                return True
-            except Exception as e:
-                print(f"[Spot] ✗ Failed to list locations: {e}")
                 return False
 
         elif name == "save_location":
@@ -1952,6 +1987,8 @@ def _dispatch_core(intent, brain=None, speak=None):
             
     except Exception as e:
         print(f"[Spot] Error executing intent '{name}': {e}")
+        if name in INFO_INTENTS:
+            _say(speak, "I can't reach my sensors right now.")
         import traceback
         traceback.print_exc()
         return False
