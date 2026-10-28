@@ -7,6 +7,49 @@ from bosdyn.api.graph_nav import graph_nav_pb2, map_pb2, nav_pb2
 from bosdyn.client.exceptions import ResponseError
 from bosdyn.client.frame_helpers import get_odom_tform_body
 
+# Walk speed cap (Task 14): every velocity / trajectory / GraphNav command is
+# limited to Tuning.walk_speed_cap m/s linear. Turning is limited too.
+MAX_TURN_RATE = 1.0  # rad/s
+TRAVEL_MAX_DISTANCE_M = 0.5  # GraphNav "reached the waypoint" distance threshold
+TRAVEL_MAX_YAW_RAD = 0.5     # GraphNav "reached the waypoint" yaw threshold
+
+
+def walk_speed_cap() -> float:
+    from src.voice_control.tuning import get_tuning
+    return float(get_tuning().walk_speed_cap)
+
+
+def _velocity_limit(cap: float):
+    from bosdyn.api import geometry_pb2
+    return geometry_pb2.SE2VelocityLimit(
+        max_vel=geometry_pb2.SE2Velocity(
+            linear=geometry_pb2.Vec2(x=cap, y=cap), angular=MAX_TURN_RATE),
+        min_vel=geometry_pb2.SE2Velocity(
+            linear=geometry_pb2.Vec2(x=-cap, y=-cap), angular=-MAX_TURN_RATE))
+
+
+def capped_mobility_params(cap: float = None):
+    """MobilityParams (default stand/hint) with the walk speed cap applied."""
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    cap = walk_speed_cap() if cap is None else float(cap)
+    params = RobotCommandBuilder.mobility_params()
+    params.vel_limit.CopyFrom(_velocity_limit(cap))
+    return params
+
+
+def capped_travel_params(cap: float = None):
+    """GraphNav TravelParams with the walk speed cap applied."""
+    cap = walk_speed_cap() if cap is None else float(cap)
+    # SDK helper so the arrival thresholds are set, not zeroed. 0.5 m / 0.5 rad
+    # match the BD GraphNav command-line example defaults.
+    return GraphNavClient.generate_travel_params(
+        TRAVEL_MAX_DISTANCE_M, TRAVEL_MAX_YAW_RAD, velocity_limit=_velocity_limit(cap))
+
+
+def clamp_speed(v: float, cap: float = None) -> float:
+    cap = walk_speed_cap() if cap is None else float(cap)
+    return max(-cap, min(cap, v))
+
 
 def upload_graph_and_snapshots(robot, upload_path: str) -> bool:
     """Upload a GraphNav map to the robot.

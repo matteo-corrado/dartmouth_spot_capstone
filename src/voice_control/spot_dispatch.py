@@ -15,26 +15,29 @@ project_root = pathlib.Path(__file__).resolve().parents[2]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-from bosdyn.client.robot_command import RobotCommandBuilder
+from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
 from bosdyn.client.image import ImageClient
-from src.session import spot_session
+from src.session import spot_session, send_arm_pose
 from src.location_manager import (
     list_locations as _list_saved_locations,
     normalize_location_name as _normalize_location_name,
 )
 from src.map_loader import list_available_maps, read_last_used, resolve_map_path, write_last_used
-from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
+from src.graph_nav_utils import (
+    upload_graph_and_snapshots,
+    initialize_localization,
+    capped_mobility_params,
+    capped_travel_params,
+    walk_speed_cap,
+)
 
 # Spot's e-stop hardware exposes a small enum on robot_state.estop_states[].state.
 # Used both by get_robot_state_dict() (for the LLM context) and the "status"
 # action handler (for the user-facing report) — keep the mapping in one place
 # so they can't drift.
 _ESTOP_STATE_NAMES = {0: "unknown", 1: "cut", 2: "not_cut", 3: "soft_stop"}
-
-# Set once at module import for uptime computation in get_robot_state_dict().
-_PROCESS_START_TS = time.time()
 
 # Camera source names for Spot's fisheye cameras
 CAMERA_SOURCES = {
@@ -55,6 +58,254 @@ _nav_thread = None
 _nav_stop_event = None
 _nav_mode = None  # "follow", "graphnav", "visual_nav", or None
 _home_waypoint = None
+
+# ---------------------------------------------------------------------------
+# Arm policy (Task 14)
+# ---------------------------------------------------------------------------
+# The arm tucks into the walking pose before any locomotion and returns to its
+# previous pose only after the motion finished naturally. stop/freeze/estop
+# send a motion stop FIRST, then run their original branch, then stow without
+# waiting. The only arm motions while walking are that tuck and that restore,
+# and the gripper mouth is latched off for the whole walk / routine.
+LOCOMOTION_INTENTS = frozenset({
+    "walk_to", "turn", "walk", "strafe", "go_to", "tour", "patrol",
+    "come_back", "go_to_object", "follow_me",
+})
+SAFETY_INTENTS = frozenset({"stop", "freeze", "estop"})
+SHUTDOWN_INTENTS = frozenset({"power_off", "shutdown", "sit"})  # stop, stow, then act
+# Intents that abort any locomotion still being set up on another thread.
+ABORTING_INTENTS = SAFETY_INTENTS | SHUTDOWN_INTENTS | {"stow"}
+# Intents that never take _dispatch_lock (safety must never wait on it; the
+# rest touch no robot motion or can take long, e.g. add_persona).
+_UNLOCKED_INTENTS = SAFETY_INTENTS | frozenset({
+    "set_persona", "add_persona", "set_volume", "set_backend",
+    "battery_status", "status", "check_obstacles", "list_locations", "list_maps",
+})
+
+SAFETY_LOCK_TIMEOUT_S = 1.0  # stop/close paths never wait longer on _arm_lock
+RPC_TIMEOUT_S = 2.0          # per-RPC timeout for commands sent under _arm_lock
+
+_arm_pose = "stowed"        # live arm pose: "stowed" | "talk" | "walk"
+_pose_before_walk = None    # pose to restore once the current locomotion ends
+_arm_lock = threading.Lock()  # serialises "check cancelled + send arm cmd"
+_dispatch_lock = threading.RLock()  # serialises non-safety robot dispatches
+_session_lock = threading.Lock()    # guards ensure_spot_session bring-up
+_last_brain = None          # brain whose session_state mirrors _arm_pose
+_last_traj = None           # (cmd_id, deadline) of the last trajectory sent
+_safety_gen = 0             # bumped by every aborting intent (any thread)
+_dispatch_gen = None        # _safety_gen when the current locked dispatch began
+_mouth_resume = False       # re-enable the mouth when the arm returns to "talk"
+_closing = False            # set by close_spot_session: no new bring-up after that
+
+
+def arm_policy_for(intent_name: str, current_pose: str) -> tuple[str, str]:
+    """(pose before, pose after) for an intent. Pure."""
+    if intent_name in SAFETY_INTENTS or intent_name in SHUTDOWN_INTENTS:
+        return ("stowed", "stowed")
+    if intent_name in LOCOMOTION_INTENTS:
+        return ("walk", current_pose)
+    if intent_name == "emote":
+        return ("stowed", current_pose)
+    return (current_pose, current_pose)
+
+
+def get_arm_pose() -> str:
+    return _arm_pose
+
+
+def _set_arm_pose(pose: str):
+    global _arm_pose
+    _arm_pose = pose
+    st = getattr(_last_brain, "session_state", None)
+    if st is not None:
+        try:
+            st.arm_pose = pose
+        except Exception:
+            pass
+
+
+def _aborted(gen) -> bool:
+    """True if an aborting intent arrived since generation `gen` was taken."""
+    return gen is not None and gen != _safety_gen
+
+
+def _send_stop(cmd_client) -> bool:
+    try:
+        cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
+        return True
+    except Exception as e:
+        print(f"[Spot] ✗ stop_command failed: {e}")
+        return False
+
+
+def _mouth_suspend():
+    """Latch the gripper mouth off (claw closed) before a tuck or emote stow,
+    remembering whether to turn it back on when the arm returns to "talk"."""
+    global _mouth_resume
+    try:
+        from src.voice_control.spot_tts import get_tts
+        t = get_tts()
+        m = t.mouth if t is not None else None
+        if m is not None and m.enabled:
+            _mouth_resume = True
+            m.disable()
+    except Exception as e:
+        print(f"[Spot] ⚠️  mouth suspend failed: {e}")
+
+
+def _mouth_restore():
+    global _mouth_resume
+    if not _mouth_resume or _arm_pose != "talk":
+        return
+    _mouth_resume = False
+    try:
+        from src.voice_control.spot_tts import get_tts
+        t = get_tts()
+        if t is not None and t.mouth is not None:
+            t.mouth.enable()
+    except Exception as e:
+        print(f"[Spot] ⚠️  mouth restore failed: {e}")
+
+
+def _arm_send(cmd_client, pose: str, stop_event=None, timeout_s: float = 5.0,
+              require_pose=None) -> bool:
+    """Send an arm pose. Under _arm_lock, skip if stop_event is set (or the
+    live pose is not require_pose), so a cancelled thread can never move the
+    arm after a stop's stow. Waits for arrival outside the lock."""
+    with _arm_lock:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        if require_pose is not None and _arm_pose != require_pose:
+            return False
+        cmd_id = send_arm_pose(cmd_client, pose, rpc_timeout=RPC_TIMEOUT_S)
+        _set_arm_pose(pose)
+    if timeout_s is None or timeout_s <= 0:
+        return True
+    if stop_event is None:
+        return bool(block_until_arm_arrives(cmd_client, cmd_id, timeout_s))
+    # Wait in short slices so a stop's _cancel_nav() join is never held up.
+    deadline = time.time() + timeout_s
+    while not stop_event.is_set() and time.time() < deadline:
+        if block_until_arm_arrives(cmd_client, cmd_id, 0.3):
+            return True
+    return False
+
+
+def _stow_now(cmd_client, resend_stop=False, then_stand=False, force=False):
+    """Safety-path stow. Never waits for the arm; waits at most
+    SAFETY_LOCK_TIMEOUT_S for _arm_lock and sends without it on timeout.
+    resend_stop re-sends the motion stop under the lock (overrides a
+    choreography request that raced the first stop)."""
+    global _pose_before_walk, _mouth_resume
+    got = _arm_lock.acquire(timeout=SAFETY_LOCK_TIMEOUT_S)
+    if not got:
+        print("[Spot] ⚠️  arm lock busy — stowing without it")
+    try:
+        if resend_stop:
+            cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
+            if then_stand:
+                cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command(),
+                                         timeout=RPC_TIMEOUT_S)
+        _pose_before_walk = None
+        _mouth_resume = False
+        if _arm_pose == "stowed" and not force:
+            return  # already stowed: never send arm commands to e.g. a sitting robot
+        send_arm_pose(cmd_client, "stowed", rpc_timeout=RPC_TIMEOUT_S)
+        _set_arm_pose("stowed")
+        print("[Spot] Arm stowing after stop")
+    except Exception as e:
+        print(f"[Spot] ⚠️  Arm stow after stop failed: {e}")
+    finally:
+        if got:
+            _arm_lock.release()
+
+
+def _restore_after_motion(stop_event=None):
+    """Return the arm to its pre-walk pose (only after a natural finish, or
+    when the motion never started)."""
+    global _pose_before_walk
+    target = _pose_before_walk
+    if target is None or _spot_session is None:
+        return
+    if stop_event is not None and stop_event.is_set():
+        return
+    try:
+        if _arm_send(_spot_session["cmd"], target, stop_event, timeout_s=5.0,
+                     require_pose="walk"):
+            print(f"[Spot] Arm restored to '{target}'")
+        if _arm_pose == target:
+            _pose_before_walk = None
+            _mouth_restore()
+    except Exception as e:
+        print(f"[Spot] ⚠️  Arm restore failed: {e}")
+
+
+def _finish_motion(natural: bool, stop_event):
+    """End of a motion thread. Cancelled -> nothing (the stop or the next
+    motion owns the robot). Natural finish -> restore the arm. Anything else
+    -> stop the robot and keep the arm tucked."""
+    if stop_event is not None and stop_event.is_set():
+        return
+    if natural:
+        _restore_after_motion(stop_event)
+        return
+    print("[Spot] Motion did not finish cleanly — stopping; arm stays tucked")
+    if _spot_session is not None:
+        _send_stop(_spot_session["cmd"])
+
+
+def _thread_then_restore(fn, stop_event):
+    """Nav-thread target wrapper: fn() returns True only on a natural finish."""
+    natural = False
+    try:
+        natural = bool(fn())
+    finally:
+        _finish_motion(natural, stop_event)
+
+
+def _wait_trajectory_done(cmd_client, cmd_id, deadline, stop_event):
+    """Poll a mobility trajectory until it reports AT_GOAL and SETTLED (True),
+    or the deadline passes / stop_event is set (False)."""
+    while time.time() < deadline and not stop_event.is_set():
+        try:
+            fb = cmd_client.robot_command_feedback(cmd_id)
+            traj = (fb.feedback.synchronized_feedback
+                    .mobility_command_feedback.se2_trajectory_feedback)
+            if traj.status == 1 and traj.body_movement_status == 2:  # AT_GOAL + SETTLED
+                return True
+        except Exception:
+            pass
+        stop_event.wait(0.25)
+    return False
+
+
+_nav_lock = threading.Lock()  # guards the (_nav_thread, _nav_stop_event, _nav_mode) triple
+
+
+def _spawn_nav(fn, mode=None, gen=None) -> bool:
+    """Start fn(stop_event) as THE nav thread. The abort check and the
+    registration happen under _nav_lock, and stop bumps _safety_gen before its
+    _cancel_nav() takes the same lock, so a thread is either registered (and
+    then cancelled by the stop) or never started: no orphan can keep moving."""
+    global _nav_thread, _nav_stop_event, _nav_mode
+    with _nav_lock:
+        if _aborted(gen):
+            print("[Spot] Motion not started: a stop arrived")
+            return False
+        ev = threading.Event()
+        t = threading.Thread(target=fn, args=(ev,), daemon=True)
+        _nav_thread, _nav_stop_event, _nav_mode = t, ev, mode
+        t.start()
+    return True
+
+
+def _start_restore_watch(cmd_client, cmd_id, deadline, gen=None):
+    """Register a watcher as the nav thread: waits for the trajectory, then
+    restores the arm. is_navigating() is True meanwhile (gaze/emote gate)."""
+    return _spawn_nav(
+        lambda ev: _thread_then_restore(
+            lambda: _wait_trajectory_done(cmd_client, cmd_id, deadline, ev), ev),
+        mode="walk", gen=gen)
 
 
 def is_navigating() -> bool:
@@ -100,10 +351,8 @@ def get_robot_state_dict() -> dict:
         "tts_volume_percent": _current_tts_volume_percent(),
         "available_maps": "unknown",
         "current_map": "unknown",
-        "uptime_s": int(time.time() - _PROCESS_START_TS),
         "estop_holder": "unknown",
         "num_saved_locations": len(saved_locs),
-        "process_pid": os.getpid(),
     }
 
     try:
@@ -230,7 +479,15 @@ def ensure_spot_session(map_path=None):
     """
     global _spot_session, _session_context
 
-    if _spot_session is None:
+    if _spot_session is not None:
+        return _spot_session
+    if _closing:
+        raise RuntimeError("Spot session is shutting down; not bringing it up")
+    with _session_lock:  # HTTP threads + main loop must not both bring it up
+        if _spot_session is not None:
+            return _spot_session
+        if _closing:
+            raise RuntimeError("Spot session is shutting down; not bringing it up")
         try:
             _session_context = spot_session(
                 stand_on_enter=True,
@@ -251,10 +508,18 @@ def ensure_spot_session(map_path=None):
 
 
 def close_spot_session():
-    """Close the Spot session (sit and power off)."""
-    global _spot_session, _session_context
+    """Close the Spot session (sit and power off). After this no command can
+    bring a new session up (ensure_spot_session raises while _closing)."""
+    global _spot_session, _session_context, _closing, _safety_gen
+    _closing = True
+    _safety_gen += 1  # abort any locomotion still being set up
     
     if _spot_session is not None and _session_context is not None:
+        _send_stop(_spot_session["cmd"])  # stop first, then stow, then sit
+        _close_mouth()
+        _cancel_nav()
+        _stow_now(_spot_session["cmd"], force=True)
+        time.sleep(1.5)  # let the stow finish before sitting
         try:
             from bosdyn.client.robot_command import blocking_sit
             blocking_sit(_spot_session["cmd"], timeout_sec=15)
@@ -271,15 +536,18 @@ def close_spot_session():
 
 
 def _cancel_nav():
-    """Cancel any in-progress navigation thread."""
+    """Cancel any in-progress navigation thread (sets its event, then joins
+    for up to 2 s outside the registry lock)."""
     global _nav_thread, _nav_stop_event, _nav_mode
-    if _nav_stop_event:
-        _nav_stop_event.set()
-    if _nav_thread and _nav_thread.is_alive():
-        _nav_thread.join(timeout=2.0)
-    _nav_thread = None
-    _nav_stop_event = None
-    _nav_mode = None
+    with _nav_lock:
+        t, ev = _nav_thread, _nav_stop_event
+        _nav_thread = None
+        _nav_stop_event = None
+        _nav_mode = None
+        if ev:
+            ev.set()
+    if t is not None and t.is_alive() and t is not threading.current_thread():
+        t.join(timeout=2.0)
 
 
 def _ensure_localized(graph_nav_client, session) -> bool:
@@ -379,18 +647,23 @@ def _save_home_waypoint(graph_nav_client):
 
 
 def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
-                                stop_event, repeat=False):
+                                stop_event, repeat=False, gen=None):
     """Navigate through a sequence of waypoints. Runs in a background thread.
 
     On STATUS_STUCK: retries up to MAX_STUCK_RETRIES with a new command ID.
     If still stuck after retries, skips to the next waypoint (multi-waypoint)
     or gives up (single waypoint).
+
+    Returns True only when every waypoint was reached (natural finish), so
+    the arm is restored only then. A stop since `gen` aborts before any
+    navigate_to.
     """
     from bosdyn.api.graph_nav import graph_nav_pb2
 
     MAX_STUCK_RETRIES = 2  # Retry with fresh command ID before skipping
 
     pass_num = 0
+    all_reached = True
     try:
         while True:
             pass_num += 1
@@ -408,9 +681,13 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
                 waypoint_reached = False
 
                 while not stop_event.is_set():
+                    if _aborted(gen):
+                        print("[Spot] Navigation aborted by a stop")
+                        return False
                     try:
                         nav_to_cmd_id = graph_nav_client.navigate_to(
                             wp_id, 10.0,
+                            travel_params=capped_travel_params(),
                             command_id=nav_to_cmd_id
                         )
                     except Exception as nav_ex:
@@ -482,33 +759,30 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
 
                 if not waypoint_reached and len(waypoint_ids) > 1:
                     print(f"[Spot] Skipping '{name}', moving to next waypoint...")
+                    all_reached = False
                     continue
                 elif not waypoint_reached:
                     print(f"[Spot] Could not reach '{name}'")
-                    return
+                    return False
 
             if not repeat:
                 print("[Spot] Tour complete — visited all locations!")
-                return
+                return all_reached
     except Exception as e:
         print(f"[Spot] Navigation thread error: {e}")
+    return False
 
 
 def _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
-    """Cancel any existing nav and start a new multi-waypoint navigation thread."""
-    global _nav_thread, _nav_stop_event
-
+    """Cancel any existing nav and start a new multi-waypoint navigation thread.
+    Returns False (and starts nothing) if a stop arrived since this dispatch began."""
     _cancel_nav()
-
-    _nav_stop_event = threading.Event()
-    stop_event = _nav_stop_event
-
-    _nav_thread = threading.Thread(
-        target=_navigate_waypoint_sequence,
-        args=(graph_nav_client, waypoint_ids, location_names, stop_event, repeat),
-        daemon=True,
-    )
-    _nav_thread.start()
+    gen = _dispatch_gen
+    return _spawn_nav(
+        lambda ev: _thread_then_restore(
+            lambda: _navigate_waypoint_sequence(
+                graph_nav_client, waypoint_ids, location_names, ev, repeat, gen), ev),
+        mode="graphnav", gen=gen)
 
 
 def _handle_set_volume(params):
@@ -594,10 +868,10 @@ def _handle_enable_mouth(params):
 
     Lazily creates the MouthDriver on first enable using the live session's
     arm command client, so it works regardless of session bring-up timing."""
+    global _pose_before_walk, _mouth_resume
     try:
         from src.voice_control.spot_tts import get_tts
         from src.voice_control.animation.mouth import MouthDriver
-        from src.session import deploy_arm_safe
         tts = get_tts()
         if tts is None:
             print("[Spot] enable_mouth: TTS not initialized")
@@ -613,9 +887,14 @@ def _handle_enable_mouth(params):
         if not robot.is_powered_on():
             print("[Spot] enable_mouth: motors not powered (or e-stopped) — refusing arm deploy")
             return False
-        if not deploy_arm_safe(session["cmd"]):
+        if is_navigating():
+            print("[Spot] enable_mouth: moving — not deploying the arm while walking")
+            return False
+        if not _arm_send(session["cmd"], "talk", timeout_s=5.0):
             print("[Spot] enable_mouth: arm did not reach ready pose — not enabling")
             return False
+        _pose_before_walk = None
+        _mouth_resume = False
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
         tts.mouth.enable()
@@ -626,16 +905,22 @@ def _handle_enable_mouth(params):
         return False
 
 
-def _handle_disable_mouth(params):
+def _handle_disable_mouth(params, session=None):
     """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
+    global _pose_before_walk, _mouth_resume
+    _mouth_resume = False
     try:
         from src.voice_control.spot_tts import get_tts
-        from src.session import stow_arm
         tts = get_tts()
         if tts is not None and tts.mouth is not None:
             tts.mouth.disable()
-        session = ensure_spot_session()
-        stow_arm(session["cmd"])
+        if session is None:
+            session = ensure_spot_session()
+        if is_navigating():
+            # Arm is tucked for walking; stow when the walk ends instead.
+            _pose_before_walk = "stowed"
+        else:
+            _arm_send(session["cmd"], "stowed", timeout_s=5.0)
         print("[Spot] ✓ Mouth disabled (arm stowed)")
         return True
     except Exception as e:
@@ -707,7 +992,8 @@ def do_add_persona(params: dict, brain) -> dict:
     from src.voice_control.spot_tts import get_tts
 
     outgoing = get_persona(brain.session_state.current_persona, brain._persona_registry)
-    ack_text = (outgoing.ack_template or "Give me a second.").format(name=name)
+    spoken = name.replace("_", " ")
+    ack_text = (outgoing.ack_template or "Give me a second.").format(name=spoken)
 
     tts = get_tts()
 
@@ -731,7 +1017,8 @@ def do_add_persona(params: dict, brain) -> dict:
         )
         print(f"[Dispatch] add_persona FAILED for '{name}': {reason}")
         if tts is not None:
-            tts.speak(f"Could not find a {name} voice; staying as {brain.session_state.current_persona}.")
+            current = brain.session_state.current_persona.replace("_", " ")
+            tts.speak(f"I couldn't find a {spoken} voice, so I'll stay as {current}.")
         return {"ok": False, "error": reason}
 
     # Word-boundary match — substring would misfire ("female" contains "male").
@@ -744,25 +1031,412 @@ def do_add_persona(params: dict, brain) -> dict:
         prompt_prefix=PROMPT_PREFIX_TEMPLATE.format(name=name, description=description),
         voices={"elevenlabs": new_voice_id, "kokoro_v1": kokoro_slug},
         sampling_overrides={},
-        ack_template=f"One moment as I become a {name}...",
+        ack_template=f"One moment while I become a {spoken}.",
     )
     brain._persona_registry[name] = persona
     brain.session_state.current_persona = name
+    # describe_persona's side-call evicts the llama-server single-slot cache.
+    warm = getattr(brain, "warm_up_async", None)
+    if warm is not None:
+        warm()
     print(f"[Dispatch] Persona '{name}' added (voice={new_voice_id}, kokoro={kokoro_slug})")
     return {"ok": True, "persona": name, "voice_id": new_voice_id}
 
 
-def dispatch_intent(intent, brain=None):
-    """Execute a Spot command based on parsed intent.
+# ---------------------------------------------------------------------------
+# Gaze toward the locked speaker (Task 19)
+# ---------------------------------------------------------------------------
+GAZE_MAX_LINEAR_VEL = 0.3   # m/s
+GAZE_MAX_ANGULAR_VEL = 1.0  # rad/s
+
+
+def gaze_at_bearing(body_deg: float | None) -> bool:
+    """Point the gripper toward a body-frame bearing (0 = ahead, +90 = left).
+
+    Only when the arm is in the "talk" pose and Spot is not walking or running
+    a routine. None -> back to the talk pose. Bearings behind (>120 deg) are
+    ignored. Non-blocking; never brings up a session; never raises.
+    """
+    sess = _spot_session
+    if sess is None or _arm_pose != "talk" or is_navigating():
+        return False
+    try:
+        cmd_client = sess["cmd"]
+        if body_deg is None:
+            return _arm_send(cmd_client, "talk", timeout_s=0, require_pose="talk")
+        from src.voice_control.gaze import gaze_target
+        target = gaze_target(float(body_deg))
+        if target is None:
+            return False
+        x, y, z = target
+        with _arm_lock:
+            if _arm_pose != "talk" or is_navigating():
+                return False
+            cmd_client.robot_command(RobotCommandBuilder.arm_gaze_command(
+                x, y, z, "body",
+                max_linear_vel=GAZE_MAX_LINEAR_VEL, max_angular_vel=GAZE_MAX_ANGULAR_VEL),
+                timeout=RPC_TIMEOUT_S)
+        return True
+    except Exception as e:
+        print(f"[Spot] gaze_at_bearing failed: {e}")
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Emotes / dances (Task 15)
+# ---------------------------------------------------------------------------
+_last_routine = None  # last routine run, so "dance again" never repeats it
+EMOTE_TIMEOUT_S = 60.0
+EMOTE_STALE_GRACE_S = 4.0
+# ChoreographyStatusResponse statuses that mean "still going"
+_CHOREO_RUNNING = {1, 3, 4, 5}  # DANCING, PREPPING, WAITING_FOR_START_TIME, VALIDATING
+_CHOREO_COMPLETED = 2           # STATUS_COMPLETED_SEQUENCE
+NO_ROOM_LINE = "I need a little more room to dance."
+NO_GRID_LINE = "I can't check my surroundings right now, so I'll skip the dance."
+
+
+def _clearance_refusal(robot):
+    """None if the floor around Spot is clear, else the line to speak.
+    Fails closed: no usable local grid -> refuse."""
+    from src.voice_control.tuning import get_tuning
+    from src.voice_control.perception.obstacle_query import clearance_scan
+    clearance = get_tuning().dance_clearance_m
+    try:
+        usable, hit = clearance_scan(robot, max_radius_m=clearance)
+    except Exception as e:
+        print(f"[Spot] emote: obstacle check failed: {e}")
+        return NO_GRID_LINE
+    if not usable:
+        print("[Spot] emote: no usable local grid")
+        return NO_GRID_LINE
+    if hit is not None and hit.distance_m < clearance:
+        print(f"[Spot] emote: obstacle at {hit.distance_m:.2f} m < {clearance} m")
+        return NO_ROOM_LINE
+    return None
+
+
+def _is_standing(session) -> bool:
+    """True only if the robot reports STANDING/STEPPING (False on any doubt)."""
+    try:
+        return session["state"].get_robot_state().behavior_state.state in (3, 4)
+    except Exception:
+        return False
+
+
+def _standing_and_powered(session) -> bool:
+    try:
+        rs = session["state"].get_robot_state()
+        powered = rs.power_state.motor_power_state == rs.power_state.STATE_ON
+        standing = rs.behavior_state.state in (3, 4)  # STANDING, STEPPING
+        return bool(powered and standing)
+    except Exception as e:
+        print(f"[Spot] emote: robot state unavailable: {e}")
+        return False
+
+
+def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None):
+    """Background thread: stow arm (mouth latched off), re-check clearance,
+    run the routine, restore the arm only after it completed. Every robot
+    command is gated on stop_event under _arm_lock, so a stop/freeze/estop
+    (which sets the event before its own stop) is never followed by a routine
+    start or an arm restore from here."""
+    from bosdyn.choreography.client.choreography import ChoreographyClient
+    cmd = session["cmd"]
+    outcome = "aborted"  # "done" | "timeout" | "abnormal" | "aborted"
+    started = False
+    try:
+        _mouth_suspend()  # the claw never moves during a routine
+        if prev_pose != "stowed":
+            if not _arm_send(cmd, "stowed", stop_event, timeout_s=5.0):
+                print("[Spot] emote: arm did not stow — not dancing")
+                outcome = "done"  # restore the previous pose explicitly
+                return
+        refusal = _clearance_refusal(session["robot"])  # re-check right before
+        if refusal is not None:
+            _say(speak, refusal)
+            outcome = "done"  # nothing ran; put the arm back
+            return
+        choreo = session["robot"].ensure_client(ChoreographyClient.default_service_name)
+        with _arm_lock:
+            if stop_event.is_set() or _aborted(gen):
+                return
+            started = True
+            choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
+                                        choreography_starting_slice=0, timeout=RPC_TIMEOUT_S)
+        print(f"[Spot] ✓ Routine '{routine}' started")
+        t0 = time.time()
+        deadline = t0 + EMOTE_TIMEOUT_S
+        seen_running = False
+        outcome = "timeout"
+        stop_event.wait(1.0)
+        while not stop_event.is_set() and time.time() < deadline:
+            try:
+                status, _ = choreo.get_choreography_status()
+                st = status.status
+                if st in _CHOREO_RUNNING:
+                    seen_running = True
+                elif seen_running:
+                    outcome = "done" if st == _CHOREO_COMPLETED else "abnormal"
+                    break
+                elif time.time() > t0 + EMOTE_STALE_GRACE_S:
+                    outcome = "abnormal"  # never saw it run: don't trust the status
+                    break
+            except Exception as e:
+                print(f"[Spot] emote status poll failed: {e}")
+            stop_event.wait(0.5)
+        if stop_event.is_set():
+            outcome = "aborted"
+        print(f"[Spot] Routine '{routine}' ended: {outcome}")
+    except Exception as e:
+        print(f"[Spot] ✗ emote '{routine}' failed: {e}")
+        outcome = "abnormal" if started else "done"
+    finally:
+        if stop_event.is_set():
+            return  # the stop owns the robot and the arm
+        try:
+            if outcome in ("timeout", "abnormal") and started:
+                _send_stop(cmd)
+            if outcome in ("done", "timeout") and prev_pose != "stowed":
+                # also covers a failed stow: put the arm back in a known pose
+                _arm_send(cmd, prev_pose, stop_event, timeout_s=5.0)
+            _mouth_restore()
+        except Exception as e:
+            print(f"[Spot] ⚠️  Arm restore after emote failed: {e}")
+
+
+def _handle_emote(params, session, speak=None):
+    """emote {"name": str}: refuse while moving, sitting or crowded, then run
+    the routine on a background thread registered as the nav thread (so stop
+    cancels it)."""
+    global _last_routine
+    from src.voice_control.emotes import resolve_routine
+    if _nav_mode == "emote" and is_navigating():
+        _say(speak, "One dance at a time!")
+        return False
+    if is_navigating() or _arm_pose == "walk":
+        _say(speak, "I can't dance while I'm on the move.")
+        return False
+    try:
+        routine = resolve_routine((params or {}).get("name"), _last_routine)
+    except ValueError:
+        _say(speak, "I don't know that one yet.")
+        return False
+    if not _standing_and_powered(session):
+        _say(speak, "Ask me to stand up first.")
+        return False
+    refusal = _clearance_refusal(session["robot"])
+    if refusal is not None:
+        _say(speak, refusal)
+        return False
+    gen = _dispatch_gen
+    if _aborted(gen):
+        return False
+    _last_routine = routine
+    _cancel_nav()
+    prev = _arm_pose
+    if not _spawn_nav(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
+                      mode="emote", gen=gen):
+        return False
+    print(f"[Spot] emote: running '{routine}'")
+    return True
+
+
+INFO_INTENTS = frozenset({"battery_status", "status", "check_obstacles",
+                          "list_locations", "list_maps"})
+_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in soft stop"}
+
+
+def _spoken_list(names) -> str:
+    """["a_b", "c", "d"] -> "a b, c and d"."""
+    items = [str(n).replace("_", " ") for n in names]
+    if len(items) <= 1:
+        return "".join(items)
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _handle_list_maps(speak=None):
+    """Spoken list of maps on disk. No robot needed."""
+    try:
+        maps = list_available_maps(project_root)
+    except OSError as e:
+        print(f"[Spot] ✗ list_maps failed: {e}")
+        _say(speak, "I couldn't read my maps folder.")
+        return False
+    if not maps:
+        _say(speak, "I don't have any maps saved yet.")
+        return True
+    print(f"[Spot] Available maps ({len(maps)}): {', '.join(maps)}")
+    line = f"I have {len(maps)} map{'s' if len(maps) != 1 else ''}: {_spoken_list(maps)}."
+    current = read_last_used(project_root)
+    if current:
+        print(f"[Spot] Currently loaded: {current}")
+        line += f" The current one is {current.replace('_', ' ')}."
+    _say(speak, line)
+    return True
+
+
+def _handle_list_locations(speak=None):
+    """Spoken list of saved locations. No robot needed."""
+    try:
+        locations = _list_saved_locations()
+    except Exception as e:
+        print(f"[Spot] ✗ Failed to list locations: {e}")
+        _say(speak, "I couldn't read my saved places.")
+        return False
+    names = [n for n in locations if _is_named_location(n)]
+    if not names:
+        _say(speak, "I don't have any saved places yet.")
+        return True
+    for n in names:
+        print(f"[Spot]   - {n}")
+    _say(speak, f"I know {len(names)} place{'s' if len(names) != 1 else ''}: "
+                f"{_spoken_list(names)}.")
+    return True
+
+
+def _say(speak, text: str):
+    """Speak a short line via the caller's speak callable; print if None."""
+    print(f"[Spot] {text}")
+    if speak is not None:
+        try:
+            speak(text)
+        except Exception as e:
+            print(f"[Spot] speak failed: {e}")
+
+
+def dispatch_intent(intent, brain=None, speak=None):
+    """Execute a Spot command based on parsed intent. Thread-safe.
 
     Args:
         intent: Dict with keys "intent" (str) and "params" (dict)
         brain: Optional LLMBrain instance — required only for set_persona.
+        speak: Optional callable(str) used to say result/refusal lines
+            (e.g. tts.speak). None -> lines are only printed.
 
     Returns:
         bool: True if command executed successfully, False otherwise
+
+    Arm policy (arm_policy_for):
+    - stop/freeze/estop never take a dispatch lock: motion stop first, then
+      the original branch, then a no-wait stow. With no session they do
+      nothing (never power on a parked robot).
+    - stop/freeze/estop/sit/power_off/stow abort any locomotion still being
+      set up on another thread (_safety_gen).
+    - Locomotion tucks a deployed arm (refusing to move if the tuck fails) and
+      restores it only after a natural finish.
     """
-    global _nav_thread, _nav_stop_event
+    global _last_brain, _safety_gen, _dispatch_gen
+    if not intent:
+        return False
+    if brain is not None:
+        _last_brain = brain
+        try:
+            brain.session_state.arm_pose = _arm_pose
+        except Exception:
+            pass
+    name = intent.get("intent")
+
+    if name in ABORTING_INTENTS:
+        _safety_gen += 1
+    if name in SAFETY_INTENTS:
+        return _dispatch_safety(intent, brain, speak)
+    if name in _UNLOCKED_INTENTS:
+        return _dispatch_core(intent, brain, speak)
+    held = _spot_session
+    if name in ABORTING_INTENTS and held is None:
+        print(f"[Spot] {name}: no robot session — not connecting just to {name}")
+        return False
+    with _dispatch_lock:
+        outer = _dispatch_gen
+        if outer is None:
+            _dispatch_gen = _safety_gen
+        try:
+            if name in LOCOMOTION_INTENTS:
+                return _dispatch_locomotion(intent, brain, speak)
+            if name in ABORTING_INTENTS:  # sit/power_off/stow never bring up a session
+                return _dispatch_core(intent, brain, speak, session=held)
+            return _dispatch_core(intent, brain, speak)
+        finally:
+            _dispatch_gen = outer
+
+
+def _dispatch_safety(intent, brain=None, speak=None):
+    name = intent.get("intent")
+    sess = _spot_session
+    if sess is None:
+        print(f"[Spot] {name}: no robot session — nothing to stop (not connecting)")
+        _close_mouth()
+        _cancel_nav()
+        return False
+    cmd_client = sess["cmd"]
+    was_emote = _nav_mode == "emote"
+    _send_stop(cmd_client)  # FIRST, before any thread join
+    ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
+    _stow_now(cmd_client, resend_stop=was_emote,
+              then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
+    return ok
+
+
+def _abort_motion(cmd_client, name):
+    """A stop/sit/stow arrived while this locomotion was being set up."""
+    print(f"[Spot] '{name}' cancelled by a stop")
+    _cancel_nav()
+    _send_stop(cmd_client)
+    _stow_now(cmd_client, force=True)
+    return False
+
+
+def _dispatch_locomotion(intent, brain=None, speak=None):
+    """Tuck, move, and (via the motion thread) restore after a natural finish."""
+    global _pose_before_walk, _last_traj
+    name = intent.get("intent")
+    try:
+        session = ensure_spot_session()
+    except Exception as e:
+        print(f"[Spot] Error executing intent '{name}': {e}")
+        return False
+    cmd_client = session["cmd"]
+    gen = _dispatch_gen
+    _cancel_nav()  # a new motion supersedes the old one (its restore is skipped)
+    current = _arm_pose
+    before, after = arm_policy_for(name, current)
+    if current != "stowed":
+        if current == "walk" and _pose_before_walk is not None:
+            after = _pose_before_walk
+        _pose_before_walk = after if after != "walk" else "stowed"
+        if current != before:
+            _mouth_suspend()  # claw closed and still for the whole walk
+            try:
+                tucked = _arm_send(cmd_client, before, timeout_s=5.0)
+            except Exception as e:
+                print(f"[Spot] Arm tuck failed: {e}")
+                tucked = False
+            if _aborted(gen):
+                return _abort_motion(cmd_client, name)
+            if not tucked:
+                _say(speak, "I couldn't tuck my arm in, so I'll stay put.")
+                _restore_after_motion()
+                return False
+    if _aborted(gen):
+        return _abort_motion(cmd_client, name)
+    _last_traj = None
+    ok = _dispatch_core(intent, brain, speak)
+    if _aborted(gen):
+        return _abort_motion(cmd_client, name)
+    if is_navigating():
+        return ok  # the nav thread restores the arm after a natural finish
+    if ok and _last_traj is not None:
+        if not _start_restore_watch(cmd_client, *_last_traj, gen=gen):
+            return _abort_motion(cmd_client, name)
+    else:
+        _restore_after_motion()  # nothing moved
+    return ok
+
+
+def _dispatch_core(intent, brain=None, speak=None, session=None):
+    """The per-intent branches. Called only through dispatch_intent (which
+    applies the arm policy) or for nested re-dispatch."""
+    global _last_traj, _pose_before_walk
 
     if not intent:
         return False
@@ -780,14 +1454,30 @@ def dispatch_intent(intent, brain=None):
     if name == "set_backend":
         return _handle_set_backend(params)
 
+    if name == "list_maps":
+        return _handle_list_maps(speak)
+    if name == "list_locations":
+        return _handle_list_locations(speak)
+
     try:
-        session = ensure_spot_session()
+        if session is None:  # safety/aborting callers pass the session they hold
+            session = ensure_spot_session()
         cmd_client = session["cmd"]
         
         if name == "enable_mouth":
             return _handle_enable_mouth(params)
         if name == "disable_mouth":
             return _handle_disable_mouth(params)
+        if name == "emote":
+            return _handle_emote(params, session, speak)
+        if name == "stow":  # spotctl stow: mouth off, arm stowed
+            # NOTE: stow also interrupts a running walk/patrol/tour/follow/emote
+            # (it is an ABORTING_INTENT): the robot is stopped first, then the
+            # nav cancelled, then the arm stowed. Fails safe.
+            if is_navigating():
+                _send_stop(cmd_client)
+                _cancel_nav()
+            return _handle_disable_mouth(params, session)
 
         if name == "stop":
             # Stop current movement/action
@@ -810,10 +1500,11 @@ def dispatch_intent(intent, brain=None):
             try:
                 # First stop any current movement
                 cmd_client.robot_command(RobotCommandBuilder.stop_command())
-                # Then issue a stand command to hold position (robot will stay where it is)
-                # This keeps the robot standing but frozen
-                cmd = RobotCommandBuilder.synchro_stand_command()
-                cmd_client.robot_command(cmd)
+                # Then hold position with a stand — ONLY if already standing, so
+                # freeze never stands up a sitting robot.
+                if _is_standing(session):
+                    cmd = RobotCommandBuilder.synchro_stand_command()
+                    cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Robot frozen - holding position")
                 return True
             except Exception as e:
@@ -840,10 +1531,9 @@ def dispatch_intent(intent, brain=None):
                             except Exception:
                                 pass
                         time.sleep(1)
-                        cmd_client.robot_command(RobotCommandBuilder.selfright_command())
-                        time.sleep(5)
+                        # No self-right here: that is its own explicit intent.
                         cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
-                        print("[Spot] ✓ Recovered and standing")
+                        print("[Spot] ✓ Faults cleared, standing")
                         return True
                     except Exception as e2:
                         print(f"[Spot] ✗ Recovery failed: {e2}")
@@ -854,6 +1544,14 @@ def dispatch_intent(intent, brain=None):
         elif name == "sit":
             # Sit the robot down
             print("[Spot] Sitting down...")
+            _send_stop(cmd_client)  # stop first, then stow, then sit
+            _cancel_nav()
+            _pose_before_walk = None
+            if _arm_pose != "stowed":
+                try:
+                    _arm_send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
+                except Exception as e:
+                    print(f"[Spot] ⚠️  Arm stow before sit failed: {e}")
             try:
                 cmd = RobotCommandBuilder.synchro_sit_command()
                 cmd_client.robot_command(cmd)
@@ -875,9 +1573,11 @@ def dispatch_intent(intent, brain=None):
                 goal_pose = SE2Pose(x, y, yaw)
                 cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
                     goal_se2=goal_pose.to_proto(),
-                    frame_name=ODOM_FRAME_NAME
+                    frame_name=ODOM_FRAME_NAME,
+                    params=capped_mobility_params(),
                 )
-                cmd_client.robot_command(cmd, end_time_secs=None)
+                cmd_id = cmd_client.robot_command(cmd, end_time_secs=None)
+                _last_traj = (cmd_id, time.time() + 30.0)
                 return True
             else:
                 print(f"[Spot] Invalid relative position: {relative}")
@@ -912,10 +1612,13 @@ def dispatch_intent(intent, brain=None):
             goal_pose = SE2Pose(current_x, current_y, new_yaw)
             cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
                 goal_se2=goal_pose.to_proto(),
-                frame_name=ODOM_FRAME_NAME
+                frame_name=ODOM_FRAME_NAME,
+                params=capped_mobility_params(),
             )
             # Send command with timeout to allow execution
-            cmd_client.robot_command(cmd, end_time_secs=time.time() + 5.0)
+            end_t = time.time() + 5.0
+            cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
+            _last_traj = (cmd_id, end_t + 1.0)
             print(f"[Spot] ✓ Turn command sent")
             return True
             
@@ -941,8 +1644,12 @@ def dispatch_intent(intent, brain=None):
                     goal_y_rt_body=0.0,
                     goal_heading_rt_body=0.0,
                     frame_tree_snapshot=frame_tree,
+                    params=capped_mobility_params(),
                 )
-                cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
+                # Speed cap: allow enough time to cover the distance at the cap.
+                end_t = time.time() + max(10.0, distance / walk_speed_cap() + 3.0)
+                cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
+                _last_traj = (cmd_id, end_t + 1.0)
                 print(f"[Spot] ✓ Walk {direction} command sent")
                 return True
             except Exception as e:
@@ -971,8 +1678,11 @@ def dispatch_intent(intent, brain=None):
                     goal_y_rt_body=y,
                     goal_heading_rt_body=0.0,
                     frame_tree_snapshot=frame_tree,
+                    params=capped_mobility_params(),
                 )
-                cmd_client.robot_command(cmd, end_time_secs=time.time() + 10.0)
+                end_t = time.time() + max(10.0, distance / walk_speed_cap() + 3.0)
+                cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
+                _last_traj = (cmd_id, end_t + 1.0)
                 print(f"[Spot] ✓ Strafe {direction} command sent")
                 return True
             except Exception as e:
@@ -1046,9 +1756,19 @@ def dispatch_intent(intent, brain=None):
                     print(f"[Spot]   Estimated runtime: {hours}h {mins}m")
                 else:
                     print(f"[Spot]   Estimated runtime: {mins}m")
+                parts = []
+                if hours > 0:
+                    parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+                if mins > 0:
+                    parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
+                line = f"My battery is at {battery:.0f} percent"
+                if parts:
+                    line += f", with about {' and '.join(parts)} of walking left"
+                _say(speak, line + ".")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Battery status failed: {e}")
+                _say(speak, "I couldn't read my battery just now.")
                 return False
 
         elif name == "status":
@@ -1070,14 +1790,28 @@ def dispatch_intent(intent, brain=None):
                 print(f"[Spot] ✓ Status Report:")
                 print(f"[Spot]   Battery: {battery:.0f}%")
                 print(f"[Spot]   E-Stop: {estop}")
+                motors = "on" if (robot_state.power_state.motor_power_state
+                                  == robot_state.power_state.STATE_ON) else "off"
+                estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
+                ok_word = "All good. " if (motors == "on" and estop == "not_cut") else ""
+                _say(speak, f"{ok_word}My battery is at {battery:.0f} percent, "
+                            f"my motors are {motors}, and my e-stop is {estop_words}.")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Status check failed: {e}")
+                _say(speak, "I couldn't check my status just now.")
                 return False
 
         elif name == "power_off":
             # Safe power off
             print("[Spot] Initiating safe power off...")
+            _send_stop(cmd_client)  # stop first, then stow, then power off
+            _close_mouth()
+            _cancel_nav()
+            try:
+                _arm_send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
+            except Exception as e:
+                print(f"[Spot] ⚠️  Arm stow before power off failed: {e}")
             try:
                 cmd = RobotCommandBuilder.safe_power_off_command()
                 cmd_client.robot_command(cmd)
@@ -1117,7 +1851,7 @@ def dispatch_intent(intent, brain=None):
             desc_normalized = description.strip().lower().replace(" ", "_")
             if desc_normalized in saved:
                 print(f"[Spot] '{description}' is a saved location — using map navigation")
-                return dispatch_intent({"intent": "go_to", "params": {"location": desc_normalized}})
+                return _dispatch_core({"intent": "go_to", "params": {"location": desc_normalized}})
 
             # (2) world-object shortcut — fiducials and docks
             try:
@@ -1137,8 +1871,11 @@ def dispatch_intent(intent, brain=None):
                     cmd = RobotCommandBuilder.synchro_se2_trajectory_command(
                         goal_se2=goal_pose.to_proto(),
                         frame_name=target.frame_name,
+                        params=capped_mobility_params(),
                     )
-                    cmd_client.robot_command(cmd, end_time_secs=time.time() + 15.0)
+                    end_t = time.time() + 15.0
+                    cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
+                    _last_traj = (cmd_id, end_t + 1.0)
                     print(f"[Spot] ✓ SE2 trajectory sent toward {target.source}")
                     return True
                 except Exception as e:
@@ -1149,24 +1886,24 @@ def dispatch_intent(intent, brain=None):
             # (3) YOLO fallback
             print(f"[Spot] Looking for '{description}' with YOLO-World...")
 
-            def _visual_nav_thread():
+            def _visual_nav_thread(ev):
                 try:
                     from src.voice_control.visual_nav import navigate_to_object
-                    result = navigate_to_object(description, session, _nav_stop_event)
+                    result = navigate_to_object(description, session, ev)
                     if result:
                         print(f"[Spot] ✓ Arrived near '{description}'")
                     else:
                         print(f"[Spot] ✗ Could not reach '{description}'")
+                    return bool(result)
                 except ImportError:
                     print("[Spot] ✗ ultralytics not installed. Run: pip install ultralytics")
                 except Exception as e:
                     print(f"[Spot] ✗ Visual nav failed: {e}")
 
             _cancel_nav()
-            _nav_stop_event = threading.Event()
-            _nav_thread = threading.Thread(target=_visual_nav_thread, daemon=True)
-            _nav_thread.start()
-            return True
+            return _spawn_nav(
+                lambda ev: _thread_then_restore(lambda: _visual_nav_thread(ev), ev),
+                mode="visual_nav", gen=_dispatch_gen)
 
         elif name == "check_obstacles":
             # Query Spot's native LocalGrid obstacle field via the
@@ -1182,6 +1919,7 @@ def dispatch_intent(intent, brain=None):
                 )
             except Exception as e:
                 print(f"[Spot] check_obstacles: perception module unavailable: {e}")
+                _say(speak, "I can't check my surroundings right now.")
                 return False
 
             robot_obj = session["robot"]
@@ -1189,11 +1927,13 @@ def dispatch_intent(intent, brain=None):
                 hit = nearest_obstacle_in_body_frame(robot_obj, max_radius_m=3.0)
             except Exception as e:
                 print(f"[Spot] check_obstacles: query failed: {e}")
+                _say(speak, "I couldn't check my surroundings just now.")
                 return False
 
             if hit is None:
                 print("[Spot] check_obstacles: no obstacles within 3m "
                       "(or obstacle-grid unavailable on this firmware)")
+                _say(speak, "I don't see anything close to me right now.")
                 return True
 
             # Convert bearing (radians, 0=forward, +pi/2=left) to a
@@ -1220,31 +1960,31 @@ def dispatch_intent(intent, brain=None):
                 f"[Spot] check_obstacles: nearest obstacle {hit.distance_m:.2f}m "
                 f"{direction} ({deg:.0f}°, source={hit.grid_name})"
             )
+            _say(speak, f"The closest thing is about {hit.distance_m:.1f} meters {direction}.")
             return True
 
         elif name == "follow_me":
             # Follow the nearest person using YOLO person detection
             print("[Spot] Starting follow mode...")
 
-            def _follow_thread():
+            def _follow_thread(ev):
                 try:
                     from src.voice_control.visual_nav import follow_person
-                    result = follow_person(session, _nav_stop_event)
+                    result = follow_person(session, ev)
                     if result:
                         print("[Spot] ✓ Follow mode ended cleanly")
                     else:
                         print("[Spot] Lost the person — follow mode ended")
+                    return bool(result)
                 except ImportError:
                     print("[Spot] ✗ ultralytics not installed. Run: pip install ultralytics")
                 except Exception as e:
                     print(f"[Spot] ✗ Follow failed: {e}")
 
             _cancel_nav()
-            _nav_stop_event = threading.Event()
-            _nav_mode = "follow"
-            _nav_thread = threading.Thread(target=_follow_thread, daemon=True)
-            _nav_thread.start()
-            return True
+            return _spawn_nav(
+                lambda ev: _thread_then_restore(lambda: _follow_thread(ev), ev),
+                mode="follow", gen=_dispatch_gen)
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)
@@ -1300,41 +2040,6 @@ def dispatch_intent(intent, brain=None):
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ load_map failed: {e}")
-                return False
-
-        elif name == "list_maps":
-            try:
-                maps = list_available_maps(project_root)
-            except OSError as e:
-                print(f"[Spot] ✗ list_maps failed: {e}")
-                return False
-
-            if not maps:
-                print("[Spot] No maps found.")
-                return True
-
-            print(f"[Spot] Available maps ({len(maps)}): {', '.join(maps)}")
-            current = read_last_used(project_root)
-            if current:
-                print(f"[Spot] Currently loaded: {current}")
-            return True
-
-        elif name == "list_locations":
-            # List saved locations
-            print("[Spot] Listing saved locations...")
-            try:
-                from src.location_manager import list_locations
-                locations = list_locations()
-                if locations:
-                    print(f"[Spot] ✓ Saved locations:")
-                    for name, waypoint in locations.items():
-                        print(f"[Spot]   - {name}")
-                else:
-                    print("[Spot] No locations saved yet.")
-                    print("[Spot] Say 'save location [name]' to save current position.")
-                return True
-            except Exception as e:
-                print(f"[Spot] ✗ Failed to list locations: {e}")
                 return False
 
         elif name == "save_location":
@@ -1402,7 +2107,8 @@ def dispatch_intent(intent, brain=None):
                     return False
 
                 _save_home_waypoint(graph_nav_client)
-                _start_nav_thread(graph_nav_client, [waypoint_id], [location_name])
+                if not _start_nav_thread(graph_nav_client, [waypoint_id], [location_name]):
+                    return False
 
                 print(f"[Spot] Navigation started to '{location_name}'")
                 return True
@@ -1470,7 +2176,8 @@ def dispatch_intent(intent, brain=None):
                     return False
 
                 _save_home_waypoint(graph_nav_client)
-                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False)
+                if not _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
+                    return False
 
                 print(f"[Spot] Tour started: {', '.join(location_names)}")
                 return True
@@ -1539,7 +2246,8 @@ def dispatch_intent(intent, brain=None):
                     return False
 
                 _save_home_waypoint(graph_nav_client)
-                _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=True)
+                if not _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=True):
+                    return False
 
                 print(f"[Spot] Patrol started: {', '.join(location_names)}")
                 return True
@@ -1568,7 +2276,8 @@ def dispatch_intent(intent, brain=None):
                 locs = _list_saved_locations()
                 home_name = next((n for n, wid in locs.items() if wid == _home_waypoint), _home_waypoint[:12])
 
-                _start_nav_thread(graph_nav_client, [_home_waypoint], [home_name])
+                if not _start_nav_thread(graph_nav_client, [_home_waypoint], [home_name]):
+                    return False
 
                 print(f"[Spot] Heading back to '{home_name}'")
                 return True
@@ -1584,6 +2293,8 @@ def dispatch_intent(intent, brain=None):
             
     except Exception as e:
         print(f"[Spot] Error executing intent '{name}': {e}")
+        if name in INFO_INTENTS:
+            _say(speak, "I can't reach my sensors right now.")
         import traceback
         traceback.print_exc()
         return False

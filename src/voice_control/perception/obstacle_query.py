@@ -344,3 +344,36 @@ def nearest_obstacle_in_body_frame(
         if hit is not None:
             return hit
     return None
+
+
+def clearance_scan(
+    robot,
+    max_radius_m: float,
+    grid_preference: list[str] | None = None,
+) -> tuple[bool, ObstacleHit | None]:
+    """Fail-closed variant for safety gates (e.g. the emote clearance check).
+
+    Returns ``(usable, nearest)``. ``usable`` is True only if at least one
+    handled grid was fetched AND the body origin could be placed in it, so
+    the caller can tell "nothing near" (usable, None) from "no information"
+    (False, None). ``nearest`` is the closest hit across all usable grids.
+    """
+    if grid_preference is None:
+        grid_preference = _DEFAULT_GRID_PREFERENCE
+    grids = fetch_grids(robot, names=list(grid_preference))
+    usable = False
+    best = None
+    for name in grid_preference:
+        grid = grids.get(name)
+        if grid is None or name not in ("obstacle_distance", "no_step"):
+            continue
+        if _robot_origin_in_grid_frame(grid) is None:
+            continue
+        usable = True
+        if name == "obstacle_distance":
+            hit = _scan_obstacle_distance(grid, max_radius_m)
+        else:
+            hit = _scan_no_step(grid, max_radius_m)
+        if hit is not None and (best is None or hit.distance_m < best.distance_m):
+            best = hit
+    return usable, best

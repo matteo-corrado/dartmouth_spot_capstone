@@ -475,9 +475,11 @@ def _move(session, x, y, yaw, timeout=5.0):
     try:
         state = session["state"].get_robot_state()
         tree = state.kinematic_state.transforms_snapshot
+        from src.graph_nav_utils import capped_mobility_params  # walk speed cap
         cmd = RobotCommandBuilder.synchro_trajectory_command_in_body_frame(
             goal_x_rt_body=x, goal_y_rt_body=y,
-            goal_heading_rt_body=yaw, frame_tree_snapshot=tree
+            goal_heading_rt_body=yaw, frame_tree_snapshot=tree,
+            params=capped_mobility_params(),
         )
         session["cmd"].robot_command(cmd, end_time_secs=time.time() + timeout)
         return True
@@ -496,8 +498,10 @@ def _send_velocity(session, vx, vy, v_rot, duration=0.5):
         duration: Command duration — robot auto-stops if no new command
     """
     try:
+        from src.graph_nav_utils import capped_mobility_params, clamp_speed  # walk speed cap
         cmd = RobotCommandBuilder.synchro_velocity_command(
-            v_x=vx, v_y=vy, v_rot=v_rot
+            v_x=clamp_speed(vx), v_y=clamp_speed(vy), v_rot=v_rot,
+            params=capped_mobility_params(),
         )
         session["cmd"].robot_command(cmd, end_time_secs=time.time() + duration)
         return True

@@ -21,6 +21,9 @@ class SessionState:
     turn_index: int = 0
     last_action_taken: Optional[str] = None
     last_comment_ts: float = 0.0
+    # Task 14: "stowed" | "talk" | "walk". Mirrored from spot_dispatch, which
+    # owns the live value (safety paths dispatch without a brain).
+    arm_pose: str = "stowed"
 
     def as_dict(self) -> dict:
         """Render as flat dict for LLM bullet-list block.
@@ -33,4 +36,5 @@ class SessionState:
             "turn_index": self.turn_index,
             "last_action_taken": self.last_action_taken or "none",
             "seconds_since_last_comment": int(time.time() - self.last_comment_ts),
+            "arm_pose": self.arm_pose,
         }
