@@ -15,12 +15,12 @@ def cmd(monkeypatch):
 
 
 def test_gaze_left_slow(cmd):
-    assert d.gaze_at_bearing(90.0) is True
+    assert d.gaze_at_bearing(60.0) is True
     (kind, proto), = cmd.sent
     assert kind == "arm_gaze"
     g = proto.synchronized_command.arm_command.arm_gaze_command
     p = g.target_trajectory_in_frame1.points[0].point
-    assert abs(p.x) < 1e-6 and p.y == pytest.approx(2.0) and p.z == pytest.approx(0.9)
+    assert p.x == pytest.approx(1.0) and p.y == pytest.approx(1.7320508) and p.z == pytest.approx(0.9)
     assert g.frame1_name == "body"
     assert g.max_linear_velocity.value == pytest.approx(0.3)
     assert g.max_angular_velocity.value == pytest.approx(1.0)

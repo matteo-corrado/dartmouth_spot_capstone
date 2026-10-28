@@ -6,7 +6,7 @@ into RobotCommandBuilder.arm_gaze_command(x, y, z, "body", ...).
 """
 import math
 
-MAX_GAZE_DEG = 120.0
+MAX_GAZE_DEG = 75.0  # front arc only; safety review cut this from 120
 
 
 def _wrap(deg: float) -> float:
@@ -15,7 +15,13 @@ def _wrap(deg: float) -> float:
 
 
 def gaze_target(body_deg: float, dist_m=2.0, height_m=0.9) -> tuple[float, float, float] | None:
-    """Body-frame point dist_m away along body_deg at height_m; None if behind (>120 deg)."""
+    """Body-frame point dist_m away along body_deg at height_m; None outside the
+    front +/-75 deg arc or for a non-finite bearing."""
+    try:
+        if not math.isfinite(body_deg):
+            return None
+    except TypeError:
+        return None
     d = _wrap(body_deg)
     if abs(d) > MAX_GAZE_DEG:
         return None
