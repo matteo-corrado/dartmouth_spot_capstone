@@ -76,7 +76,7 @@ def download_file(url, dest):
     print(f"({size_mb:.1f} MB)")
 
 
-def setup(phrases_file=None):
+def setup(phrases_file=None, score=KWS_SCORE, threshold=KWS_THRESHOLD):
     """Download model files and create keywords.txt."""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -93,11 +93,11 @@ def setup(phrases_file=None):
         sys.path.insert(0, str(PROJECT_ROOT))
         from src.voice_control.wake.phrases import load_wake_phrases
         phrases = load_wake_phrases(phrases_file)
-        kw_lines = build_keyword_lines(phrases, _bpe_tokenizer())
+        kw_lines = build_keyword_lines(phrases, _bpe_tokenizer(), score, threshold)
         kw_path.write_text("\n".join(kw_lines) + "\n")
         print(f"  keywords.txt — created ({len(kw_lines)} phrases: {', '.join(phrases)})")
     else:
-        kw_path.write_text(KEYWORD_BPE + "\n")
+        kw_path.write_text(f"{KEYWORD_BPE} :{score} #{threshold} @HEY_SPOT\n")
         print(f"  keywords.txt — created ({KEYWORD_BPE})")
 
     # Verify
@@ -117,6 +117,13 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Setup sherpa-onnx KWS model")
     parser.add_argument("--check", action="store_true", help="Check existing install")
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from src.voice_control.tuning import get_tuning
+    _t = get_tuning()
+    parser.add_argument("--score", type=float, default=_t.kws_score,
+                        help="Keyword boost score written per keyword line (default: tuning kws_score)")
+    parser.add_argument("--threshold", type=float, default=_t.kws_threshold,
+                        help="Keyword threshold written per keyword line (default: tuning kws_threshold)")
     parser.add_argument("--phrases-file", default=None,
                         help="Wake phrase list, one per line (e.g. config/wake_phrases.txt)")
     args = parser.parse_args()
@@ -135,7 +142,7 @@ def main():
     print(f"Model: {MODEL_NAME}")
     print(f"Target: {MODEL_DIR}\n")
 
-    if setup(args.phrases_file):
+    if setup(args.phrases_file, args.score, args.threshold):
         print("\nDone! Test with: python src/voice_control/wake/sherpa_onnx.py --test-mic")
     else:
         sys.exit(1)

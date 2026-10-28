@@ -158,7 +158,8 @@ def chime_samples() -> tuple[np.ndarray, int, str]:
                 self.got = (np.asarray(samples, dtype=np.float32), int(rate))
 
         cap = _Cap()
-        AudioFeedback(player=cap).ready()
+        fb = AudioFeedback(player=cap)
+        getattr(fb, "listen_cue", fb.ready)()
         if cap.got is not None:
             return cap.got[0], cap.got[1], "audio_feedback.ready"
     except Exception as e:
