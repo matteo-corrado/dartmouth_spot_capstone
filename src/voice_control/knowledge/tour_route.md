@@ -37,9 +37,9 @@ through all three.
 
 ---
 
-## Tour stops (in order)
+## Tour points (in order)
 
-### Stop 1 — Student Affairs Office (start)
+### Point 1 — Student Affairs Office (start)
 **Saved location**: `student_affairs` (upstairs in MacLean)
 
 Talking points:
@@ -53,7 +53,7 @@ Talking points:
   specifically. They host engineering-focused career fairs, and even alumni
   can come back and use these resources after they graduate.
 
-### Stop 2 — Crossing into Cummings
+### Point 2 — Crossing into Cummings
 **Transit**: walk across the bridge from MacLean into Cummings Hall.
 
 Talking points:
@@ -65,7 +65,7 @@ Talking points:
 - MacLean was added in 2006, and the ECSC was completed in March 2022.
 - Together these three buildings make up the Thayer School complex.
 
-### Stop 3 — The Great Hall
+### Point 3 — The Great Hall
 **Saved location**: `great_hall`
 
 Talking points:
@@ -76,7 +76,7 @@ Talking points:
   hanging out between classes. It's a flexible, open space — kind of the
   living room of Cummings.
 
-### Stop 4 — Spanos Auditorium (peek inside)
+### Point 4 — Spanos Auditorium (peek inside)
 **Saved location**: not currently in the map — describe in passing.
 **Where it is**: Cummings Hall, Room 100.
 
@@ -89,7 +89,7 @@ Talking points:
   larger and are usually held in their own departments rather than in
   Thayer.
 
-### Stop 5 — Stairs by the Jackson Conference Room
+### Point 5 — Stairs by the Jackson Conference Room
 **Saved location**: `jackson`
 
 Talking points:
@@ -97,7 +97,7 @@ Talking points:
 - The hallway upstairs is narrow, so on a big tour day, the tour might
   pause here to let people go up in groups.
 
-### Stop 6 — Thayer Wall of Patents (upstairs)
+### Point 6 — Thayer Wall of Patents (upstairs)
 **Saved location**: not in the map — physically just upstairs from `jackson`.
 
 Talking points:
@@ -113,7 +113,7 @@ Talking points:
   of the first project-based engineering courses students take. Another
   classic is **ENGS 33** (Solid Mechanics), which is also very hands-on.
 
-### Stop 7 — Machine Shop (the "MShop")
+### Point 7 — Machine Shop (the "MShop")
 **Saved location**: `machine_shop`
 **Where it is**: basement of Cummings Hall.
 
@@ -134,7 +134,7 @@ Talking points:
   - **ENGS 24 (Science of Materials)** — another hands-on course.
 - The point: Thayer is hands-on and project-based from day one.
 
-### Stop 8 — Main Atrium
+### Point 8 — Main Atrium
 **Saved location**: `atrium`
 
 Talking points:
@@ -146,7 +146,7 @@ Talking points:
   - The **CAD Lab** — open **24/7** to Thayer students, used for
     computer-aided design across many classes.
 
-### Stop 9 — Couch I Project Lab
+### Point 9 — Couch I Project Lab
 **Saved location**: `couch`
 
 Talking points:
@@ -156,7 +156,7 @@ Talking points:
 - Students use it for class projects and team work. Different classes
   teach different skills here.
 
-### Stop 10 — CAD Lab
+### Point 10 — CAD Lab
 **Saved location**: `cad_lab`
 
 Talking points:
@@ -164,7 +164,7 @@ Talking points:
 - Used for computer-aided design — designing 3D parts, mechanisms,
   circuit boards, and more on the computers here.
 
-### Stop 11 — Allyn Lab
+### Point 11 — Allyn Lab
 **Saved location**: not in the map — describe in passing.
 **Where it is**: MacLean Engineering Sciences Center, room 030.
 **Full name**: **Allyn Large-Frame Project Workshop**.
@@ -190,7 +190,7 @@ Talking points:
   - **Dartmouth Aerospace Engineering Club** — for students interested
     in rockets, satellites, and flight.
 
-### Stop 12 — Crossing into the ECSC
+### Point 12 — Crossing into the ECSC
 **Transit**: cut through the Couch lab area and into the ECSC building.
 
 Talking points:
@@ -203,7 +203,7 @@ Talking points:
 - This building also houses **the entire Dartmouth Department of Computer
   Science**, plus many of Thayer's research labs and a few special spaces.
 
-### Stop 13 — Magnuson Center for Entrepreneurship
+### Point 13 — Magnuson Center for Entrepreneurship
 **Saved location**: not yet in the map — physically inside the ECSC.
 
 Talking points:
@@ -216,7 +216,7 @@ Talking points:
 - The Magnuson Center actually oversees several of the spaces we'll see
   next, including the DALI Lab and the Cable Makerspace.
 
-### Stop 14 — DALI Lab
+### Point 14 — DALI Lab
 **Saved location**: not yet in the map — physically inside the ECSC.
 
 Talking points:
@@ -229,7 +229,7 @@ Talking points:
 - Basically: if you like designing or coding cool digital things, this
   is one of the best places at Dartmouth to do it.
 
-### Stop 15 — Cable Makerspace
+### Point 15 — Cable Makerspace
 **Saved location**: `makerspace`
 **Full name**: **Harold Edward Cable Makerspace**, ECSC Suite 003.
 
@@ -244,7 +244,7 @@ Talking points:
 - This is where students go to build things for fun, for clubs, or for
   personal experiments.
 
-### Stop 16 — ECSC Labs (level-by-level)
+### Point 16 — ECSC Labs (level-by-level)
 **Saved location**: `cesc_building`
 
 Talking points:
@@ -319,7 +319,7 @@ Talking points:
 
 ---
 
-## A few research lab one-liners (handy for stop 16 or any lab question)
+## A few research lab one-liners (handy for point 16 or any lab question)
 
 - **Optics in Medicine Lab** — light-based tools for cancer diagnosis and
   image-guided surgery.
@@ -338,10 +338,10 @@ Talking points:
 
 ## Tour-mode behavior notes for Spot
 
-- Walk slowly between stops so visitors (and kids) can keep up.
-- At each stop, pause and deliver the talking points warmly. Don't just
+- Walk slowly between points so visitors (and kids) can keep up.
+- At each point, pause and deliver the talking points warmly. Don't just
   recite facts — be conversational.
-- Welcome questions at any stop. If someone asks something covered in
+- Welcome questions at any point. If someone asks something covered in
   the general `thayer_knowledge.md` pack, answer from there.
 - If a question is about a specific lab or topic that isn't in either
   knowledge file, say so honestly: "I'm not sure about that one — you
