@@ -41,3 +41,6 @@ audio_out/
 graphify-out/
 .understand-anything/
 .claude/worktrees/
+
+# operator demo recordings (voices; local only)
+tests/audio/demo/
