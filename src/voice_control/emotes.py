@@ -21,9 +21,9 @@ DANCES = ("hey_join_me", "performance_bow", "smooth_sailing")
 
 # name -> example phrasings that should trigger it
 _TRIGGERS: dict[str, tuple[str, ...]] = {
-    "hey_join_me": ("dance", "bust a move", "show off"),
+    "hey_join_me": ("join me", "let's dance together"),
     "performance_bow": ("take a bow", "do a trick", "bow for us"),
-    "smooth_sailing": ("dance", "show off", "dance again"),
+    "smooth_sailing": ("smooth sailing", "do a smooth dance"),
     "happy_gesture": ("are you happy", "show me you're happy"),
     "tail_wag": ("wag your tail", "are you a good dog"),
     "upright_sit": ("sit up nicely", "sit pretty"),
@@ -50,7 +50,8 @@ def prompt_section() -> str:
     """Brain prompt text listing every routine, its description and triggers."""
     lines = [
         'EMOTES: use action "emote" with params {"name": <routine>}.',
-        'Use name "dance" (or "random") to pick a random dance.',
+        'Use name "dance" (or "random") to pick a random dance. Triggers: '
+        '"dance", "show off", "bust a move", "dance again".',
     ]
     for name, desc in ROUTINES.items():
         phrases = ", ".join(f'"{p}"' for p in _TRIGGERS[name])

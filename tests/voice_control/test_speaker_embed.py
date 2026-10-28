@@ -30,6 +30,38 @@ def test_fbank_shape():
     assert f.dtype == np.float32
 
 
+def test_fbank_wespeaker_kwargs(monkeypatch):
+    import torch
+    import torchaudio.compliance.kaldi as kaldi
+
+    captured = {}
+
+    def fake_fbank(wav, **kw):
+        captured["wav"], captured["kw"] = wav, kw
+        return torch.ones(3, 80)
+
+    monkeypatch.setattr(kaldi, "fbank", fake_fbank)
+    pcm = np.array([1000, -2000] * 400, dtype=np.int16)
+    fbank(pcm.tobytes())
+    kw = captured["kw"]
+    assert kw["window_type"] == "hamming" and kw["use_energy"] is False
+    assert kw["num_mel_bins"] == 80 and kw["frame_length"] == 25 and kw["frame_shift"] == 10
+    assert kw["dither"] == 0.0 and kw["sample_frequency"] == 16000
+    assert float(captured["wav"].abs().max()) == 2000.0  # int16 scale, not [-1, 1]
+
+
+def test_short_audio_raises():
+    with pytest.raises(ValueError):
+        fbank(np.zeros(399, dtype=np.int16).tobytes())
+    with pytest.raises(ValueError):
+        fbank(b"")
+    emb = SpeakerEmbedder.__new__(SpeakerEmbedder)
+    emb._sess, emb._input = _FakeSession(), "feats"
+    with pytest.raises(ValueError):
+        emb.embed(np.zeros(100, dtype=np.int16).tobytes())
+    assert emb._sess.fed is None  # never reached ONNX
+
+
 def test_cosine():
     assert cosine([1, 0], [1, 0]) == pytest.approx(1.0)
     assert cosine([1, 0], [0, 2]) == pytest.approx(0.0)

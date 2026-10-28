@@ -1,7 +1,8 @@
 """WeSpeaker voiceprint embedding + combined direction/voice accept rule (Task 18).
 
-fbank() matches WeSpeaker's training frontend (Kaldi fbank on int16-scale
-samples, 80 mel, 25 ms / 10 ms, no dither, per-utterance mean normalisation).
+fbank() matches WeSpeaker's frontend (Kaldi fbank on int16-scale samples,
+80 mel, 25 ms / 10 ms, hamming window, no energy, no dither at inference,
+per-utterance mean normalisation).
 SpeakerEmbedder runs voxceleb_resnet34_LM.onnx (see scripts/setup_wespeaker.py).
 
 Voiceprints are kept in memory only; nothing here writes to disk.
@@ -10,20 +11,29 @@ import numpy as np
 
 
 def fbank(pcm16: bytes, sr=16000) -> np.ndarray:
-    """(T, 80) float32 Kaldi fbank of 16-bit mono PCM, mean-normalised per utterance."""
+    """(T, 80) float32 Kaldi fbank of 16-bit mono PCM, mean-normalised per utterance.
+
+    Raises ValueError if the audio is shorter than one 25 ms frame.
+    """
+    samples = np.frombuffer(pcm16, dtype=np.int16)
+    if len(samples) < int(sr * 0.025):
+        raise ValueError(f"audio too short for fbank: {len(samples)} samples < one 25 ms frame")
+
     import torch
     import torchaudio.compliance.kaldi as kaldi
 
+    # Mirrors wespeaker/dataset/processor.py compute_fbank (inference: dither 0).
     # WeSpeaker feeds int16-range floats (not scaled to [-1, 1]).
-    wav = torch.from_numpy(np.frombuffer(pcm16, dtype=np.int16).astype(np.float32)).unsqueeze(0)
+    wav = torch.from_numpy(samples.astype(np.float32)).unsqueeze(0)
     feats = kaldi.fbank(
         wav,
         num_mel_bins=80,
         frame_length=25,
         frame_shift=10,
         dither=0.0,
-        energy_floor=0.0,
         sample_frequency=sr,
+        window_type="hamming",
+        use_energy=False,
     )
     feats = feats - feats.mean(dim=0, keepdim=True)
     return feats.numpy().astype(np.float32)

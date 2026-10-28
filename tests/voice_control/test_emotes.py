@@ -34,6 +34,12 @@ def test_catalogue_keys():
     assert set(DANCES) <= set(ROUTINES)
 
 
+def test_generic_triggers_not_on_specific_routines():
+    from src.voice_control.emotes import _TRIGGERS
+    for phrases in _TRIGGERS.values():
+        assert "dance" not in phrases and "show off" not in phrases
+
+
 def test_prompt_lists_all():
     s = prompt_section()
     assert all(n in s for n in ROUTINES) and "show off" in s
