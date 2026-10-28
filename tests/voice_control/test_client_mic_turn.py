@@ -178,3 +178,33 @@ def test_wake_detector_gets_peak_target(monkeypatch):
     monkeypatch.delenv("SPOT_WAKE_BACKEND", raising=False)
     cm._make_wake_detector()
     assert got["pt"] == cm._tuning.kws_peak_target == 0.9
+
+
+def test_chain_waits_for_dance_before_next_action(monkeypatch):
+    # "dance then sit": the emote runs on the nav thread, so the chain must
+    # wait for it (like go_to) before dispatching the next action.
+    import numpy as np
+    events = []
+
+    class Brain:
+        on_token_callback = None
+
+        def process(self, text, state):
+            return {"response": "", "actions": [
+                {"intent": "emote", "params": {"name": "dance"}},
+                {"intent": "sit", "params": {}}]}
+
+    monkeypatch.setattr(cm, "_brain_ok", True)
+    monkeypatch.setattr(cm, "get_spot_state", lambda: {})
+    monkeypatch.setattr(cm, "_resolve_voice", lambda b: None)
+    monkeypatch.setattr(cm, "get_recorder", lambda: None)
+    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "dance then sit")
+    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(cm, "_wait_for_nav_complete", lambda *a, **k: events.append("wait"))
+    monkeypatch.setattr(cm, "execute_on_spot",
+                        lambda intent, brain=None, speak=None:
+                        events.append(intent["intent"]) or True)
+    cm._abort_chain.clear()
+    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=Brain(),
+                         info={}, has_wake_detector=True)
+    assert events == ["emote", "wait", "sit"]

@@ -130,8 +130,30 @@ def test_halt_dispatched_before_slow_hush(monkeypatch):
     t0 = time.monotonic()
     cm._on_safety_kw("stop")
     assert time.monotonic() - t0 < 0.5      # returned without waiting on the hush
-    assert order[0] == "dispatch"
+    assert "dispatch" in order              # halt sent while the hush is still running
     release.set()
+    cm._abort_chain.clear()
+
+
+def test_hush_starts_without_waiting_for_slow_dispatch(monkeypatch):
+    # A slow halt RPC must not delay cutting Spot's speech.
+    hushed = threading.Event()
+    seen_during_dispatch = []
+
+    class P:
+        def force_reset(self):
+            hushed.set()
+
+    def slow_dispatch(i, brain=None, speak=None):
+        seen_during_dispatch.append(hushed.wait(1.0))
+        return True
+
+    monkeypatch.setattr(cm, "_audio_player", P())
+    monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
+    monkeypatch.setattr(cm, "execute_on_spot", slow_dispatch)
+    monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
+    cm._on_safety_kw("stop")
+    assert seen_during_dispatch == [True]
     cm._abort_chain.clear()
 
 
@@ -162,6 +184,36 @@ def test_health_goes_false_after_consecutive_errors(monkeypatch):
     while health.get("ok", True) and time.monotonic() < deadline:
         time.sleep(0.01)
     assert health["ok"] is False
+    stop.set()
+    t.join(1)
+
+
+def test_real_detector_errors_reach_health_counter(tmp_path, monkeypatch):
+    # SafetyKeywordDetector must not swallow decoder errors, or health never trips.
+    from src.voice_control.wake.safety_kws import SafetyKeywordDetector
+    monkeypatch.setattr(cm, "SAFETY_ERROR_WARN_N", 3)
+
+    class BrokenStream:
+        def accept_waveform(self, sr, samples):
+            raise RuntimeError("onnx")
+
+    class Spotter:
+        def create_stream(self):
+            return BrokenStream()
+
+    det = SafetyKeywordDetector(model_dir=tmp_path)
+    det._available, det._spotter, det._stream = True, Spotter(), BrokenStream()
+    q, stop, health = queue.Queue(), threading.Event(), {}
+    for _ in range(3):
+        q.put(b"\x00\x00" * 480)
+    t = threading.Thread(target=cm.safety_kws_loop, args=(det, q, stop, lambda k: None),
+                         kwargs=dict(health=health), daemon=True)
+    t.start()
+    deadline = time.monotonic() + 2
+    while health.get("ok", True) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert health["ok"] is False
+    assert t.is_alive()                      # loop stays up and keeps listening
     stop.set()
     t.join(1)
 
@@ -223,3 +275,17 @@ def test_raw_transcript_checked_first(monkeypatch):
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True)
     assert seen[0] == "Stop. Now."
     cm._abort_chain.clear()
+
+
+def test_halt_survives_hush_thread_start_failure(monkeypatch):
+    import src.voice_control.client_mic as cm
+
+    class Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(cm.threading, "Thread", Boom)
+    cm._start_hush()  # must not raise

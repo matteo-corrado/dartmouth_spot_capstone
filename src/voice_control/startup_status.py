@@ -71,10 +71,10 @@ def _map_clause(state: Dict[str, Any]) -> str:
 def _estop_clause(state: Dict[str, Any]) -> str:
     holders = state.get("estop_holders_cut", "")
     if holders:
-        return f"the {holders} e-stop is engaged"
+        return f"the {holders} safety switch is engaged"  # never say stop words (safety KWS)
     endpoints = state.get("estop_endpoints", "")
     if endpoints and endpoints not in ("unknown", "none"):
-        return "all e-stops clear"
+        return "all safety switches clear"
     return ""
 
 

@@ -153,7 +153,10 @@ VAD_WINDOW_SAMPLES = 512         # Silero default @ 16 kHz = 32 ms; VAD buffers 
 # End silence: Tuning.end_silence_s_short until the utterance is this long,
 # then Tuning.end_silence_s (chained commands pause mid-sentence).
 SILENCE_CROSSOVER = 2.0
-PREROLL_FRAMES = 10              # frames kept before onset (~300ms; covers Silero's onset lag)
+# Frames kept before onset (25 = 0.75 s): covers listen_cue (140 ms) + chime
+# tail + Silero's onset lag with margin, so "Hey Spot stand up" said in one
+# breath keeps the "stand" onset that arrived under the chime.
+PREROLL_FRAMES = 25
 TRAILING_KEEP_FRAMES = 10        # silence kept after the last speech frame for ASR (~300ms)
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
 NAV_SPEECH_DB_BOOST = 6.0        # added to Tuning.min_speech_dbfs while the robot moves
@@ -467,6 +470,10 @@ def safety_kws_loop(detector, q, stop_event, on_hit,
                     health["ok"] = False
                     print(f"[SafetyKWS] !!! UNHEALTHY: {errors} consecutive detector errors "
                           f"({e}) — spoken stop may not work; use spotctl stop / e-stop")
+                try:
+                    detector.reset()  # fresh stream: recover from a wedged decoder
+                except Exception:
+                    pass
                 kw = ""
             if not kw:
                 continue
@@ -501,10 +508,21 @@ def _on_safety_kw(kw: str) -> None:
         return
     print(f"[SAFETY-KWS] '{kw}' — executing {intent['intent']} immediately")
     _mark_safety()
-    # Halt FIRST; force_reset can take seconds (worker join + stream reopen),
-    # so the hush runs on its own daemon thread and neither waits on the other.
+    # force_reset can take seconds (worker join + stream reopen), so the hush
+    # runs on its own daemon thread; starting it first costs the halt nothing
+    # and neither waits on the other.
+    _start_hush()
     _dispatch_safety(intent)
-    threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
+
+
+def _start_hush() -> None:
+    """Cut current speech on a daemon thread (never blocks or breaks the caller).
+
+    Must never raise: callers send the halt right after this."""
+    try:
+        threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
+    except Exception as e:  # noqa: BLE001 - a failed hush must not lose the halt
+        print(f"[Safety] hush thread failed to start: {e}")
 
 
 def _mark_safety() -> None:
@@ -598,20 +616,32 @@ def _chime_busy() -> bool:
 
 class ChimeMask:
     """Masks VAD speech while a chime plays and for `tail_s` after it.
-    update() -> (masked, ended): ended is True on the frame the mask lifts."""
+    update() -> (masked, ended): ended is True on the frame the mask lifts.
+    `speech` is the raw VAD flag; speech_before is True if VAD was already
+    flagging speech when the mask began (user talking through the chime)."""
 
     def __init__(self, tail_s: float):
         self.tail_s = tail_s
         self._last = None
         self._was = False
+        self._prev_speech = False
+        self.speech_before = False
 
-    def update(self, chime_busy: bool, now: float):
+    def update(self, chime_busy: bool, now: float, speech: bool = False):
         if chime_busy:
             self._last = now
         masked = self._last is not None and (chime_busy or now - self._last < self.tail_s)
+        if masked and not self._was:
+            self.speech_before = self._prev_speech or speech
         ended = self._was and not masked
         self._was = masked
+        self._prev_speech = speech
         return masked, ended
+
+    def should_reset_vad(self, ended: bool, in_utt: bool) -> bool:
+        """Clear Silero's chime hangover when the mask lifts, unless the user
+        was already speaking before the chime (keep their onset)."""
+        return ended and not in_utt and not self.speech_before
 
 
 def audio_callback(indata, frames, time_info, status):
@@ -934,6 +964,19 @@ def _is_robot_moving() -> bool:
         return False
 
 
+def _probe_host() -> str:
+    """Robot host for the startup TCP probe: SPOT_IP, else src.config's
+    BOSDYN_ROBOT_IP (only that name is imported), else the WiFi-AP default."""
+    host = os.environ.get("SPOT_IP")
+    if not host:
+        try:
+            from src.config import BOSDYN_ROBOT_IP
+            host = BOSDYN_ROBOT_IP
+        except Exception:
+            host = None
+    return host or "192.168.80.3"
+
+
 def _wait_for_nav_complete(timeout: float = 120.0):
     """Block until current navigation finishes (for command chaining)."""
     start = time.time()
@@ -956,6 +999,7 @@ def _run_safety(text: str) -> bool:
         return False
     print(f"[SAFETY] {safety['intent']} — executing immediately")
     _mark_safety()
+    _start_hush()  # cut speech on its own thread; never delays the halt
     _dispatch_safety(safety)
     return True
 
@@ -1041,10 +1085,10 @@ _anim = None  # RingAnimator (owns ring writes + throttling) when available
 
 
 def _make_ring_animator(mic):
-    """RingAnimator(mic, max_hz=30.0) if the module exists; None -> direct writes."""
+    """RingAnimator(mic, max_hz=Tuning.ring_max_hz); None -> direct writes."""
     from src.voice_control.ring_animator import RingAnimator
     try:
-        return RingAnimator(mic, max_hz=30.0)
+        return RingAnimator(mic, max_hz=_tuning.ring_max_hz)
     except Exception as e:
         print(f"[Indicator] ring animator failed: {e} — direct ring writes")
         return None
@@ -1165,6 +1209,8 @@ def _on_immediate(name: str, arg=None) -> dict:
         return {"ok": True}
     if name in _MOTION_COMMANDS:
         _mark_safety()
+        if name in ("stop", "freeze"):
+            _start_hush()  # same path as a spoken halt: cut speech too
         ok = execute_on_spot({"intent": name, "params": {}, "raw": f"spotctl {name}"})
         return {"ok": bool(ok)}
     if name in ("mute", "unmute"):
@@ -1511,14 +1557,14 @@ def main():
                 args.dry_run = True
         else:
             import socket
-            spot_host = os.environ.get("SPOT_IP", "192.168.80.3")
+            spot_host = _probe_host()
             try:
                 print(f"\n[Spot] TCP-probing {spot_host}:443 ...")
                 with socket.create_connection((spot_host, 443), timeout=2.0):
                     pass
-                print("[Spot] Reachable; full session deferred to first command.")
+                print(f"[Spot] {spot_host} reachable; full session deferred to first command.")
             except OSError as e:
-                print(f"[Spot] Not reachable ({type(e).__name__}: {e})")
+                print(f"[Spot] {spot_host} not reachable ({type(e).__name__}: {e})")
                 print("[Spot] Auto-enabling dry-run mode (voice pipeline "
                       "only; no robot dispatch, no e-stop required).")
                 os.environ["SPOT_DRY_RUN"] = "1"
@@ -1889,10 +1935,10 @@ def main():
                 # A chime (beep, not speech) in flight + speaker tail: never
                 # let it start/extend an utterance (chime-only turn loop).
                 # Frames still go to pre-roll so speech right after is kept.
-                masked, chime_ended = chime_mask.update(_chime_busy(), t_frame)
+                masked, chime_ended = chime_mask.update(_chime_busy(), t_frame, is_speech)
                 if masked:
                     is_speech = False
-                elif chime_ended and not in_utt:
+                elif chime_mask.should_reset_vad(chime_ended, in_utt):
                     vad.reset()  # clear Silero's hangover from the chime
                 else:
                     floor.update(db, is_speech)
@@ -2481,7 +2527,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 _say(tts, fallback, voice_id)
                     else:
                         if execute_on_spot(intent, brain=brain,
-                                           speak=((lambda t: _say(tts, t)) if tts else None)):
+                                           speak=((lambda t: _say(tts, t, voice_id)) if tts else None)):
                             print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
                         else:
                             beep.error()
@@ -2490,7 +2536,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
 
                         # Wait for movement/posture to complete before next action in chain
                         if len(actions) > 1 and i < len(actions) - 1:
-                            if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
+                            if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back",
+                                       "emote"):
                                 _wait_for_nav_complete()
                             elif cmd in ("walk", "strafe", "turn"):
                                 _abort_chain.wait(CHAIN_MOVEMENT_WAIT_S)

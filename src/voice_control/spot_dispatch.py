@@ -1140,6 +1140,7 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
     command is gated on stop_event under _arm_lock, so a stop/freeze/estop
     (which sets the event before its own stop) is never followed by a routine
     start or an arm restore from here."""
+    global _last_routine
     from bosdyn.choreography.client.choreography import ChoreographyClient
     cmd = session["cmd"]
     outcome = "aborted"  # "done" | "timeout" | "abnormal" | "aborted"
@@ -1163,6 +1164,7 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
             started = True
             choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
                                         choreography_starting_slice=0, timeout=RPC_TIMEOUT_S)
+        _last_routine = routine  # only a routine that actually started counts as "last"
         print(f"[Spot] ✓ Routine '{routine}' started")
         t0 = time.time()
         deadline = t0 + EMOTE_TIMEOUT_S
@@ -1208,7 +1210,6 @@ def _handle_emote(params, session, speak=None):
     """emote {"name": str}: refuse while moving, sitting or crowded, then run
     the routine on a background thread registered as the nav thread (so stop
     cancels it)."""
-    global _last_routine
     from src.voice_control.emotes import resolve_routine
     if _nav_mode == "emote" and is_navigating():
         _say(speak, "One dance at a time!")
@@ -1217,7 +1218,10 @@ def _handle_emote(params, session, speak=None):
         _say(speak, "I can't dance while I'm on the move.")
         return False
     try:
-        routine = resolve_routine((params or {}).get("name"), _last_routine)
+        name = (params or {}).get("name")
+        if isinstance(name, str):
+            name = name.strip().lower().replace(" ", "_")  # "Happy Wiggle" -> happy_wiggle
+        routine = resolve_routine(name or None, _last_routine)
     except ValueError:
         _say(speak, "I don't know that one yet.")
         return False
@@ -1231,7 +1235,6 @@ def _handle_emote(params, session, speak=None):
     gen = _dispatch_gen
     if _aborted(gen):
         return False
-    _last_routine = routine
     _cancel_nav()
     prev = _arm_pose
     if not _spawn_nav(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
@@ -1243,7 +1246,9 @@ def _handle_emote(params, session, speak=None):
 
 INFO_INTENTS = frozenset({"battery_status", "status", "check_obstacles",
                           "list_locations", "list_maps"})
-_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in soft stop"}
+# Spoken lines never contain stop/halt/freeze/e-stop: the always-on safety
+# KWS hears Spot's own voice and would halt it.
+_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in a soft hold"}
 
 
 def _spoken_list(names) -> str:
@@ -1800,7 +1805,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
                 ok_word = "All good. " if (motors == "on" and estop == "not_cut") else ""
                 _say(speak, f"{ok_word}My battery is at {battery:.0f} percent, "
-                            f"my motors are {motors}, and my e-stop is {estop_words}.")
+                            f"my motors are {motors}, and my safety switch is {estop_words}.")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Status check failed: {e}")

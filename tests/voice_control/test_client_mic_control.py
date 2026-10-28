@@ -21,6 +21,32 @@ def test_stow_and_freeze_use_dispatcher(monkeypatch):
     cm._abort_chain.clear()
 
 
+def test_spotctl_and_transcript_halts_hush_speech(monkeypatch):
+    hushes = []
+    monkeypatch.setattr(cm, "_start_hush", lambda: hushes.append(1))
+    monkeypatch.setattr(cm, "execute_on_spot", lambda intent, brain=None: True)
+    monkeypatch.setattr(cm, "_dispatch_safety", lambda intent: True)
+    cm._on_immediate("stop", None)
+    cm._on_immediate("freeze", None)
+    cm._on_immediate("stow", None)       # not a halt: speech keeps going
+    assert hushes == [1, 1]
+    assert cm._run_safety("stop") is True
+    assert hushes == [1, 1, 1]
+    cm._abort_chain.clear()
+
+
+def test_probe_host_order(monkeypatch):
+    import sys
+    import types
+    monkeypatch.setitem(sys.modules, "src.config", types.SimpleNamespace(BOSDYN_ROBOT_IP="10.0.0.9"))
+    monkeypatch.setenv("SPOT_IP", "192.168.50.3")
+    assert cm._probe_host() == "192.168.50.3"
+    monkeypatch.delenv("SPOT_IP")
+    assert cm._probe_host() == "10.0.0.9"
+    monkeypatch.setitem(sys.modules, "src.config", types.SimpleNamespace(BOSDYN_ROBOT_IP=""))
+    assert cm._probe_host() == "192.168.80.3"
+
+
 def test_mute_unmute_and_status(monkeypatch):
     monkeypatch.setattr(cm, "_operator_muted", False)
     assert cm._on_immediate("mute", None)["muted"] is True

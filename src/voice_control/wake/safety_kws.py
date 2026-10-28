@@ -66,24 +66,22 @@ class SafetyKeywordDetector:
         return self._available
 
     def process_frame(self, pcm16_bytes: bytes) -> str:
-        """Return matched keyword id ('stop'|'freeze'|'estop') or ''."""
+        """Return matched keyword id ('stop'|'freeze'|'estop') or ''.
+        Detector errors propagate: safety_kws_loop counts them, reports
+        unhealthy after a run of failures, and recovers via reset()."""
         if not self._available:
             return ""
-        try:
-            samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
-            self._stream.accept_waveform(self._sample_rate, samples)
-            while self._spotter.is_ready(self._stream):
-                self._spotter.decode_stream(self._stream)
-            result = self._spotter.get_result(self._stream).strip()
-            if result:
-                # Reset stream so the next safety word is independent.
-                self._stream = self._spotter.create_stream()
-                return result.lower()
-            return ""
-        except Exception as e:
-            print(f"[SafetyKWS] error: {e}")
-            return ""
+        samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
+        self._stream.accept_waveform(self._sample_rate, samples)
+        while self._spotter.is_ready(self._stream):
+            self._spotter.decode_stream(self._stream)
+        result = self._spotter.get_result(self._stream).strip()
+        if result:
+            # Reset stream so the next safety word is independent.
+            self._stream = self._spotter.create_stream()
+            return result.lower()
+        return ""
 
     def reset(self):
         if self._available:
