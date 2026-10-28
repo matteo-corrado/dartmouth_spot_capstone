@@ -171,17 +171,72 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
         lease_keepalive.shutdown()
 
 
+# Arm poses (Task 14). "stowed" / "talk" / "walk".
+#
+# WALK_POSE picks the tucked pose used while the legs move. Operator session 2
+# chooses it on the robot with scripts/try_walk_pose.py; switch it here:
+#   "stow"   (a) arm_stow_command (claw closed first)  <- current default
+#   "carry"  (b) arm_carry_command
+#   "joints" (c) joint pose WALK_JOINTS via arm_joint_move_helper (slow, >= 2 s)
+WALK_POSE = "stow"
+WALK_JOINTS = (0.0, -2.6, 2.6, 0.0, 0.0, 0.0)  # sh0, sh1, el0, el1, wr0, wr1
+ARM_MAX_LINEAR_VEL = 0.3   # m/s (gaze; named poses expose no limit in SDK 5.x)
+ARM_MAX_ANGULAR_VEL = 1.0  # rad/s (joint-move max_vel for the "joints" pose)
+JOINT_MOVE_SECS = 2.5      # >= 2 s trajectory for joint-space moves
+
+
+def walk_pose_command(variant: str = None):
+    """RobotCommand for one walking-pose candidate ("stow" | "carry" | "joints")."""
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    variant = variant or WALK_POSE
+    if variant == "stow":
+        return RobotCommandBuilder.arm_stow_command()
+    if variant == "carry":
+        return RobotCommandBuilder.arm_carry_command()
+    if variant == "joints":
+        return RobotCommandBuilder.arm_joint_move_helper(
+            joint_positions=[list(WALK_JOINTS)], times=[JOINT_MOVE_SECS],
+            max_vel=ARM_MAX_ANGULAR_VEL)
+    raise ValueError(f"unknown walk pose variant: {variant!r}")
+
+
+def send_arm_pose(cmd_client, pose: str, walk_variant: str = None):
+    """Send the command(s) for an arm pose without waiting. Returns the arm cmd id.
+
+    "stowed" closes the gripper first, then stows. "talk" = ready pose.
+    "walk" = the WALK_POSE candidate (or walk_variant). The walk "stow"
+    candidate also closes the claw first, like "stowed".
+    """
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    if pose == "stowed" or (pose == "walk" and (walk_variant or WALK_POSE) == "stow"):
+        cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0))
+        return cmd_client.robot_command(RobotCommandBuilder.arm_stow_command())
+    if pose == "talk":
+        return cmd_client.robot_command(RobotCommandBuilder.arm_ready_command())
+    if pose == "walk":
+        return cmd_client.robot_command(walk_pose_command(walk_variant))
+    raise ValueError(f"unknown arm pose: {pose!r}")
+
+
+def move_arm_to(cmd_client, pose: str, timeout_s=5.0) -> bool:
+    """Move the arm to "stowed" | "talk" | "walk". Returns True on arrival.
+
+    timeout_s <= 0 sends the command and returns True without waiting (used on
+    the stop/freeze/estop path so the stow never blocks the caller).
+    """
+    from bosdyn.client.robot_command import block_until_arm_arrives
+    cmd_id = send_arm_pose(cmd_client, pose)
+    if timeout_s is None or timeout_s <= 0:
+        return True
+    return bool(block_until_arm_arrives(cmd_client, cmd_id, timeout_s))
+
+
 def deploy_arm_safe(cmd_client, timeout_sec: float = 5.0):
-    """Deploy the arm to the ready pose (chest-height carry). Caller must
-    have motors powered and the robot standing. Returns True on arrival."""
-    from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
-    cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_ready_command())
-    return block_until_arm_arrives(cmd_client, cmd_id, timeout_sec)
+    """Deploy the arm to the ready ("talk") pose. Caller must have motors
+    powered and the robot standing. Returns True on arrival."""
+    return move_arm_to(cmd_client, "talk", timeout_sec)
 
 
 def stow_arm(cmd_client, timeout_sec: float = 5.0):
     """Close the gripper then stow the arm. Safe to call when already stowed."""
-    from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arrives
-    cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0))
-    cmd_id = cmd_client.robot_command(RobotCommandBuilder.arm_stow_command())
-    return block_until_arm_arrives(cmd_client, cmd_id, timeout_sec)
+    return move_arm_to(cmd_client, "stowed", timeout_sec)
