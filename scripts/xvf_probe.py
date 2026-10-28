@@ -21,7 +21,8 @@ sys.path.insert(0, str(ROOT))
 
 from src.voice_control.mic_array import MicArray, XvfError  # noqa: E402
 
-CLAP_SECONDS = 3.0
+CLAP_SECONDS = 6.0
+CLAP_SETTLE_S = 2.0
 SIGN_TOLERANCE_DEG = 45.0
 
 
@@ -55,14 +56,23 @@ def cmd_live(mic):
 
 
 def capture(mic, pos):
-    """Median deg at one position: speech-flagged samples, else all samples (WARNING)."""
-    input(f"stand at Spot's {pos}, press Enter, then say \"hey spot\" (or keep talking) "
-          f"repeatedly for {CLAP_SECONDS:.0f} s; claps optional ")
+    """Median deg at one position: speech-flagged samples, else all samples (WARNING).
+
+    The first CLAP_SETTLE_S are discarded: the XVF beam takes a moment to
+    re-converge on a new talker (longer in echoey rooms)."""
+    input(f"stand at Spot's {pos}, press Enter, then keep talking (\"hey spot, hey spot...\") "
+          f"for {CLAP_SECONDS:.0f} s; claps optional ")
     t0 = time.monotonic()
     time.sleep(CLAP_SECONDS)
-    samples = mic.samples_between(t0, time.monotonic())
+    samples = mic.samples_between(t0 + CLAP_SETTLE_S, time.monotonic())
     flagged = [d for _, d, speech in samples if speech]
-    print(f"  {pos}: {len(flagged)}/{len(samples)} samples speech-flagged")
+    print(f"  {pos}: {len(flagged)}/{len(samples)} samples speech-flagged "
+          f"(first {CLAP_SETTLE_S:.0f} s ignored)")
+    if flagged:
+        m = circ_median_deg(flagged)
+        within = sum(circ_dist(d, m) <= 30 for d in flagged) / len(flagged)
+        print(f"  {pos}: {within:.0%} of speech samples within 30 deg of the median"
+              + ("  <-- unstable, consider rerun" if within < 0.6 else ""))
     if flagged:
         med = circ_median_deg(flagged)
     else:
