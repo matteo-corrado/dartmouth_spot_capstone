@@ -155,6 +155,7 @@ def collect_doa(mic, t0: float, duration: float, clock=time.monotonic, sleep=tim
 
 
 CHIME_LEAD_S = 0.5
+CHIME_DEVICE_LEAD_S = 0.25  # silence before the cue so the USB speaker is awake
 
 
 def chime_samples() -> tuple[np.ndarray, int, str]:
@@ -173,9 +174,10 @@ def chime_samples() -> tuple[np.ndarray, int, str]:
 
         cap = _Cap()
         fb = AudioFeedback(player=cap)
-        getattr(fb, "listen_cue", fb.ready)()
+        name = "listen_cue" if hasattr(fb, "listen_cue") else "ready"
+        getattr(fb, name)()
         if cap.got is not None:
-            return cap.got[0], cap.got[1], "audio_feedback.ready"
+            return cap.got[0], cap.got[1], f"audio_feedback.{name}"
     except Exception as e:
         print(f"  (AudioFeedback unavailable: {e})")
     print("  WARNING: using GENERATED fallback tone, not the production chime")
@@ -186,9 +188,13 @@ def chime_samples() -> tuple[np.ndarray, int, str]:
 def play_samples(samples: np.ndarray, rate: int, output_device) -> None:
     """Blocking playback on its own OutputStream (safe alongside sd.rec)."""
     import sounddevice as sd
+    # USB speakers drop the first ~100 ms of a freshly opened stream; lead with
+    # silence so a short cue (listen_cue is 140 ms) isn't swallowed. The live
+    # AudioPlayer keeps its stream open, so it doesn't need this.
+    lead = np.zeros(int(CHIME_DEVICE_LEAD_S * rate), dtype=np.float32)
     with sd.OutputStream(samplerate=rate, channels=1, dtype="float32",
                          device=output_device) as out:
-        out.write(samples.reshape(-1, 1))
+        out.write(np.concatenate([lead, samples]).reshape(-1, 1))
 
 
 def record_clip(device: int, prompt: Prompt, mic, output_device=None):
@@ -209,13 +215,14 @@ def record_clip(device: int, prompt: Prompt, mic, output_device=None):
 
         def _chime():
             time.sleep(CHIME_LEAD_S)
-            info["chime_start_s"] = round(time.monotonic() - t0, 3)
+            info["chime_start_s"] = round(time.monotonic() - t0 + CHIME_DEVICE_LEAD_S, 3)
             try:
                 play_samples(samples, rate, output_device)
             except Exception as e:
                 print(f"  chime playback failed: {e}")
                 info["error"] = str(e)
-            info["chime_end_s"] = round(time.monotonic() - t0, 3)
+            info["chime_end_s"] = round(max(time.monotonic() - t0,
+                                            info["chime_start_s"] + len(samples) / rate), 3)
             info["source"] = source
 
         th = threading.Thread(target=_chime, daemon=True)
