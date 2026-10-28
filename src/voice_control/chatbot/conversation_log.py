@@ -4,16 +4,24 @@ Each turn writes one JSON line to `logs/conversations/<YYYY-MM-DD>.jsonl`.
 Symlinked to /mnt/ssd/spot-logs/conversations/ per Stage 1.5 layout.
 """
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
 
-DEFAULT_LOG_DIR = Path("logs/conversations")
+# Anchored to the repo root so the path does not depend on the cwd.
+DEFAULT_LOG_DIR = Path(__file__).resolve().parents[3] / "logs" / "conversations"
 
 
 class ConversationLog:
-    def __init__(self, log_dir: Optional[Path] = None):
+    def __init__(self, log_dir: Optional[Path] = None,
+                 store_transcript: Optional[bool] = None):
+        # Privacy: store_transcript=False (or env SPOT_NO_TRANSCRIPT_LOG=1,
+        # set by --no-transcript-log) writes transcript: null.
+        if store_transcript is None:
+            store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "") not in ("1", "true", "yes")
+        self.store_transcript = store_transcript
         self.log_dir = Path(log_dir) if log_dir else DEFAULT_LOG_DIR
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -32,7 +40,7 @@ class ConversationLog:
     ) -> None:
         record = {
             "ts": time.time(),
-            "transcript": transcript,
+            "transcript": transcript if self.store_transcript else None,
             "response": response,
             "actions": actions,
             "persona": persona,
