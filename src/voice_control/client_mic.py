@@ -104,6 +104,10 @@ from src.voice_control.speaker_lock import (
 _tuning = get_tuning()
 from src.voice_control.voice_state import VoiceState
 from src.voice_control.state_feedback import chime_for
+try:
+    from src.voice_control.state_feedback import ring_for as _ring_for
+except ImportError:  # pre-Gate-2 base (Lane C adds ring_for): no ring
+    _ring_for = None
 
 
 # ============================================================================
@@ -791,11 +795,114 @@ def _enter_state(new_state):
             _state_leds.set_state(new_state)
         except Exception as e:
             print(f"[Indicator] LED failed: {type(e).__name__}: {e}")
+    global _ring_state
+    _ring_state = new_state
+    _update_ring()
+
+
+# ----------------------------------------------------------------------------
+# XVF3800 LED ring (Task 11): the primary turn signal; points at the locked
+# speaker while LISTENING. Writes are throttled to Tuning.ring_max_hz; a
+# throttled update is marked pending and flushed from the main loop. Every
+# device call is isolated — a missing/dead mic only means no ring.
+# ----------------------------------------------------------------------------
+REJECT_FLASH_S = 0.2
+REJECT_COLOR = 0xC00000
+LED_SOLID = 3
+_ring_state = None          # VoiceState the ring currently shows
+_ring_last_write = 0.0
+_ring_pending = False
+_reject_until = 0.0
+
+
+class RingThrottle:
+    """Pure rate limiter for ring writes (min interval = 1 / max_hz)."""
+
+    def __init__(self, max_hz: float):
+        self.min_interval = 1.0 / max_hz if max_hz > 0 else 0.0
+        self._last = None
+
+    def allow(self, now: float) -> bool:
+        if self._last is not None and now - self._last < self.min_interval:
+            return False
+        self._last = now
+        return True
+
+
+_ring_throttle = RingThrottle(_tuning.ring_max_hz)
+
+
+def ring_deg_for_leds(deg, reverse: bool):
+    """Mic-frame degrees as seen by the LED ring (ring_reverse flips the
+    LED index direction relative to DoA degrees)."""
+    if deg is None or not reverse:
+        return deg
+    return (360.0 - deg) % 360.0
+
+
+def _current_ring_spec():
+    if _ring_for is None or _ring_state is None:
+        return None
+    return _ring_for(_ring_state, ring_deg_for_leds(_lock.angle, _tuning.ring_reverse),
+                     _operator_muted, ring_offset_leds=_tuning.ring_offset_leds)
+
+
+def _write_ring(effect, color, ring):
+    for fn, val in ((_mic.set_led_effect, effect), (_mic.set_led_color, color),
+                    (_mic.set_ring, ring)):
+        if val is None:
+            continue
+        try:
+            fn(val)
+        except Exception as e:
+            print(f"[Indicator] ring write failed: {type(e).__name__}: {e}")
+
+
+def _update_ring() -> None:
+    """Render the ring for (state, lock, muted) now, or mark it pending if
+    throttled / mid reject-flash. Never raises, never sleeps."""
+    global _ring_pending
+    if not _mic_usable():
+        return
+    try:
+        now = time.monotonic()
+        if now < _reject_until or not _ring_throttle.allow(now):
+            _ring_pending = True
+            return
+        _ring_pending = False
+        spec = _current_ring_spec()
+        if spec is not None:
+            _write_ring(spec.effect, spec.color, spec.ring)
+    except Exception as e:
+        print(f"[Indicator] ring failed: {type(e).__name__}: {e}")
+
+
+def _flush_ring() -> None:
+    """Main-loop hook: apply a throttled/pending ring update."""
+    if _ring_pending:
+        _update_ring()
+
+
+def _end_reject_flash() -> None:
+    global _reject_until, _ring_pending
+    _reject_until = 0.0
+    _ring_pending = True
+    _update_ring()
 
 
 def _signal_reject():
-    """Visual-only cue that an utterance from outside the lock was ignored."""
+    """Visual-only cue that an utterance from outside the lock was ignored:
+    the ring flashes red for 200 ms, then a Timer restores the current spec
+    (never sleeps on the main loop)."""
+    global _reject_until
     print("[Indicator] reject (off-lock speaker)")
+    if not _mic_usable():
+        return
+    _reject_until = time.monotonic() + REJECT_FLASH_S
+    _write_ring(LED_SOLID, REJECT_COLOR, None)
+    t = threading.Timer(REJECT_FLASH_S, _end_reject_flash)
+    t.daemon = True
+    t.start()
 
 
 # ============================================================================
@@ -830,7 +937,7 @@ def _on_immediate(name: str, arg=None) -> dict:
     dispatcher (via execute_on_spot, which honors dry-run), plus plain flags.
     Motion commands also set _abort_chain so a chain in progress stops.
     """
-    global _operator_muted
+    global _operator_muted, _ring_pending
     if name == "status":
         return _status_snapshot()
     if name == "hush":
@@ -843,6 +950,7 @@ def _on_immediate(name: str, arg=None) -> dict:
         return {"ok": bool(ok)}
     if name in ("mute", "unmute"):
         _operator_muted = (name == "mute")
+        _ring_pending = True  # main loop repaints (red while muted)
         return {"ok": True, "muted": _operator_muted}
     return {"error": f"unhandled immediate command {name!r}"}
 
@@ -1322,6 +1430,7 @@ def main():
                                                  drop_reason="lock"))
             return
         listening_since = time.monotonic()
+        _update_ring()  # accept() may have nudged the lock angle
 
         print(f"\n>>> Processing ({endpoint})...")
         safety_only = (state == VoiceState.WAKE_WORD)
@@ -1407,6 +1516,7 @@ def main():
             _drain_control(ctl_q, _on_queued)
             _status["state"] = state.name
             _check_mic_alive()
+            _flush_ring()
 
             # Stage 2F P0a: on the player busy->idle edge after a TTS response,
             # reset streaming-detector state so the speaker tail + stale VAD/KWS

@@ -30,8 +30,11 @@ class Tuning:
     lock_window_deg: float = 35.0
     lock_timeout_s: float = 20.0
     lock_nudge: float = 0.3
-    mic_yaw_offset_deg: float = 0.0
-    mic_yaw_sign: int = 1
+    mic_yaw_offset_deg: float = 179.0  # measured on the robot 2026-10-28
+    mic_yaw_sign: int = -1             # measured on the robot 2026-10-28
+    ring_offset_leds: int = 0
+    ring_reverse: bool = False
+    ring_max_hz: float = 10.0
     beam_steering: bool = False
     voiceprint_enabled: bool = False
     voiceprint_threshold: float = 0.5
@@ -68,6 +71,9 @@ def load_tuning(path: Path | None = None) -> Tuning:
             log.warning("tuning: unknown key %r in %s ignored", key, path)
             continue
         kwargs[key] = _cast(value, types[key])
+    if kwargs.get("mic_yaw_sign", 1) not in (-1, 1):
+        log.warning("tuning: mic_yaw_sign must be -1 or 1, got %r; using 1", kwargs["mic_yaw_sign"])
+        kwargs["mic_yaw_sign"] = 1
     return Tuning(**kwargs)
 
 

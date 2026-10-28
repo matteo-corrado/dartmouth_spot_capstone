@@ -18,8 +18,13 @@
 # lock_window_deg: 35.0
 # lock_timeout_s: 20.0
 # lock_nudge: 0.3
-# mic_yaw_offset_deg: 0.0
-# mic_yaw_sign: 1
+# Measured on the robot 2026-10-28 (mic frame): FRONT 179, LEFT 89, BACK 356, RIGHT 296.
+mic_yaw_offset_deg: 179.0
+mic_yaw_sign: -1
+# LED ring: LED index offset vs mic 0 deg (xvf_probe leds), index direction, write cap.
+# ring_offset_leds: 0
+# ring_reverse: false
+# ring_max_hz: 10.0
 # beam_steering: false
 # voiceprint_enabled: false
 # voiceprint_threshold: 0.5
