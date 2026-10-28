@@ -53,17 +53,26 @@ def test_collect_doa_merges_chunks():
     assert [s[1] for s in got] == [10, 20, 30]
 
 
+def _seq(items):
+    it = iter(items)
+    return lambda _: next(it)
+
+
+def _rec(calls=None, doa=True):
+    def rec(p):
+        if calls is not None:
+            calls.append(p.clip)
+        d = [(10.5, 90, True), (11.0, 95, False)] if doa else []
+        return np.full((1600, 2), 1000, dtype=np.int16), 10.0, d, None
+    return rec
+
+
 def test_run_session_writes_files_and_handles_skip_redo_quit(tmp_path):
     ps = build_prompts(["Hey Spot"])[:3]
     calls = []
-
-    def rec(p):
-        calls.append(p.clip)
-        return np.full((1600, 2), 1000, dtype=np.int16), 10.0, [(10.5, 90, True), (11.0, 95, False)]
-
     # clip1: record, redo, record, keep; clip2: skip; clip3: quit
     answers = iter(["", "r", "", "", "s", "q"])
-    n = rdc.run_session(ps, tmp_path, rec, input_fn=lambda _: next(answers))
+    n = rdc.run_session(ps, tmp_path, _rec(calls), input_fn=lambda _: next(answers))
     assert n == 2 and calls == [ps[0].clip, ps[0].clip]
     with wave.open(str(tmp_path / f"{ps[0].clip}.wav")) as w:
         assert (w.getnchannels(), w.getframerate(), w.getsampwidth()) == (2, 16000, 2)
@@ -72,3 +81,88 @@ def test_run_session_writes_files_and_handles_skip_redo_quit(tmp_path):
     m = json.loads((tmp_path / "manifest.json").read_text())
     assert len(m) == 1 and set(m[0]) == {"clip", "kind", "phrase", "expected_text", "angle_deg"}
     assert not (tmp_path / f"{ps[1].clip}.wav").exists()
+
+
+def test_existing_clip_defaults_to_skip_and_redo_removes_stale_csv(tmp_path):
+    ps = build_prompts(["Hey Spot"])[:1]
+    rdc.run_session(ps, tmp_path, _rec(), input_fn=_seq(["", ""]))
+    csvp = tmp_path / f"{ps[0].clip}.doa.csv"
+    assert csvp.exists()
+    calls = []
+    rdc.run_session(ps, tmp_path, _rec(calls), input_fn=_seq([""]))  # default skip
+    assert calls == []
+    (tmp_path / f"{ps[0].clip}.chime.json").write_text("{}")
+    rdc.run_session(ps, tmp_path, _rec(calls, doa=False), input_fn=_seq(["r", ""]))
+    assert calls and not csvp.exists()
+    assert not (tmp_path / f"{ps[0].clip}.chime.json").exists()
+
+
+def test_record_exception_returns_to_prompt(tmp_path):
+    ps = build_prompts(["Hey Spot"])[:1]
+    state = {"n": 0}
+
+    def rec(p):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("usb glitch")
+        return _rec()(p)
+
+    n = rdc.run_session(ps, tmp_path, rec, input_fn=_seq(["", "", ""]))
+    assert n == 1 and (tmp_path / f"{ps[0].clip}.wav").exists()
+
+
+def test_eof_exits_cleanly_keeping_manifest(tmp_path):
+    ps = build_prompts(["Hey Spot"])[:2]
+    answers = iter(["", ""])  # record clip 1, keep, then input raises StopIteration->EOF
+    def inp(_):
+        try:
+            return next(answers)
+        except StopIteration:
+            raise EOFError
+    assert rdc.run_session(ps, tmp_path, _rec(), input_fn=inp) == 1
+    assert len(json.loads((tmp_path / "manifest.json").read_text())) == 1
+
+
+def test_manifest_backup_on_corrupt(tmp_path):
+    m = tmp_path / "manifest.json"
+    m.write_text("{not json")
+    rdc.save_manifest_entry(m, build_prompts(["Hey Spot"])[0])
+    assert len(json.loads(m.read_text())) == 1
+    assert list(tmp_path.glob("manifest.bad.*.json"))
+
+
+def test_quick_reply_records_chime_sidecar(tmp_path, monkeypatch):
+    import types
+    played = {}
+
+    class FakeOut:
+        def __init__(self, **kw):
+            played["dev"] = kw.get("device")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def write(self, x):
+            played["n"] = len(x)
+            end = rdc.time.monotonic() + 0.02
+            while rdc.time.monotonic() < end:
+                pass
+
+    fake_sd = types.SimpleNamespace(
+        rec=lambda n, **kw: np.zeros((n, 2), dtype=np.int16),
+        wait=lambda: None, OutputStream=FakeOut)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(rdc, "CHIME_LEAD_S", 0.05)
+    monkeypatch.setattr(rdc.time, "sleep", lambda s: None)
+    p = [x for x in build_prompts(["Hey Spot"]) if x.kind == "quick_reply"][0]
+    rdc_audio, t0, doa, chime = rdc.record_clip(0, p, None, output_device=7)
+    assert played["dev"] == 7 and played["n"] > 0
+    assert 0 <= chime["chime_start_s"] < chime["chime_end_s"] <= p.duration_s
+    assert chime["source"] in ("audio_feedback.ready", "generated_tone")
+    # sidecar written through run_session
+    rdc.run_session([p], tmp_path, lambda q: (rdc_audio, t0, doa, chime), input_fn=_seq(["", ""]))
+    side = json.loads((tmp_path / f"{p.clip}.chime.json").read_text())
+    assert side["chime_start_s"] < side["chime_end_s"]
