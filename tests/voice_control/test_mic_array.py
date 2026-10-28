@@ -87,3 +87,44 @@ def test_fixed_beams_on_and_off():
     dev.writes.clear()
     m.set_fixed_beams(None)
     assert dev.writes == [(37, 33, struct.pack("<i", 0))]
+
+
+def test_read_after_usb_error_raises_xvf_and_marks_dead():
+    dev = FakeDev(raise_after=0)
+    m = MicArray(dev)
+    with pytest.raises(XvfError):
+        m.read_doa()
+    assert m.dead is True
+    with pytest.raises(XvfError):  # dead: no further transfer attempted
+        m.read_selected_azimuth()
+    assert dev.calls == 1
+    m.set_led_effect(3)  # no-op, no exception
+    assert dev.calls == 1 and dev.writes == []
+
+
+def test_transfers_pass_short_timeout():
+    seen = []
+
+    class TimeoutDev(FakeDev):
+        def ctrl_transfer(self, *a, **kw):
+            seen.append(a[5] if len(a) > 5 else kw.get("timeout"))
+            return super().ctrl_transfer(*a, **kw)
+
+    m = MicArray(TimeoutDev())
+    m.read_doa()
+    m.set_led_color(0x123456)
+    assert seen and all(t is not None and t <= 200 for t in seen)
+
+
+def test_led_values_masked_not_struct_error():
+    dev = FakeDev()
+    m = MicArray(dev)
+    m.set_led_effect(300)
+    m.set_led_color(-1)
+    assert dev.writes[0][2] == struct.pack("<B", 300 & 0xFF)
+    assert dev.writes[1][2] == struct.pack("<I", 0xFFFFFF)
+
+
+def test_poller_rejects_nonpositive_hz():
+    with pytest.raises(ValueError):
+        MicArray(FakeDev()).start_poller(hz=0)

@@ -41,6 +41,7 @@ STATUS_RETRY = 64
 READ_RETRIES = 100
 RETRY_SLEEP_S = 0.01
 RING_LEDS = 12
+USB_TIMEOUT_MS = 150  # short, so a hung device can't stall LED writes behind _dev_lock
 
 
 class XvfError(Exception):
@@ -82,15 +83,24 @@ class MicArray:
 
     # -- raw transfers -------------------------------------------------
     def _read(self, param, fmt, count):
+        """Read a parameter. Any failure marks the device dead and raises XvfError."""
+        if self.dead:
+            raise XvfError("xvf3800 dead")
         resid, cmd = param
         length = count * struct.calcsize("<" + fmt) + 1
         for _ in range(READ_RETRIES):
-            with self._dev_lock:
-                resp = self._dev.ctrl_transfer(0xC0, 0, 0x80 | cmd, resid, length)
-            out = decode_read(resp, fmt, count)
+            try:
+                with self._dev_lock:
+                    resp = self._dev.ctrl_transfer(
+                        0xC0, 0, 0x80 | cmd, resid, length, USB_TIMEOUT_MS)
+                out = decode_read(resp, fmt, count)
+            except Exception as e:
+                self.dead = True
+                raise XvfError(f"xvf3800 read {param} failed: {e}") from e
             if out is not None:
                 return out
             time.sleep(RETRY_SLEEP_S)
+        self.dead = True
         raise XvfError(f"xvf3800 read {param} not ready after {READ_RETRIES} tries")
 
     def _write(self, param, payload):
@@ -99,7 +109,7 @@ class MicArray:
         resid, cmd = param
         try:
             with self._dev_lock:
-                self._dev.ctrl_transfer(0x40, 0, cmd, resid, payload)
+                self._dev.ctrl_transfer(0x40, 0, cmd, resid, payload, USB_TIMEOUT_MS)
         except Exception as e:
             log.warning("xvf3800 write %s failed, disabling: %s", param, e)
             self.dead = True
@@ -115,15 +125,15 @@ class MicArray:
 
     # -- writes --------------------------------------------------------
     def set_led_effect(self, effect):
-        self._write(LED_EFFECT, struct.pack("<B", effect))
+        self._write(LED_EFFECT, struct.pack("<B", int(effect) & 0xFF))
 
     def set_led_color(self, rgb):
-        self._write(LED_COLOR, struct.pack("<I", rgb))
+        self._write(LED_COLOR, struct.pack("<I", int(rgb) & 0xFFFFFF))
 
     def set_ring(self, colors):
         if len(colors) != RING_LEDS:
             raise ValueError(f"set_ring needs exactly {RING_LEDS} colours, got {len(colors)}")
-        self._write(LED_RING_COLOR, struct.pack("<12I", *colors))
+        self._write(LED_RING_COLOR, struct.pack("<12I", *(int(c) & 0xFFFFFF for c in colors)))
 
     def set_fixed_beams(self, az_rad):
         """Point both fixed beams at az_rad (radians); None turns fixed beams off."""
@@ -131,11 +141,14 @@ class MicArray:
             self._write(AEC_FIXEDBEAMSONOFF, struct.pack("<i", 0))
             return
         # Azimuths first so beams don't snap to a stale angle when enabled.
-        self._write(AEC_FIXEDBEAMSAZIMUTH_VALUES, struct.pack("<2f", az_rad, az_rad))
+        az = float(az_rad)
+        self._write(AEC_FIXEDBEAMSAZIMUTH_VALUES, struct.pack("<2f", az, az))
         self._write(AEC_FIXEDBEAMSONOFF, struct.pack("<i", 1))
 
     # -- poller --------------------------------------------------------
     def start_poller(self, hz=20.0):
+        if hz <= 0:
+            raise ValueError(f"poller hz must be > 0, got {hz}")
         if self._thread is not None:
             return
         self._stop.clear()
@@ -146,9 +159,10 @@ class MicArray:
     def _poll(self, period):
         try:
             while not self._stop.is_set() and not self.dead:
+                t = time.monotonic()  # stamp before the (possibly retried) read
                 deg, speech = self.read_doa()
                 with self._hist_lock:
-                    self._history.append((time.monotonic(), deg, speech))
+                    self._history.append((t, deg, speech))
                 self._stop.wait(period)
         except Exception as e:
             log.warning("xvf3800 poller died: %s", e)
