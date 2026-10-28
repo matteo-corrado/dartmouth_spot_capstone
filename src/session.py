@@ -62,7 +62,12 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
                  upload_map: bool = False,
                  map_path: str = None,
                  auto_localize: bool = False):
-    sdk = create_standard_sdk("dartmouth_spot_capstone")
+    # ChoreographyClient must be registered at SDK creation for the emote action.
+    try:
+        from bosdyn.choreography.client.choreography import ChoreographyClient
+        sdk = create_standard_sdk("dartmouth_spot_capstone", [ChoreographyClient])
+    except ImportError:
+        sdk = create_standard_sdk("dartmouth_spot_capstone")
     robot = sdk.create_robot(hostname)
 
     # Auth

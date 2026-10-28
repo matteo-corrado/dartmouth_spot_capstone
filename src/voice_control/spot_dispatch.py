@@ -911,6 +911,103 @@ def do_add_persona(params: dict, brain) -> dict:
     return {"ok": True, "persona": name, "voice_id": new_voice_id}
 
 
+# ---------------------------------------------------------------------------
+# Emotes / dances (Task 15)
+# ---------------------------------------------------------------------------
+_last_routine = None  # last routine run, so "dance again" never repeats it
+EMOTE_TIMEOUT_S = 60.0
+# ChoreographyStatusResponse statuses that mean "still going"
+_CHOREO_RUNNING = {1, 3, 4, 5}  # DANCING, PREPPING, WAITING_FOR_START_TIME, VALIDATING
+
+
+def _emote_routine(session, routine, prev_pose, stop_event):
+    """Background thread: stand, stow arm, run the routine, restore the arm.
+    Every robot command is gated on stop_event under _arm_lock, so a
+    stop/freeze/estop (which sets the event first) can never be followed by a
+    routine start or an arm restore from here."""
+    from bosdyn.client.robot_command import blocking_stand
+    from bosdyn.choreography.client.choreography import ChoreographyClient
+    cmd = session["cmd"]
+    stowed_here = False
+    try:
+        if stop_event.is_set():
+            return
+        blocking_stand(cmd, timeout_sec=10)
+        if prev_pose != "stowed":
+            if not _arm_send(cmd, "stowed", stop_event, timeout_s=5.0):
+                print("[Spot] emote: arm did not stow — not dancing")
+                return
+            stowed_here = True
+        choreo = session["robot"].ensure_client(ChoreographyClient.default_service_name)
+        with _arm_lock:
+            if stop_event.is_set():
+                return
+            choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
+                                        choreography_starting_slice=0)
+        print(f"[Spot] ✓ Routine '{routine}' started")
+        deadline = time.time() + EMOTE_TIMEOUT_S
+        stop_event.wait(1.0)
+        while not stop_event.is_set() and time.time() < deadline:
+            try:
+                status, _ = choreo.get_choreography_status()
+                if status.status not in _CHOREO_RUNNING:
+                    break
+            except Exception as e:
+                print(f"[Spot] emote status poll failed: {e}")
+            stop_event.wait(0.5)
+        print(f"[Spot] Routine '{routine}' finished")
+    except Exception as e:
+        print(f"[Spot] ✗ emote '{routine}' failed: {e}")
+    finally:
+        if stowed_here and not stop_event.is_set():
+            try:
+                _arm_send(cmd, prev_pose, stop_event, timeout_s=5.0, require_pose="stowed")
+            except Exception as e:
+                print(f"[Spot] ⚠️  Arm restore after emote failed: {e}")
+
+
+def _handle_emote(params, session, speak=None):
+    """emote {"name": str}: refuse while moving or crowded, then run the routine
+    on a background thread registered as the nav thread (so stop cancels it)."""
+    global _last_routine, _nav_thread, _nav_stop_event, _nav_mode
+    from src.voice_control.emotes import resolve_routine
+    from src.voice_control.tuning import get_tuning
+    if _nav_mode == "emote" and is_navigating():
+        _say(speak, "One dance at a time!")
+        return False
+    if is_navigating() or _arm_pose == "walk":
+        _say(speak, "I can't dance while I'm on the move.")
+        return False
+    try:
+        routine = resolve_routine((params or {}).get("name"), _last_routine)
+    except ValueError:
+        _say(speak, "I don't know that one yet.")
+        return False
+    clearance = get_tuning().dance_clearance_m
+    try:
+        from src.voice_control.perception.obstacle_query import nearest_obstacle_in_body_frame
+        hit = nearest_obstacle_in_body_frame(session["robot"], max_radius_m=clearance)
+    except Exception as e:
+        # Fail closed: a crowded room is exactly when the check matters.
+        print(f"[Spot] emote: obstacle check failed: {e}")
+        _say(speak, "I can't check my surroundings right now, so I'll skip the dance.")
+        return False
+    if hit is not None and hit.distance_m < clearance:
+        print(f"[Spot] emote: obstacle at {hit.distance_m:.2f} m < {clearance} m")
+        _say(speak, "I need a little more room to dance.")
+        return False
+    _last_routine = routine
+    _cancel_nav()
+    stop_event = threading.Event()
+    _nav_stop_event = stop_event
+    _nav_mode = "emote"
+    _nav_thread = threading.Thread(
+        target=_emote_routine, args=(session, routine, _arm_pose, stop_event), daemon=True)
+    _nav_thread.start()
+    print(f"[Spot] emote: running '{routine}'")
+    return True
+
+
 def _say(speak, text: str):
     """Speak a short line via the caller's speak callable; print if None."""
     print(f"[Spot] {text}")
@@ -1030,6 +1127,8 @@ def _dispatch_core(intent, brain=None, speak=None):
             return _handle_enable_mouth(params)
         if name == "disable_mouth":
             return _handle_disable_mouth(params)
+        if name == "emote":
+            return _handle_emote(params, session, speak)
         if name == "stow":  # spotctl stow: mouth off, arm stowed (deferred if walking)
             return _handle_disable_mouth(params)
 
