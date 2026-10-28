@@ -89,6 +89,20 @@ def build_prompts(phrases: list[str]) -> list[Prompt]:
     return out
 
 
+# Short sets: only the clips a noise condition changes (--set). "full" = everything.
+SETS = {
+    "babble": lambda p: (p.kind == "wake" and p.clip.endswith("_front"))
+    or p.clip in ("quick_reply_1", "quick_reply_2", "background"),
+    "overlap": lambda p: p.kind == "overlap" or (p.kind == "wake" and p.clip.endswith("_front")),
+}
+
+
+def select_prompts(prompts: list[Prompt], set_name: str) -> list[Prompt]:
+    if set_name == "full":
+        return prompts
+    return [p for p in prompts if SETS[set_name](p)]
+
+
 def load_phrases(phrases_arg: str | None, phrases_file: Path) -> list[str]:
     if phrases_arg:
         found = [p.strip() for p in phrases_arg.split("|") if p.strip()]
@@ -286,10 +300,14 @@ def main() -> None:
     ap.add_argument("--output-device", type=int, default=None,
                     help="sounddevice output index for the quick_reply chime (Spot speaker)")
     ap.add_argument("--phrases-file", type=Path, default=DEFAULT_PHRASES_FILE)
+    ap.add_argument("--set", choices=("full", *SETS), default="full",
+                    help="babble: front wakes + 2 quick replies + background; "
+                         "overlap: front wakes + overlap clips; full: everything")
     args = ap.parse_args()
 
     phrases = load_phrases(args.phrases, args.phrases_file)
-    prompts = build_prompts(phrases)
+    prompts = select_prompts(build_prompts(phrases), args.set)
+    print(f"{len(prompts)} clips in set '{args.set}' (~{sum(p.duration_s for p in prompts) / 60:.1f} min of recording)")
     out_dir = OUT_ROOT / args.condition
     device = find_device()
     mic = None
