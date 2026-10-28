@@ -16,6 +16,8 @@ import pathlib
 
 import numpy as np
 
+from .phrases import peak_safe_gain
+
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _MODEL_DIR = _PROJECT_ROOT / "models" / "kws"
 
@@ -30,7 +32,7 @@ _KEYWORDS = "keywords.txt"
 KEYWORDS_SCORE = 1.5       # Boost keyword score (higher = easier to trigger)
 KEYWORDS_THRESHOLD = 0.05  # Detection threshold (higher = harder to trigger)
 NUM_TRAILING_BLANKS = 1    # Blanks after keyword before firing
-INPUT_GAIN = 8.0           # PCM gain before KWS — XVF3800 post-AGC peaks 0.03-0.40 at 1-3m
+TARGET_PEAK = 0.9          # peak-safe gain target (max x8); XVF3800 post-AGC peaks 0.03-0.40 at 1-3m
 
 
 class WakeWordDetector:
@@ -109,7 +111,7 @@ class WakeWordDetector:
 
         try:
             samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
+            samples = np.clip(samples * peak_safe_gain(samples, TARGET_PEAK), -1.0, 1.0)
             self._stream.accept_waveform(self._sample_rate, samples)
 
             while self._spotter.is_ready(self._stream):
