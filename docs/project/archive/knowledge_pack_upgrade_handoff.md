@@ -14,7 +14,7 @@ ask follow-up questions.
 - **LLM stack**: Ollama on the Jetson. Currently serving `qwen2.5:7b` (text)
   and `qwen2.5vl:7b` (vision). The text model is what reads these knowledge
   packs. A move to `gemma4:e4b` is planned per
-  `docs/project/upgrade-plan.md` Phase 2 — write content that will work for
+  `docs/project/archive/upgrade-plan.md` Phase 2 — write content that will work for
   any small open-weight model with a 32K+ context window.
 - **Audience**: visitors to Thayer School, including children, parents,
   prospective students, and alumni. Output is **spoken aloud** via TTS, so

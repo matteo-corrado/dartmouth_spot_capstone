@@ -55,7 +55,9 @@ nav:
   - Project:
     - Dartmouth Setup: project/dartmouth-setup.md
     - Post-Flash Migration: POST_FLASH_MIGRATION.md
-    - Feature Status: project/status.md
+    - System Status: project/status.md
+    - Roadmap: project/roadmap.md
+    - Bug Register: project/bugs.md
 
 markdown_extensions:
   - admonition

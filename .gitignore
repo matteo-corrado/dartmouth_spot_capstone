@@ -35,3 +35,8 @@ maps/
 
 # Rendered TTS self-intro audio (regenerate via scripts/save_self_intro.py)
 audio_out/
+
+# Local tooling outputs (knowledge graphs, agent worktrees)
+graphify-out/
+.understand-anything/
+.claude/worktrees/

@@ -66,16 +66,24 @@ pip line — do NOT drop `--only-binary`.
 ### ② Point data_dir at scratch + validate every config (the gate — no GPU, seconds)
 ```bash
 sed -i "s|^data_dir:.*|data_dir: $SCRATCH/lkww-data|" configs/wake/wakeword_*.yaml
+# augment mixes real background-noise + RIR wavs from these dirs. setup downloads them UNDER
+# data_dir (backgrounds/noise, rirs/16khz), but the config default is cwd-relative ./data/* which
+# is empty there -> augment would silently skip noise+reverb (clean-only model). Repoint them:
+sed -i "s|- ./data/backgrounds|- $SCRATCH/lkww-data/backgrounds/noise|; s|- ./data/rirs|- $SCRATCH/lkww-data/rirs/16khz|" configs/wake/wakeword_*.yaml
 for c in configs/wake/wakeword_*.yaml; do
-  python -c "from livekit.wakeword import load_config; print('OK', load_config('$c').model_name)"
+  python -c "from livekit.wakeword import load_config; c=load_config('$c'); print('OK', c.model_name, 'bg', c.augmentation.background_paths, 'rir', c.augmentation.rir_paths)"
 done
 ```
-If a config throws on an unknown field (pydantic `extra='forbid'`), dump the schema and
-delete the offending key(s) — suspects are the `augmentation.*` / `batch_n_per_class` blocks:
+WARNING: the config models do NOT set pydantic `extra='forbid'` — unknown/misspelled keys are
+**silently dropped** (no error), so a wrong field name just falls back to its default. After any
+config edit, diff your YAML keys against the real schema to catch silently-ignored keys:
 ```bash
-python -c "from livekit.wakeword.config import WakeWordConfig, AugmentationConfig; import json; \
-print(json.dumps(WakeWordConfig.model_json_schema()['properties'], indent=2, default=str)); \
-print('--- AUG ---'); print(json.dumps(AugmentationConfig.model_json_schema()['properties'], indent=2, default=str))"
+python -c "import yaml; from livekit.wakeword.config import WakeWordConfig as W, AugmentationConfig as A; \
+r=yaml.safe_load(open('configs/wake/wakeword_hey_spot.yaml')); \
+print('DROP top:', set(r)-set(W.model_fields)); \
+print('DROP aug:', set(r.get('augmentation',{}))-set(A.model_fields))"
+# any non-empty DROP set = those keys are being ignored. AugmentationConfig fields are:
+#   clip_duration, batch_size, rounds, background_paths, rir_paths  (NO snr/gain/pitch knobs)
 ```
 
 ### ③ Download all corpora ONCE (~18 GB → scratch; reused by every candidate)

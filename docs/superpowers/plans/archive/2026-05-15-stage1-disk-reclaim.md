@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash (Docker, Ollama, git), Python 3 (in-place edits to existing modules; no new packages installed in Stage 1).
 
-**Spec:** `docs/superpowers/specs/2026-05-15-disk-reclaim-staging-design.md`
+**Spec:** `docs/superpowers/specs/archive/2026-05-15-disk-reclaim-staging-design.md`
 
 ---
 
@@ -22,7 +22,7 @@ This plan covers Stage 1 + Stage 1.5 (SSD population, gated on the thesis plan's
 
 | File | Action | Responsibility |
 |---|---|---|
-| `docs/project/stage1-rollback.md` | Create | The rollback runbook (committed FIRST) |
+| `docs/project/archive/stage1-rollback.md` | Create | The rollback runbook (committed FIRST) |
 | `src/voice_control/spot_dispatch.py` | Modify | Phase 0.2 nav-feedback fix + name normalization (3 sites); Phase 0.3 state-dict additions |
 | `src/voice_control/spot_tts.py` | Modify | Phase 0.3 latency callbacks at `enqueue_render` |
 | `src/voice_control/client_mic.py` | Modify | Phase 0.3 argparse flags, `init_recorder()`, greet block, per-utterance `begin_utterance / complete` brackets, span wraps |
@@ -84,13 +84,13 @@ Expected: a single line showing the tag's SHA.
 The runbook is committed and pushed BEFORE any code or disk operation, so it's findable from GitHub if the local checkout dies.
 
 **Files:**
-- Create: `/home/spotdog/spot/dartmouth_spot_capstone/docs/project/stage1-rollback.md`
+- Create: `/home/spotdog/spot/dartmouth_spot_capstone/docs/project/archive/stage1-rollback.md`
 
 - [ ] **Step 1: Capture the live NGC URL for Riva quickstart re-acquisition**
 
 Browse to https://catalog.ngc.nvidia.com/orgs/nvidia/teams/riva/resources/riva_quickstart_arm64 and copy the exact 2.17.0 download URL into a scratchpad. (URL paths sometimes change between NGC catalog updates; capturing it now ensures the runbook has a working URL even if the catalog reorganizes later.)
 
-- [ ] **Step 2: Write `docs/project/stage1-rollback.md` with the content below**
+- [ ] **Step 2: Write `docs/project/archive/stage1-rollback.md` with the content below**
 
 ```markdown
 # Stage 1 Rollback Runbook
@@ -228,8 +228,8 @@ Replace `<NGC_URL_GOES_HERE>` with the URL captured in Step 1.
 - [ ] **Step 3: Verify the runbook exists and reads cleanly**
 
 ```bash
-ls -l /home/spotdog/spot/dartmouth_spot_capstone/docs/project/stage1-rollback.md
-wc -l /home/spotdog/spot/dartmouth_spot_capstone/docs/project/stage1-rollback.md
+ls -l /home/spotdog/spot/dartmouth_spot_capstone/docs/project/archive/stage1-rollback.md
+wc -l /home/spotdog/spot/dartmouth_spot_capstone/docs/project/archive/stage1-rollback.md
 ```
 
 Expected: file exists, ~110 lines.
@@ -238,7 +238,7 @@ Expected: file exists, ~110 lines.
 
 ```bash
 cd /home/spotdog/spot/dartmouth_spot_capstone
-git add docs/project/stage1-rollback.md
+git add docs/project/archive/stage1-rollback.md
 git commit -m "stage1: add rollback runbook"
 git push origin tour_guide_upgrade_matteo
 ```
@@ -1057,12 +1057,12 @@ Find the pipeline diagram and replace the `Riva ASR` node label with `ASR (serve
 
 - [ ] **Step 4: Update docs/project/status.md**
 
-Find the model/feature lineup section. Drop any "Riva" entry from the live-models table and add a note in the Status section that Riva removal landed in Stage 1 (link to `docs/superpowers/specs/2026-05-15-disk-reclaim-staging-design.md`).
+Find the model/feature lineup section. Drop any "Riva" entry from the live-models table and add a note in the Status section that Riva removal landed in Stage 1 (link to `docs/superpowers/specs/archive/2026-05-15-disk-reclaim-staging-design.md`).
 
 - [ ] **Step 5: Verify zero unintended Riva references remain**
 
 ```bash
-grep -rn -i 'riva' /home/spotdog/spot/dartmouth_spot_capstone/README.md /home/spotdog/spot/dartmouth_spot_capstone/docs/ --include='*.md' | grep -v 'docs/superpowers/specs/' | grep -v 'docs/project/stage1-rollback.md' | grep -v 'docs/project/upgrade-plan.md'
+grep -rn -i 'riva' /home/spotdog/spot/dartmouth_spot_capstone/README.md /home/spotdog/spot/dartmouth_spot_capstone/docs/ --include='*.md' | grep -v 'docs/superpowers/specs/' | grep -v 'docs/project/archive/stage1-rollback.md' | grep -v 'docs/project/archive/upgrade-plan.md'
 ```
 
 Expected: no matches. (The spec, runbook, and master plan are allowed to mention Riva — those are historical/rollback references.)
@@ -1174,7 +1174,7 @@ ollama run qwen2.5:7b "say hi" --verbose 2>&1 | head -5
 
 Expected: list shows `qwen2.5:7b` and `qwen2.5vl:7b`; the run command returns a token stream within ~10s.
 
-- [ ] **Step 6: If any of Steps 2-5 fail, immediately roll back per `docs/project/stage1-rollback.md` Layer 3**
+- [ ] **Step 6: If any of Steps 2-5 fail, immediately roll back per `docs/project/archive/stage1-rollback.md` Layer 3**
 
 (No git commit — off-tree.)
 
@@ -1328,7 +1328,7 @@ The CLI test at `:608-657` walks through a fixed set of test utterances. For eac
 - `response` is non-empty and reads naturally.
 - The first run cold-starts the model (~15-20 s); subsequent calls are warm (~2-6 s).
 
-If any utterance produces malformed JSON or wrong action selection, **abort and roll back per `docs/project/stage1-rollback.md` Layer 2** before committing the brain edits.
+If any utterance produces malformed JSON or wrong action selection, **abort and roll back per `docs/project/archive/stage1-rollback.md` Layer 2** before committing the brain edits.
 
 - [ ] **Step 2: Smoke-test the VLM path with a sample image**
 
@@ -1368,7 +1368,7 @@ head -30 /tmp/tegra.gemma4.log | grep -o 'RAM [0-9]*' | head -10
 
 Expected: RAM usage rises by ~6-8 GB (gemma4:e4b VRAM forecast) during inference.
 
-- [ ] **Step 4: All 3 verifications must pass before committing. If any fails, roll back per `docs/project/stage1-rollback.md` Layer 2 and investigate.**
+- [ ] **Step 4: All 3 verifications must pass before committing. If any fails, roll back per `docs/project/archive/stage1-rollback.md` Layer 2 and investigate.**
 
 - [ ] **Step 5: Commit Phase 2**
 
@@ -1554,10 +1554,10 @@ Expected: `/` shows ~10-15 GB MORE free than the Stage 1 end state; SSD shows th
 
 - [ ] **Step 8: Commit a note about SSD migration to docs**
 
-Update `docs/project/stage1-rollback.md` with a note: "Ollama models live on SSD at `/mnt/ssd/ollama-models` as of Stage 1.5 (SSD owned by thesis plan, see `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md`). Layer 3 (Ollama binary downgrade) still works; the binary on `/usr/local/bin/ollama` is unchanged. Restoring models from a backup requires symlinking `/usr/share/ollama/.ollama/models` back, OR setting `OLLAMA_MODELS` via the systemd override. If the SSD ever fails or is unmounted, `nofail` in `/etc/fstab` lets the system boot but Ollama will fail to start until the override is removed and models are restored to eMMC."
+Update `docs/project/archive/stage1-rollback.md` with a note: "Ollama models live on SSD at `/mnt/ssd/ollama-models` as of Stage 1.5 (SSD owned by thesis plan, see `~/spot/mc_thesis/social-cfm-mppi-thesis-docs/docs/superpowers/plans/2026-05-15-jetson-orin-port.md`). Layer 3 (Ollama binary downgrade) still works; the binary on `/usr/local/bin/ollama` is unchanged. Restoring models from a backup requires symlinking `/usr/share/ollama/.ollama/models` back, OR setting `OLLAMA_MODELS` via the systemd override. If the SSD ever fails or is unmounted, `nofail` in `/etc/fstab` lets the system boot but Ollama will fail to start until the override is removed and models are restored to eMMC."
 
 ```bash
-git add docs/project/stage1-rollback.md
+git add docs/project/archive/stage1-rollback.md
 git commit -m "stage 1.5: ollama models, clip cache, logs migrated to SSD"
 git push origin tour_guide_upgrade_matteo
 git tag stage1.5-complete
@@ -1568,7 +1568,7 @@ git push origin stage1.5-complete
 
 ## Self-review notes
 
-**Spec coverage:** Every requirement in `docs/superpowers/specs/2026-05-15-disk-reclaim-staging-design.md` Stage 1 sections (A, B, C) and Stage 1.5 maps to one or more tasks above. Stage 2 sections are intentionally out of scope (separate plan).
+**Spec coverage:** Every requirement in `docs/superpowers/specs/archive/2026-05-15-disk-reclaim-staging-design.md` Stage 1 sections (A, B, C) and Stage 1.5 maps to one or more tasks above. Stage 2 sections are intentionally out of scope (separate plan).
 
 **Placeholder scan:** No `TBD`, `TODO` (in plan tasks; runbook content includes intentional `<NGC_URL_GOES_HERE>` that is captured in Task 2 Step 1), or unimplemented references. The "fallback" in Task 9 Step 4 about `enqueue_render` kwargs is a defensive branch in case the audio_player API differs from the spec's assumption — verified by reading `audio_player.py:230-260` that `enqueue_raw` accepts the kwargs but `enqueue_render` may need adjusting at execution time.
 

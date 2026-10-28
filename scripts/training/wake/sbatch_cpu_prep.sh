@@ -31,6 +31,11 @@
 
 set -euo pipefail
 export PYTHONUNBUFFERED=1
+# Pin torch/BLAS intra-op threads to the cores SLURM actually allocated. Without this, under the
+# node cgroup torch may either spawn 64 threads (the whole node) and thrash, or get pinned to 1 —
+# either way the batched VITS forward (tts_batch_size=50) won't use the cores cleanly.
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
 source /optnfs/common/miniconda3/etc/profile.d/conda.sh
 conda activate lkww

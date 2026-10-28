@@ -9,7 +9,7 @@
 
 ## Context
 
-The master upgrade plan (`docs/project/upgrade-plan.md`) sequences nine phases of work to swap out the voice pipeline (Riva → Parakeet, qwen2.5/qwen2.5vl → gemma4:e4b, Kokoro v0.19 CPU → v1.0 GPU [done], etc.). The plan was written assuming peripherals were available.
+The master upgrade plan (`docs/project/archive/upgrade-plan.md`) sequences nine phases of work to swap out the voice pipeline (Riva → Parakeet, qwen2.5/qwen2.5vl → gemma4:e4b, Kokoro v0.19 CPU → v1.0 GPU [done], etc.). The plan was written assuming peripherals were available.
 
 The user is currently working without mic, speaker, or robot. Stage 1 of this design captures everything the user CAN do right now to (a) reclaim disk and (b) make productive code progress without peripherals. Stage 2 captures everything that has to wait for peripherals to return.
 
@@ -91,7 +91,7 @@ Commit message: `phase 0.3: wire latency producers into client_mic, spot_tts, sp
 
 Deferred to Stage 2: `server.py` `RivaBackend` deletion (Phase 4 step 1) — coupled to ParakeetBackend existing.
 
-Verification: `grep -rn -i 'riva\|nvidia-riva' --include='*.py' --include='*.md' --include='*.sh' --include='*.txt' .` returns only intentional references (e.g., `server.py` Backend wrapper note, this design doc, `docs/project/stage1-rollback.md`). `python -c "import scripts.run_voice_control"` imports clean.
+Verification: `grep -rn -i 'riva\|nvidia-riva' --include='*.py' --include='*.md' --include='*.sh' --include='*.txt' .` returns only intentional references (e.g., `server.py` Backend wrapper note, this design doc, `docs/project/archive/stage1-rollback.md`). `python -c "import scripts.run_voice_control"` imports clean.
 
 Commit message: `phase 4 (partial): remove Riva orchestration from non-server code`
 
@@ -330,7 +330,7 @@ Rollback to `pre-stage1-stable`: `git checkout pre-stage1-stable` (detached HEAD
 
 The Riva quickstart URL must be captured from the live NGC catalog at the time the runbook is written, because NGC URLs occasionally rotate.
 
-### The runbook itself: `docs/project/stage1-rollback.md`
+### The runbook itself: `docs/project/archive/stage1-rollback.md`
 
 Single source of truth. Sections:
 1. **What "stable" means** — pre-Stage-1 inventory (branch HEAD + tag, Riva location, Ollama version, qwen models, VS Code CLI versions).

@@ -200,7 +200,7 @@ Code rollback layers (deeper):
 - Git tag `stage1.5-complete` = pre-Stage-2 stable point
 - Git tag `stage2a-voice-complete` = after 2A passes
 - Git tag `stage2b-e2e-complete` = post-merge to `main` (on `main`, not the feature branch)
-- Stage 1.5 `docs/project/stage1-rollback.md` still covers eMMC + SSD + Ollama binary + Riva re-acquisition + VS Code restoration. Stage 2 adds `docs/project/stage2-rollback.md` (written incrementally per sub-plan).
+- Stage 1.5 `docs/project/archive/stage1-rollback.md` still covers eMMC + SSD + Ollama binary + Riva re-acquisition + VS Code restoration. Stage 2 adds `docs/project/stage2-rollback.md` (written incrementally per sub-plan).
 
 ---
 
@@ -308,7 +308,7 @@ Total voice-loop wall time, action path: **~3-4 s** (wake + VAD + ASR + brain JS
 ## References
 
 - Design spec: `docs/superpowers/specs/2026-05-15-stage2-design.md`
-- Stage 1 + 1.5 rollback runbook: `docs/project/stage1-rollback.md`
+- Stage 1 + 1.5 rollback runbook: `docs/project/archive/stage1-rollback.md`
 - Voice pipeline state machine: `docs/architecture/voice-pipeline.md`
 - System overview: `docs/architecture/overview.md`
 - Stage 1 instrumentation: commit `fce3e62` (`[Brain-timing]` logs)

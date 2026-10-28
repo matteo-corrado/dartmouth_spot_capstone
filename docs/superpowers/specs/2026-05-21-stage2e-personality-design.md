@@ -338,7 +338,7 @@ Spot notices objects in its environment and remarks on them in-character — BD'
 | Modify | `src/voice_control/llm_brain.py` | 2E.3 | Multimodal endpoint call helper (image + YOLO + persona) |
 | Modify | `src/voice_control/chatbot/session_state.py` | 2E.2 + 2E.3 | Field additions per slice |
 | Modify | `docs/project/stage2-rollback.md` | 2E.1 + 2E.2 + 2E.3 | Rollback layers per slice |
-| Create | `docs/superpowers/plans/2026-05-21-stage2e1-tts-persona.md` | 2E.1 | Plan file (via `writing-plans` skill) |
+| Create | `docs/superpowers/plans/archive/2026-05-21-stage2e1-tts-persona.md` | 2E.1 | Plan file (via `writing-plans` skill) |
 | Create | `docs/superpowers/plans/2026-05-XX-stage2e2-gripper-mouth.md` | 2E.2 | Plan file (after 2E.1 ships) |
 | Create | `docs/superpowers/plans/2026-05-XX-stage2e3-vlm-loop.md` | 2E.3 | Plan file (after 2C) |
 

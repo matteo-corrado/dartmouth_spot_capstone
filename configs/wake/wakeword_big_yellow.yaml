@@ -27,14 +27,13 @@ n_background_samples: 1500
 n_background_samples_val: 500
 
 augmentation:
-  background_snr_min_db: 5
-  background_snr_max_db: 25
-  rir_prob: 0.7
-  gain_min_db: -10
-  gain_max_db: 6
-  pitch_shift_semitones: 1.5
-  time_stretch_min: 0.9
-  time_stretch_max: 1.1
+  clip_duration: 2.0          # 2 s window — matches on-device livekit.py WINDOW_SAMPLES
+  batch_size: 16
+  rounds: 3                   # compound augmentation 3x (reference default); was silently 1
+  background_paths:           # Discovery: README sed repoints these to $data_dir/backgrounds/noise
+    - ./data/backgrounds      #   and $data_dir/rirs/16khz — the default ./data/* doesn't exist
+  rir_paths:                  #   there, so empty paths => augment silently skips noise+reverb.
+    - ./data/rirs
 
 model:
   model_type: conv_attention

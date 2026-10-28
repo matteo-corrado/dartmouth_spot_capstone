@@ -15,7 +15,7 @@
 ## File Structure
 
 - **Create:** `scripts/audition_personas.py` — interactive audition driver
-- **Create:** `docs/project/persona-audition-2026-05-24.md` — verdict table (written by script)
+- **Create:** `docs/project/archive/persona-audition-2026-05-24.md` — verdict table (written by script)
 - **Modify:** none
 
 ---
@@ -263,7 +263,7 @@ git commit -m "stage 2e1 audition: live playback + verdict capture + markdown re
 ### Task 3: Full audition run + verdict capture
 
 **Files:**
-- Create: `docs/project/persona-audition-2026-05-24.md` (written by script)
+- Create: `docs/project/archive/persona-audition-2026-05-24.md` (written by script)
 
 - [ ] **Step 1: Confirm audio path before launching the full run**
 

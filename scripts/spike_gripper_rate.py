@@ -3,7 +3,7 @@
 Deploys the arm to the ready pose, then modulates gripper_open_fraction by a
 1 Hz sine wave for a few seconds at each target command rate. Prints the
 ACHIEVED rate and jitter so we know the practical ceiling before building the
-mouth animator (see docs/superpowers/plans/2026-06-02-stage2e2-gripper-mouth.md
+mouth animator (see docs/superpowers/plans/archive/2026-06-02-stage2e2-gripper-mouth.md
 Task 0).
 
 Connects via the repo's non-interactive ``spot_session`` helper (auth + lease +

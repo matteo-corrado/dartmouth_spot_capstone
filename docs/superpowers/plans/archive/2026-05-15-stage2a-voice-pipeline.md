@@ -74,7 +74,7 @@ sherpa-onnx Kokoro TTS → ALSA out
 | Modify | `src/voice_control/spot_tts.py` | T11 add `enqueue_streaming(token_iter)` for SSE-driven chunking |
 | Create | `scripts/mic_verify.py` | T12 end-to-end mic verify (wake + ASR + action) |
 | Modify | `requirements.txt` | T7 add sherpa-onnx>=1.12.40 deps; T9 add livekit-wakeword |
-| Modify | `docs/project/stage1-rollback.md` | T12 mark qwen pair removable after mic-verify pass |
+| Modify | `docs/project/archive/stage1-rollback.md` | T12 mark qwen pair removable after mic-verify pass |
 | Create | `docs/project/stage2-rollback.md` | T13 Stage 2 rollback runbook (5 layers + env-var flips) |
 
 **Deferred to post-2B (NOT in this plan):**
@@ -2580,7 +2580,7 @@ Expected: ~10.7 GB freed.
 
 - [ ] **Step 5: Update stage1-rollback.md**
 
-Open `docs/project/stage1-rollback.md` and append to "Layer 2 — Brain model rollback":
+Open `docs/project/archive/stage1-rollback.md` and append to "Layer 2 — Brain model rollback":
 
 ```markdown
 > **Stage 2A.3 update (mic-verify pass):** The qwen2.5:7b + qwen2.5vl:7b pair has been removed via `ollama rm`. This layer is no longer available without re-downloading the pair (~10.7 GB). New rollback ladder lives in `docs/project/stage2-rollback.md`.
@@ -2589,7 +2589,7 @@ Open `docs/project/stage1-rollback.md` and append to "Layer 2 — Brain model ro
 - [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/mic_verify.py docs/project/stage1-rollback.md
+git add scripts/mic_verify.py docs/project/archive/stage1-rollback.md
 git commit -m "stage 2a t12: mic-verify end-to-end + qwen pair reclaim on pass"
 git push origin tour_guide_upgrade_matteo
 ```
