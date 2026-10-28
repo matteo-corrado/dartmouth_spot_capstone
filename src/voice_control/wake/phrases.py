@@ -9,7 +9,7 @@ import numpy as np
 _PHRASES_FILE = pathlib.Path(__file__).resolve().parents[3] / "config" / "wake_phrases.txt"
 _DEFAULT = ["HEY SPOT"]
 _FUZZY_RATIO = 0.75
-_FILLERS = {"hey", "hi", "a", "say", "hay", "hello"}  # ASR variants of a leading "hey"
+_FILLERS = {"hey", "hi", "a", "say", "hay", "hello", "stay", "heh"}  # ASR variants of a leading "hey"
 _WORD = re.compile(r"[A-Za-z0-9']+")
 
 MAX_GAIN = 8.0

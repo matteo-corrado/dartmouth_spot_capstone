@@ -137,6 +137,33 @@ class AudioFeedback:
         samples = np.concatenate([a4[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, d5])
         self._play(samples, "thinking")
 
+    # --- Turn-taking cues (distinct from the power-on ``ready`` chime) ---
+    def listen_cue(self):
+        """Mic is open, go ahead — rising E5 -> A5, 140ms, vol 0.2."""
+        e5 = _tone(659, 70, 0.2)
+        a5 = _tone(880, 70, 0.2)
+        samples = np.concatenate([e5[:-int(SAMPLE_RATE*TAIL_MS/1000)], a5])
+        self._play(samples, "listen_cue")
+
+    def think_cue(self):
+        """Got it, working — same tones as ``thinking()``."""
+        a4 = _tone(440, 60, 0.18)
+        gap = np.zeros(int(SAMPLE_RATE * 0.015), dtype=np.float32)
+        d5 = _tone(587, 60, 0.18)
+        samples = np.concatenate([a4[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, d5])
+        self._play(samples, "think_cue")
+
+    def speak_cue(self):
+        """About to speak — single soft C6, 70ms, vol 0.15."""
+        self._play(_tone(1047, 70, 0.15), "speak_cue")
+
+    def released_cue(self):
+        """Speaker lock released — descending G5 -> C5, 200ms."""
+        g5 = _tone(784, 100, 0.2)
+        c5 = _tone(523, 100, 0.2)
+        samples = np.concatenate([g5[:-int(SAMPLE_RATE*TAIL_MS/1000)], c5])
+        self._play(samples, "released_cue")
+
     def ready(self):
         """Power-on chime — pipeline initialized (C4 -> C5 -> C6, 240ms)."""
         c4 = _tone(261, 80, 0.25)

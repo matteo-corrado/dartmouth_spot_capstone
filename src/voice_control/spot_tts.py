@@ -32,6 +32,7 @@ Install (Jetson AGX Orin, JetPack 6, CUDA 12.6, Python 3.10, aarch64):
 """
 
 import os
+import threading
 import time
 from pathlib import Path
 import numpy as np
@@ -46,7 +47,7 @@ from src.voice_control.latency import get_recorder
 # Stage 2E.1: route TTS synth through swappable backend registry.
 import src.voice_control.tts.kokoro      # noqa: F401  (registers backend)
 import src.voice_control.tts.elevenlabs  # noqa: F401  (registers backend)
-from src.voice_control.tts import get_backend
+from src.voice_control.tts import get_backend, get_fallback_backend, synthesize_with_fallback
 from src.voice_control.animation.mouth import envelope
 
 
@@ -135,6 +136,23 @@ class SpotTTS:
             self._available = False
             return
 
+        # B8: build Kokoro now even when ElevenLabs is primary, so the
+        # per-sentence fallback never pays a cold model load mid-reply.
+        fallback = get_fallback_backend()
+        if fallback is None:
+            print("[TTS] WARN: Kokoro fallback unavailable — no per-sentence fallback")
+        elif fallback is not backend:
+            # Only the fallback: nothing else would run it before the first
+            # failure, so prime its CUDA session with one word off-thread.
+            def _warm_fallback():
+                try:
+                    fallback.synthesize("Hi.", DEFAULT_VOICE)
+                    print("[TTS] Kokoro fallback warm")
+                except Exception as e:
+                    print(f"[TTS] Kokoro fallback warm-up failed: {type(e).__name__}: {e}")
+            threading.Thread(target=_warm_fallback, name="tts-fallback-warm",
+                             daemon=True).start()
+
         backend_name = type(backend).__name__
         self._available = True
         print(f"[TTS] Ready — backend={backend_name}, voice={self.voice}, "
@@ -190,12 +208,19 @@ class SpotTTS:
                 or ("Kokoro" in backend_name and not voice_is_kokoro_shape)
             )
             use_voice = (None if mismatch else voice) or _default_voice_for_backend(backend) or self.voice
+            # B8: a failed (or empty) primary sentence is re-rendered with the
+            # warm Kokoro fallback instead of going silent.
+            fallback = get_fallback_backend()
             try:
-                pcm_bytes = backend.synthesize(text, use_voice)
+                if fallback is None or fallback is backend:
+                    pcm_bytes, used = backend.synthesize(text, use_voice), "primary"
+                else:
+                    pcm_bytes, used = synthesize_with_fallback(
+                        text, use_voice, backend, fallback, DEFAULT_VOICE)
             except Exception as _e:
                 print(f"[DBG-render] FAIL backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} err={type(_e).__name__}:{_e}")
                 raise
-            print(f"[DBG-render] OK backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} bytes={len(pcm_bytes)}")
+            print(f"[DBG-render] OK backend={type(backend).__name__} used={used} voice={use_voice} text={text[:40]!r} bytes={len(pcm_bytes)}")
             # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if gain != 1.0:
@@ -279,6 +304,10 @@ _DESCRIBE_ACTION_RE = re.compile(r'"action"\s*:\s*"describe"')
 # resolve abbreviation vs. sentence-end (e.g. "Dr. " fires False,
 # "Dr. L" fires True).
 _POST_PUNCT_WORD_RE = re.compile(r"[.!?]\s+\w")
+# JSON single-char escapes, decoded for speech. Newlines/tabs become spaces
+# so they act as word breaks instead of being read out.
+_JSON_ESCAPES = {"n": " ", "t": " ", "r": " ", "b": " ", "f": " ",
+                 '"': '"', "\\": "\\", "/": "/"}
 
 class TTSChunker:
     """Buffer streaming LLM tokens; flush a sentence to TTS on each boundary.
@@ -296,16 +325,27 @@ class TTSChunker:
         self.buf: list[str] = []
         self.in_response = False
         self.escape = False
+        self.unicode_hex: str | None = None  # hex digits of a pending \uXXXX
         self.json_buf: list[str] = []
         self.suppressed = False
 
     def __call__(self, delta: str) -> None:
         self.accept(delta)
 
+    def feed(self, text: str) -> None:
+        """Feed raw (still JSON-escaped) response-string text directly,
+        without the surrounding ``{"response": "`` envelope."""
+        self.in_response = True
+        self.accept(text)
+
     def _emit(self, chunk: str) -> None:
         if self.suppressed:
             return
-        self._tts.speak(chunk, voice=self._voice)
+        speak = getattr(self._tts, "speak", None)
+        if speak is not None:
+            speak(chunk, voice=self._voice)
+        else:
+            self._tts(chunk)  # plain callable sink (tests, tools)
 
     def accept(self, delta: str) -> None:
         for ch in delta:
@@ -323,9 +363,24 @@ class TTSChunker:
                         self.suppressed = True
                     self.in_response = True
                 continue
-            if self.escape:
-                self.buf.append(ch)
+            if self.unicode_hex is not None:
+                # Collecting the 4 hex digits of a \uXXXX escape.
+                self.unicode_hex += ch
+                if len(self.unicode_hex) == 4:
+                    try:
+                        cp = int(self.unicode_hex, 16)
+                    except ValueError:
+                        cp = 0x20
+                    # Lone surrogates (emoji halves) can't be spoken or encoded.
+                    if not 0xD800 <= cp <= 0xDFFF:
+                        self.buf.append(chr(cp))
+                    self.unicode_hex = None
+            elif self.escape:
                 self.escape = False
+                if ch == "u":
+                    self.unicode_hex = ""
+                else:
+                    self.buf.append(_JSON_ESCAPES.get(ch, ch))
             elif ch == "\\":
                 self.escape = True
             elif ch == '"':

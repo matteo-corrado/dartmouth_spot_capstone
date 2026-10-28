@@ -4,7 +4,9 @@
 Usage:
   spot-env/bin/python scripts/xvf_probe.py live    # deg/speech at 10 Hz (Ctrl-C to stop)
   spot-env/bin/python scripts/xvf_probe.py clap    # speak at FRONT/LEFT/BACK/RIGHT -> mic_yaw_offset_deg / mic_yaw_sign
-  spot-env/bin/python scripts/xvf_probe.py leds    # cycle effects, measure set_ring writes/s
+  spot-env/bin/python scripts/xvf_probe.py leds    # index calibration, then cycle effects, measure set_ring writes/s
+  spot-env/bin/python scripts/xvf_probe.py index   # LED index/orientation -> ring_offset_leds / ring_reverse
+  spot-env/bin/python scripts/xvf_probe.py show    # preview candidate turn-signal patterns (Enter = next)
 
 Runtime writes only; never saves config or reboots the device.
 """
@@ -20,7 +22,8 @@ sys.path.insert(0, str(ROOT))
 
 from src.voice_control.mic_array import MicArray, XvfError  # noqa: E402
 
-CLAP_SECONDS = 3.0
+CLAP_SECONDS = 6.0
+CLAP_SETTLE_S = 2.0
 SIGN_TOLERANCE_DEG = 45.0
 
 
@@ -54,14 +57,23 @@ def cmd_live(mic):
 
 
 def capture(mic, pos):
-    """Median deg at one position: speech-flagged samples, else all samples (WARNING)."""
-    input(f"stand at Spot's {pos}, press Enter, then say \"hey spot\" (or keep talking) "
-          f"repeatedly for {CLAP_SECONDS:.0f} s; claps optional ")
+    """Median deg at one position: speech-flagged samples, else all samples (WARNING).
+
+    The first CLAP_SETTLE_S are discarded: the XVF beam takes a moment to
+    re-converge on a new talker (longer in echoey rooms)."""
+    input(f"stand at Spot's {pos}, press Enter, then keep talking (\"hey spot, hey spot...\") "
+          f"for {CLAP_SECONDS:.0f} s; claps optional ")
     t0 = time.monotonic()
     time.sleep(CLAP_SECONDS)
-    samples = mic.samples_between(t0, time.monotonic())
+    samples = mic.samples_between(t0 + CLAP_SETTLE_S, time.monotonic())
     flagged = [d for _, d, speech in samples if speech]
-    print(f"  {pos}: {len(flagged)}/{len(samples)} samples speech-flagged")
+    print(f"  {pos}: {len(flagged)}/{len(samples)} samples speech-flagged "
+          f"(first {CLAP_SETTLE_S:.0f} s ignored)")
+    if flagged:
+        m = circ_median_deg(flagged)
+        within = sum(circ_dist(d, m) <= 30 for d in flagged) / len(flagged)
+        print(f"  {pos}: {within:.0%} of speech samples within 30 deg of the median"
+              + ("  <-- unstable, consider rerun" if within < 0.6 else ""))
     if flagged:
         med = circ_median_deg(flagged)
     else:
@@ -101,8 +113,87 @@ def cmd_clap(mic):
     return 0
 
 
+def clock_to_deg(hours):
+    """Clock position (12 = Spot's front, 3 = right) -> degrees clockwise from front."""
+    return (float(hours) * 30.0) % 360
+
+
+def derive_ring_mapping(answers, front_mic_deg, doa_cw):
+    """answers: {led_index: clock_hours} for LEDs 0/3/6/9. doa_cw: True if mic DoA angle
+    increases clockwise seen from above. Returns (front_led, led_cw, offset, reverse)."""
+    pos = {k: clock_to_deg(h) for k, h in answers.items()}
+    steps = []
+    for k in pos:
+        nxt = (k + 3) % 12
+        if nxt in pos:
+            d = ((pos[nxt] - pos[k] + 180) % 360) - 180  # +90 = clockwise
+            steps.append(d)
+    led_cw = sum(steps) > 0
+    direction = 1 if led_cw else -1
+    p0 = pos[0]
+    front_led = round(((-p0) * direction) / 30.0) % 12
+    reverse = led_cw != doa_cw
+    sign = -1 if reverse else 1
+    offset = (front_led - round(front_mic_deg / 30.0) * sign) % 12
+    return front_led, led_cw, offset, reverse
+
+
+def ask_clock(k):  # noqa: ARG001
+    while True:
+        raw = input("Which clock position relative to Spot's FRONT "
+                    "(12 = front, 3 = Spot's right side, 9 = Spot's left)? ").strip()
+        try:
+            v = float(raw)
+        except ValueError:
+            print("  enter a number 1-12 (halves ok, e.g. 12.5)")
+            continue
+        if 0 <= v < 13:
+            return v or 12.0
+        print("  enter a number 1-12 (halves ok, e.g. 12.5)")
+
+
+def cmd_index(mic):
+    try:
+        mic.set_led_effect(5)
+        answers = {}
+        for k in (0, 3, 6, 9):
+            mic.set_ring([0x00FF00 if i == k else 0 for i in range(12)])
+            print(f"LED {k} is lit (bright green, all others off)")
+            answers[k] = ask_clock(k)
+        mic.set_ring([0] * 12)
+        mic.start_poller(hz=20.0)
+        front = capture(mic, "FRONT (talk from Spot's front)")
+        right = capture(mic, "RIGHT (Spot's 3 o'clock; sets DoA direction)")
+        if mic.dead or front is None:
+            print("no usable DoA capture for the front; rerun")
+            return 1
+        if right is None:
+            print("WARNING: no RIGHT capture; assuming DoA increases counter-clockwise")
+            doa_cw = False
+        else:
+            cw_err = circ_dist(right, (front + 90) % 360)
+            ccw_err = circ_dist(right, (front - 90) % 360)
+            doa_cw = cw_err < ccw_err
+            if min(cw_err, ccw_err) > SIGN_TOLERANCE_DEG:
+                print("WARNING: RIGHT reading is not ~90 deg from FRONT; direction guess is weak")
+        front_led, led_cw, offset, reverse = derive_ring_mapping(answers, front, doa_cw)
+        print(f"\nLED nearest Spot's front: {front_led}")
+        print(f"LED index increases {'clockwise' if led_cw else 'counter-clockwise'} seen from above")
+        print(f"mic-frame front angle: {front:.1f} deg; DoA increases "
+              f"{'clockwise' if doa_cw else 'counter-clockwise'}")
+        print("\npaste into config/tuning.yaml:")
+        print(f"ring_offset_leds: {offset}")
+        print(f"ring_reverse: {'true' if reverse else 'false'}")
+        return 0
+    finally:
+        mic.set_led_effect(4)
+
+
 def cmd_leds(mic):
     try:
+        rc = cmd_index(mic)
+        if rc:
+            print("index calibration incomplete; continuing with effects test")
         for effect in (1, 3, 4, 5):
             print(f"LED effect {effect}")
             mic.set_led_effect(effect)
@@ -122,16 +213,115 @@ def cmd_leds(mic):
         mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
 
 
+# ---- `show`: preview candidate turn signals on the ring (nothing here is used by the pipeline)
+RING_N = 12
+SHOW_OFFSET = 6  # measured 2026-10-28: ring_offset_leds 6, not reversed
+GREEN, AMBER, BLUE, WHITE, RED = 0x00FF00, 0xFF8000, 0x0040FF, 0xFFFFFF, 0xFF0000
+
+
+def _led_for(mic_deg):
+    return (round(mic_deg / 30.0) + SHOW_OFFSET) % RING_N
+
+
+def _ldist(a, b):
+    d = abs(a - b) % RING_N
+    return min(d, RING_N - d)
+
+
+def _scale(color, f):
+    r, g, b = (color >> 16) & 255, (color >> 8) & 255, color & 255
+    return (int(r * f) << 16) | (int(g * f) << 8) | int(b * f)
+
+
+def _sweep_fill(target, color):
+    """Car indicator: fills from the opposite side toward the target, hold, off."""
+    frames = [[color if _ldist(i, target) >= 6 - k else 0 for i in range(RING_N)] for k in range(7)]
+    return frames + [[color] * RING_N] + [[0] * RING_N] * 2, 0.07
+
+
+def _sweep_converge(target, color):
+    """Two dots run from the back round both sides and meet at the target, dim trail behind."""
+    frames = [[color if _ldist(i, target) == 6 - k else
+               (_scale(color, 0.25) if _ldist(i, target) > 6 - k else 0) for i in range(RING_N)]
+              for k in range(7)]
+    return frames + [[0] * RING_N], 0.08
+
+
+def _arc_pulse(target, color):
+    """5-LED arc toward the target, centre brightest, pulsing."""
+    frames = []
+    for f in (0.2, 0.4, 0.7, 1.0, 1.0, 0.7, 0.4, 0.2):
+        frames.append([_scale(color, f * (1.0 if _ldist(i, target) == 0 else
+                                          0.5 if _ldist(i, target) <= 2 else 0)) for i in range(RING_N)])
+    return frames, 0.08
+
+
+def _solid(color):
+    return [[color] * RING_N], 1.0
+
+
+def _breathe(color, lo=0.15):
+    seq = [lo + (1 - lo) * x / 10 for x in range(11)]
+    return [[_scale(color, f)] * RING_N for f in seq + seq[::-1]], 0.08
+
+
+def _play(mic, frames, dt, stop):
+    while not stop.is_set():
+        for fr in frames:
+            if stop.is_set():
+                return
+            mic.set_ring(fr)
+            time.sleep(dt)
+
+
+def cmd_show(mic):
+    """Loop each candidate pattern until Enter. Angles are the measured mic-frame ones."""
+    import threading
+    front, left, back, right = _led_for(179), _led_for(89), _led_for(356), _led_for(273)
+    patterns = [
+        ("IDLE A: breathing white", _breathe(WHITE)),
+        ("IDLE B: breathing soft blue-white", _breathe(0x8090FF)),
+        ("IDLE C: steady dim white", _solid(_scale(WHITE, 0.35))),
+        ("LISTEN 1 car-indicator fill -> FRONT", _sweep_fill(front, GREEN)),
+        ("LISTEN 1 car-indicator fill -> LEFT", _sweep_fill(left, GREEN)),
+        ("LISTEN 1 car-indicator fill -> RIGHT", _sweep_fill(right, GREEN)),
+        ("LISTEN 1 car-indicator fill -> BACK", _sweep_fill(back, GREEN)),
+        ("LISTEN 2 converging dots -> LEFT", _sweep_converge(left, GREEN)),
+        ("LISTEN 2 converging dots -> RIGHT", _sweep_converge(right, GREEN)),
+        ("LISTEN 3 pulsing arc -> LEFT", _arc_pulse(left, GREEN)),
+        ("LISTEN 3 pulsing arc -> RIGHT", _arc_pulse(right, GREEN)),
+        ("THINKING: breathing amber", _breathe(AMBER, lo=0.2)),
+        ("SPEAKING: solid blue", _solid(BLUE)),
+        ("MUTED: solid red", _solid(RED)),
+    ]
+    try:
+        mic.set_led_effect(5)  # ring mode: per-LED colours
+        for i, (label, (frames, dt)) in enumerate(patterns, 1):
+            stop = threading.Event()
+            t = threading.Thread(target=_play, args=(mic, frames, dt, stop), daemon=True)
+            t.start()
+            try:
+                input(f"[{i}/{len(patterns)}] {label}  -- Enter for next ")
+            finally:
+                stop.set()
+                t.join(1.0)
+        return 0
+    finally:
+        mic.set_led_effect(4)  # back to DoA mode on every exit path, incl. Ctrl-C
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=("live", "clap", "leds"))
+    ap.add_argument("mode", choices=("live", "clap", "leds", "index", "show"))
     args = ap.parse_args()
     mic = MicArray.open()
     if mic is None:
         print("XVF3800 (2886:001a) not found or pyusb missing")
         return 1
     try:
-        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds}[args.mode](mic) or 0
+        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds, "index": cmd_index,
+                "show": cmd_show}[args.mode](mic) or 0
     finally:
         mic.close()
 
