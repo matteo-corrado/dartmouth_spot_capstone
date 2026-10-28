@@ -29,6 +29,7 @@ class RingAnimator:
         self._thread = None
         self._effect_set = False
         self._warned = False
+        self._write_lock = threading.Lock()
 
     def _usable(self) -> bool:
         return self._mic is not None and not getattr(self._mic, "dead", False)
@@ -52,11 +53,17 @@ class RingAnimator:
             t = self._thread
         if t is not None:
             t.join(0.4)
-        if self._usable() and (self._effect_set or t is not None):
-            try:
-                self._mic.set_led_effect(EFFECT_DOA)
-            except Exception as e:  # noqa: BLE001
-                self._warn(e)
+        # Worker re-checks _stopped under _write_lock, so no write follows this.
+        got = self._write_lock.acquire(timeout=0.5)
+        try:
+            if self._usable() and (self._effect_set or t is not None):
+                try:
+                    self._mic.set_led_effect(EFFECT_DOA)
+                except Exception as e:  # noqa: BLE001
+                    self._warn(e)
+        finally:
+            if got:
+                self._write_lock.release()
 
     def _warn(self, e) -> None:
         if not self._warned:
@@ -64,16 +71,17 @@ class RingAnimator:
             log.warning("ring animator: LED write failed (%s); further errors suppressed", e)
 
     def _write(self, ring) -> None:
-        if not self._usable():
-            return
-        try:
-            if not self._effect_set:
-                self._mic.set_led_effect(EFFECT_RING)
-                self._effect_set = True
-            if ring is not None:
-                self._mic.set_ring(ring)
-        except Exception as e:  # noqa: BLE001
-            self._warn(e)
+        with self._write_lock:
+            if self._stopped or not self._usable():
+                return
+            try:
+                if not self._effect_set:
+                    self._mic.set_led_effect(EFFECT_RING)
+                    self._effect_set = True
+                if ring is not None:
+                    self._mic.set_ring(ring)
+            except Exception as e:  # noqa: BLE001
+                self._warn(e)
 
     def _wait(self, gen, timeout=None) -> bool:
         """Wait up to timeout (None = forever) for a new spec or stop.
@@ -94,7 +102,7 @@ class RingAnimator:
                     self._write(spec.ring)
                     self._wait(gen)
                     continue
-                dt = max(spec.frame_s or 0.0, self._min_dt)
+                dt = max(spec.frame_s or 0.0, self._min_dt, 0.005)
                 while True:
                     for fr in frames:
                         self._write(fr)

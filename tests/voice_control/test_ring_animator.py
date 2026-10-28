@@ -93,3 +93,18 @@ def test_stop_is_fast():
     t = time.time(); a.stop()
     assert time.time() - t < 0.5 and m.effects[-1] == 4
     a.show(spec(ring=[1] * 12))   # after stop: ignored
+
+
+def test_slow_write_racing_stop_ends_with_effect_4():
+    class Slow(FakeMic):
+        def set_led_effect(self, e):
+            time.sleep(0.15)
+            super().set_led_effect(e)
+    m = Slow(); a = RingAnimator(m)
+    a.show(spec(frames=[[1] * 12], dt=0.01))
+    time.sleep(0.05)       # worker is mid effect-5 write
+    a.stop()
+    time.sleep(0.3)
+    assert m.effects[-1] == 4 and 5 in m.effects[:-1]
+    n = len(m.rings); time.sleep(0.1)
+    assert len(m.rings) == n
