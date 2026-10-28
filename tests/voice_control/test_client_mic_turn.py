@@ -142,3 +142,39 @@ def test_real_rule_hey_spot_stop_come_back(monkeypatch):
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=None,
                          has_wake_detector=True)
     assert sent == ["stop"]
+
+
+def test_fuzzy_wake_strip_reaches_regex(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cm, "WAKE_PHRASES", ["HELLO SPOTTY"])
+    monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    r, sent, info = _run(monkeypatch, "hello spotted sit down", has_wake_detector=True)
+    assert seen == ["sit down"] and info["reached_llm"]
+
+
+def test_asr_fallback_bare_wake_phrase(monkeypatch):
+    r, sent, _ = _run(monkeypatch, "hey spot", safety_only=True, has_wake_detector=False)
+    assert r == "wake_detected" and sent == []
+
+
+def test_no_strip_mid_sentence(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    _run(monkeypatch, "is the spot free", has_wake_detector=True)
+    assert seen == ["is the spot free"]
+
+
+def test_wake_detector_gets_peak_target(monkeypatch):
+    import src.voice_control.wake.sherpa_onnx as so
+    got = {}
+
+    class D:
+        def __init__(self, peak_target=None):
+            got["pt"] = peak_target
+
+    monkeypatch.setattr(so, "WakeWordDetector", D)
+    monkeypatch.delenv("SPOT_WAKE_BACKEND", raising=False)
+    cm._make_wake_detector()
+    assert got["pt"] == cm._tuning.kws_peak_target == 0.9

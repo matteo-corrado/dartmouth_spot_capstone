@@ -775,11 +775,22 @@ def _run_safety(text: str) -> bool:
     return True
 
 
-# Wake phrase pattern — fallback for ASR-based detection if dedicated detector unavailable
-WAKE_PHRASE_PATTERN = re.compile(
-    r"(?:hey|a|stay|say|heh)\s*[,\-]?\s*spot\b",
-    re.IGNORECASE
-)
+# Wake phrases (config/wake_phrases.txt). strip_wake_phrase removes a
+# LEADING wake phrase, tolerating ASR variants; unchanged text = no match.
+from src.voice_control.wake.phrases import WAKE_PHRASES, strip_wake_phrase  # noqa: E402
+
+
+def _make_wake_detector():
+    """Wake backend from SPOT_WAKE_BACKEND; the sherpa-onnx spotter gets the
+    peak-safe gain target from Tuning.kws_peak_target."""
+    if os.environ.get("SPOT_WAKE_BACKEND", "sherpa_onnx").lower() == "sherpa_onnx":
+        from src.voice_control.wake.sherpa_onnx import WakeWordDetector
+        try:
+            return WakeWordDetector(peak_target=_tuning.kws_peak_target)
+        except TypeError:  # detector without the peak_target arg (pre-merge)
+            return WakeWordDetector()
+    from src.voice_control.wake import make_wake_detector
+    return make_wake_detector()
 
 
 def _enter_state(new_state):
@@ -1205,8 +1216,7 @@ def main():
     use_wake_word = not args.no_wake_word
     if use_wake_word:
         try:
-            from src.voice_control.wake import make_wake_detector
-            wake_detector = make_wake_detector()
+            wake_detector = _make_wake_detector()
             if wake_detector.is_available():
                 print("[WakeWord] keyword spotter ready")
             else:
@@ -1946,12 +1956,10 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             # but it wasn't a safety command — just discard.
             print(f"[Ignored \"{clean}\" — waiting for 'Hey Spot' (detector)]")
             return None
-        # ASR-based fallback: check transcript for wake phrase
-        wake_match = WAKE_PHRASE_PATTERN.search(clean)
-        if wake_match:
-            # Strip wake phrase from transcript
-            remainder = clean[wake_match.end():].strip()
-            remainder = re.sub(r'^[,\s]+', '', remainder)  # strip leading punctuation
+        # ASR-based fallback: check transcript for a leading wake phrase
+        remainder = strip_wake_phrase(clean, WAKE_PHRASES)
+        if remainder != clean:
+            remainder = remainder.strip()
             print(f"[Wake] Detected in: \"{clean}\"")
             if remainder and len(remainder) >= 2:
                 # Command follows wake phrase — process it now ("Hey Spot stand")
@@ -1975,10 +1983,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     #     Handles "Hey Spot stand up" → "stand up" when said in one breath
     # ------------------------------------------------------------------
     if has_wake_detector and not safety_only:
-        wake_match = WAKE_PHRASE_PATTERN.search(clean)
-        if wake_match:
-            remainder = clean[wake_match.end():].strip()
-            remainder = re.sub(r'^[,\s]+', '', remainder)
+        remainder = strip_wake_phrase(clean, WAKE_PHRASES)
+        if remainder != clean:
+            remainder = remainder.strip()
             if remainder and len(remainder) >= 2:
                 print(f"[Wake strip] \"{clean}\" → \"{remainder}\"")
                 clean = remainder

@@ -14,16 +14,17 @@
 # speaker_tail_s: 0.15
 # kws_score: 1.5
 # kws_threshold: 0.05
-# kws_peak_target: 0.5
+# kws_peak_target: 0.9   # wake KWS peak-safe gain target (<=0 = legacy fixed x8)
 # lock_window_deg: 35.0
 # lock_timeout_s: 20.0
 # lock_nudge: 0.3
 # Measured on the robot 2026-10-28 (mic frame): FRONT 179, LEFT 89, BACK 356, RIGHT 296.
 mic_yaw_offset_deg: 179.0
 mic_yaw_sign: -1
-# LED ring: LED index offset vs mic 0 deg (xvf_probe leds), index direction, write cap.
-# ring_offset_leds: 0
-# ring_reverse: false
+# LED ring, measured on the device 2026-10-28: mic DoA and LED index both increase
+# clockwise from above; LED0 is at ~12:30 relative to Spot's front.
+ring_offset_leds: 6
+ring_reverse: false
 # ring_max_hz: 10.0
 # beam_steering: false
 # voiceprint_enabled: false

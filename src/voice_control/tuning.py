@@ -26,13 +26,13 @@ class Tuning:
     speaker_tail_s: float = 0.15
     kws_score: float = 1.5
     kws_threshold: float = 0.05
-    kws_peak_target: float = 0.5
+    kws_peak_target: float = 0.9  # = wake/sherpa_onnx TARGET_PEAK (authoritative)
     lock_window_deg: float = 35.0
     lock_timeout_s: float = 20.0
     lock_nudge: float = 0.3
     mic_yaw_offset_deg: float = 179.0  # measured on the robot 2026-10-28
     mic_yaw_sign: int = -1             # measured on the robot 2026-10-28
-    ring_offset_leds: int = 0
+    ring_offset_leds: int = 6          # measured on the device 2026-10-28 (LED0 ~12:30 from front)
     ring_reverse: bool = False
     ring_max_hz: float = 10.0
     beam_steering: bool = False

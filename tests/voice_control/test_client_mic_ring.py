@@ -107,7 +107,7 @@ def test_reject_flashes_red_then_restores(monkeypatch):
 
 def test_tuning_ring_fields_and_yaw_sign_validation(tmp_path):
     t = load_tuning(tmp_path / "missing.yaml")
-    assert (t.ring_offset_leds, t.ring_reverse, t.ring_max_hz) == (0, False, 10.0)
+    assert (t.ring_offset_leds, t.ring_reverse, t.ring_max_hz) == (6, False, 10.0)
     p = tmp_path / "t.yaml"
     p.write_text("mic_yaw_sign: 3\nring_offset_leds: 2\n")
     t = load_tuning(p)
