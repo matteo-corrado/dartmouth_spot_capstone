@@ -467,6 +467,10 @@ def safety_kws_loop(detector, q, stop_event, on_hit,
                     health["ok"] = False
                     print(f"[SafetyKWS] !!! UNHEALTHY: {errors} consecutive detector errors "
                           f"({e}) — spoken stop may not work; use spotctl stop / e-stop")
+                try:
+                    detector.reset()  # fresh stream: recover from a wedged decoder
+                except Exception:
+                    pass
                 kw = ""
             if not kw:
                 continue
@@ -501,9 +505,15 @@ def _on_safety_kw(kw: str) -> None:
         return
     print(f"[SAFETY-KWS] '{kw}' — executing {intent['intent']} immediately")
     _mark_safety()
-    # Halt FIRST; force_reset can take seconds (worker join + stream reopen),
-    # so the hush runs on its own daemon thread and neither waits on the other.
+    # force_reset can take seconds (worker join + stream reopen), so the hush
+    # runs on its own daemon thread; starting it first costs the halt nothing
+    # and neither waits on the other.
+    _start_hush()
     _dispatch_safety(intent)
+
+
+def _start_hush() -> None:
+    """Cut current speech on a daemon thread (never blocks the caller)."""
     threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
 
 
@@ -956,6 +966,7 @@ def _run_safety(text: str) -> bool:
         return False
     print(f"[SAFETY] {safety['intent']} — executing immediately")
     _mark_safety()
+    _start_hush()  # cut speech on its own thread; never delays the halt
     _dispatch_safety(safety)
     return True
 
@@ -1165,6 +1176,8 @@ def _on_immediate(name: str, arg=None) -> dict:
         return {"ok": True}
     if name in _MOTION_COMMANDS:
         _mark_safety()
+        if name in ("stop", "freeze"):
+            _start_hush()  # same path as a spoken halt: cut speech too
         ok = execute_on_spot({"intent": name, "params": {}, "raw": f"spotctl {name}"})
         return {"ok": bool(ok)}
     if name in ("mute", "unmute"):

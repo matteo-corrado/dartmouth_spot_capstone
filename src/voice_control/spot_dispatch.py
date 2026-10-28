@@ -1243,7 +1243,9 @@ def _handle_emote(params, session, speak=None):
 
 INFO_INTENTS = frozenset({"battery_status", "status", "check_obstacles",
                           "list_locations", "list_maps"})
-_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in soft stop"}
+# Spoken lines never contain stop/halt/freeze/e-stop: the always-on safety
+# KWS hears Spot's own voice and would halt it.
+_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in a soft hold"}
 
 
 def _spoken_list(names) -> str:
@@ -1800,7 +1802,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
                 ok_word = "All good. " if (motors == "on" and estop == "not_cut") else ""
                 _say(speak, f"{ok_word}My battery is at {battery:.0f} percent, "
-                            f"my motors are {motors}, and my e-stop is {estop_words}.")
+                            f"my motors are {motors}, and my safety switch is {estop_words}.")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Status check failed: {e}")

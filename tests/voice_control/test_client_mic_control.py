@@ -21,6 +21,20 @@ def test_stow_and_freeze_use_dispatcher(monkeypatch):
     cm._abort_chain.clear()
 
 
+def test_spotctl_and_transcript_halts_hush_speech(monkeypatch):
+    hushes = []
+    monkeypatch.setattr(cm, "_start_hush", lambda: hushes.append(1))
+    monkeypatch.setattr(cm, "execute_on_spot", lambda intent, brain=None: True)
+    monkeypatch.setattr(cm, "_dispatch_safety", lambda intent: True)
+    cm._on_immediate("stop", None)
+    cm._on_immediate("freeze", None)
+    cm._on_immediate("stow", None)       # not a halt: speech keeps going
+    assert hushes == [1, 1]
+    assert cm._run_safety("stop") is True
+    assert hushes == [1, 1, 1]
+    cm._abort_chain.clear()
+
+
 def test_mute_unmute_and_status(monkeypatch):
     monkeypatch.setattr(cm, "_operator_muted", False)
     assert cm._on_immediate("mute", None)["muted"] is True

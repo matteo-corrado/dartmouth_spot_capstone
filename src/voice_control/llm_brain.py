@@ -661,7 +661,10 @@ class LLMBrain:
             "NOT as if you are analyzing a photograph. Never mention 'image', "
             "'photo', 'picture', 'angle', or 'vantage point'. "
             "Describe what you see in 2-3 sentences. "
-            "Be specific about objects, people, and surroundings."
+            "Be specific about objects, people, and surroundings. "
+            "NEVER say the words 'stop', 'halt', 'freeze' or 'e-stop' (not even "
+            "'stop sign' or 'bus stop'): your own voice saying them triggers your "
+            "emergency halt. Say 'sign' or 'pause' instead."
         )
         prompt = f'A user asked: "{question}". '
         if yolo_hint:

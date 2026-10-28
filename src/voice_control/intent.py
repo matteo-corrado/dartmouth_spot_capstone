@@ -155,9 +155,10 @@ _WORD_RE = re.compile(r"[a-z0-9']+")
 
 
 def is_filler_only(text: str) -> bool:
-    """True if fewer than 2 words remain after removing filler words."""
+    """True only if no word remains after removing filler words (one-word
+    commands like "sit" or "hello" still go through)."""
     words = [w for w in _WORD_RE.findall((text or "").lower()) if w not in FILLER_WORDS]
-    return len(words) < 2
+    return len(words) == 0
 
 
 # Precompile with IGNORECASE for more robust matching
