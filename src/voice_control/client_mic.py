@@ -206,6 +206,22 @@ _state_leds = None     # StateLeds instance (set in main); None = LEDs off
 SPEAKER_TAIL_COOLDOWN_S = 0.15
 _player_last_busy_at = 0.0  # monotonic timestamp of the most recent busy frame
 
+# Operator control (spotctl, Task 4). Plain module globals: the HTTP threads
+# read/flip them without locks so a slow request can never delay a stop.
+_operator_muted = False
+_crowd_mode = False        # after each reply drop back to WAKE_WORD
+_voiceprint_mode = False   # flag only (voiceprint gating is Wave 3)
+# Set by an operator stop/freeze/sit/stand/stow/hush: the chained-action loop
+# in process_utterance checks it before each step and waits on it instead of
+# sleeping, so an operator stop also cancels the rest of a chain.
+_abort_chain = threading.Event()
+# Snapshot the main loop writes and `status` reads (no locks, never blocks).
+_status = {
+    "state": "WAKE_WORD", "locked_deg": None, "floor_dbfs": None,
+    "last_transcript": None, "last_latency_s": None,
+}
+_MOTION_COMMANDS = ("stop", "freeze", "sit", "stand", "stow")
+
 # The mic-mute watchdog lives inside AudioPlayer (audio_player.py) as its own
 # daemon thread. Putting it there instead of the main loop here means it can
 # still recover from a wedge that happens *inside* process_utterance, when
@@ -225,6 +241,8 @@ def audio_callback(indata, frames, time_info, status):
     """
     global _player_last_busy_at
     now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
+    if _operator_muted:
+        return  # operator mute (spotctl mute) — discard everything
     if _mic_gated or (_audio_player is not None and _audio_player.is_busy()):
         _player_last_busy_at = now
         return  # discard frame — gated for a response, or speaker active
@@ -536,7 +554,8 @@ def _wait_for_nav_complete(timeout: float = 120.0):
     """Block until current navigation finishes (for command chaining)."""
     start = time.time()
     while _is_robot_moving() and (time.time() - start) < timeout:
-        time.sleep(0.5)
+        if _abort_chain.wait(0.5):
+            return  # operator stop — don't keep the chain waiting
 
 
 # Safety commands that bypass the LLM for zero-latency execution.
@@ -582,6 +601,89 @@ def _enter_state(new_state):
             _state_leds.set_state(new_state)
         except Exception as e:
             print(f"[Indicator] LED failed: {type(e).__name__}: {e}")
+
+
+# ============================================================================
+# Operator control (spotctl) — immediate commands
+# ============================================================================
+def _hush():
+    """Cut speech now: flush the player and latch the gripper mouth shut."""
+    if _audio_player is not None:
+        try:
+            _audio_player.force_reset()
+        except Exception as e:
+            print(f"[Control] hush: player reset failed: {e}")
+    if os.environ.get("SPOT_DRY_RUN") != "1":
+        try:
+            from src.voice_control.spot_dispatch import _close_mouth
+            _close_mouth()
+        except Exception as e:
+            print(f"[Control] hush: close mouth failed: {e}")
+
+
+def _status_snapshot() -> dict:
+    """Plain-attribute read; never blocks."""
+    s = dict(_status)
+    s.update(muted=_operator_muted, crowd=_crowd_mode, voiceprint=_voiceprint_mode)
+    return s
+
+
+def _on_immediate(name: str, arg=None) -> dict:
+    """spotctl immediate commands, run on HTTP worker threads.
+
+    Re-entrant and lock-free: touches only the player, the mouth and the
+    dispatcher (via execute_on_spot, which honors dry-run), plus plain flags.
+    Motion commands also set _abort_chain so a chain in progress stops.
+    """
+    global _operator_muted
+    if name == "status":
+        return _status_snapshot()
+    if name == "hush":
+        _abort_chain.set()
+        _hush()
+        return {"ok": True}
+    if name in _MOTION_COMMANDS:
+        _abort_chain.set()
+        ok = execute_on_spot({"intent": name, "params": {}, "raw": f"spotctl {name}"})
+        return {"ok": bool(ok)}
+    if name in ("mute", "unmute"):
+        _operator_muted = (name == "mute")
+        return {"ok": True, "muted": _operator_muted}
+    return {"error": f"unhandled immediate command {name!r}"}
+
+
+def _toggle(current: bool, arg) -> bool:
+    """spotctl toggle: explicit on/off arg wins, otherwise flip."""
+    a = (arg or "").strip().lower()
+    if a in ("1", "on", "true", "yes"):
+        return True
+    if a in ("0", "off", "false", "no"):
+        return False
+    return not current
+
+
+def _play_cue(name: str) -> None:
+    """Play a named beep cue if this AudioFeedback has it; never raises."""
+    try:
+        fn = getattr(beep, name, None)
+        if fn is not None:
+            fn()
+    except Exception as e:
+        print(f"[Indicator] {name} failed: {type(e).__name__}: {e}")
+
+
+def _start_control_server(ctl_q):
+    """Start the localhost control server; None if the port is taken etc."""
+    try:
+        from src.voice_control.control_server import ControlServer
+        srv = ControlServer(port=8770, on_immediate=_on_immediate, queue=ctl_q)
+        srv.start()
+        return srv
+    except OSError as e:
+        print(f"[Control] server not started (port 8770: {e}) — continuing without spotctl")
+    except Exception as e:
+        print(f"[Control] server failed: {type(e).__name__}: {e} — continuing without spotctl")
+    return None
 
 
 # ============================================================================
@@ -935,8 +1037,47 @@ def main():
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
     listening_start_time = time.time()
 
+    # Operator control server (spotctl). Immediate commands run on its HTTP
+    # threads via _on_immediate; queued ones are drained here between frames.
+    from src.voice_control.control_server import drain as _drain_control
+    ctl_q = queue.Queue()
+    ctl_srv = _start_control_server(ctl_q)
+
+    def _on_queued(name, arg):
+        nonlocal state, listening_start_time
+        global _crowd_mode, _voiceprint_mode
+        if name == "listen":
+            state = VoiceState.LISTENING
+            listening_start_time = time.time()
+            _enter_state(VoiceState.LISTENING)
+        elif name in ("release", "reset"):
+            state = VoiceState.WAKE_WORD
+            if wake_detector:
+                wake_detector.reset()
+            _enter_state(VoiceState.WAKE_WORD)
+            _play_cue("released_cue")
+            if name == "reset" and brain is not None:
+                brain.history.clear()
+        elif name == "say":
+            if tts is not None and arg:
+                tts.speak(arg)
+        elif name == "persona":
+            if brain is None:
+                print("[Control] persona: no brain")
+            else:
+                from src.voice_control.spot_dispatch import do_set_persona
+                print(f"[Control] persona -> {do_set_persona({'name': arg}, brain)}")
+        elif name == "crowd":
+            _crowd_mode = _toggle(_crowd_mode, arg)
+            print(f"[Control] crowd mode {'ON' if _crowd_mode else 'OFF'}")
+        elif name == "voiceprint":
+            _voiceprint_mode = _toggle(_voiceprint_mode, arg)
+            print(f"[Control] voiceprint flag {'ON' if _voiceprint_mode else 'OFF'}")
+
     try:
         while True:
+            _drain_control(ctl_q, _on_queued)
+            _status["state"] = state.name
             # Stage 2F P0a: on the player busy->idle edge after a TTS response,
             # reset streaming-detector state so the speaker tail + stale VAD/KWS
             # decisions can't corrupt the next detection. Never touches `state`.
@@ -1240,6 +1381,11 @@ def main():
     except KeyboardInterrupt:
         print("\n\nShutting down...")
     finally:
+        if ctl_srv is not None:
+            try:
+                ctl_srv.stop()
+            except Exception:
+                pass
         try:
             stream.stop()
             time.sleep(0.1)  # let PortAudio drain buffers before close
@@ -1317,6 +1463,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     if not speech_float_buffer:
         return None
 
+    # New turn: forget earlier operator stops. A stop arriving from here on
+    # (during ASR, LLM or the chain itself) aborts this turn's action chain.
+    _abort_chain.clear()
     t_utterance_start = time.time()
 
     # Combine audio
@@ -1532,6 +1681,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 if trace:
                     trace.mark("intent_dispatch")
                 for i, intent in enumerate(actions):
+                    if _abort_chain.is_set():
+                        print("[Chain] aborted by operator stop/hush")
+                        break
                     cmd = intent["intent"]
                     params = intent.get("params", {})
 
@@ -1608,9 +1760,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                             if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back"):
                                 _wait_for_nav_complete()
                             elif cmd in ("walk", "strafe", "turn"):
-                                time.sleep(CHAIN_MOVEMENT_WAIT_S)
+                                _abort_chain.wait(CHAIN_MOVEMENT_WAIT_S)
                             elif cmd in ("sit", "stand", "selfright", "body_height"):
-                                time.sleep(CHAIN_POSTURE_WAIT_S)
+                                _abort_chain.wait(CHAIN_POSTURE_WAIT_S)
                 if trace:
                     trace.mark("dispatch_complete")
             else:
