@@ -5,6 +5,7 @@ Backends register a factory under a name (e.g. "kokoro", "elevenlabs").
 Default backend: "elevenlabs" (premium quality). Falls back to "kokoro"
 (local, no API key needed) if the primary backend cannot be instantiated.
 """
+import concurrent.futures
 import os
 import time
 from typing import Iterator, Protocol, runtime_checkable
@@ -111,29 +112,52 @@ def get_fallback_backend():
 _FALLBACK_LOG_INTERVAL_S = 60.0
 _last_fallback_log = float("-inf")
 
+# Per-sentence budget for the primary (slow-but-alive Wi-Fi must not stall
+# speech), and how long to skip the primary after it fails or times out.
+PRIMARY_BUDGET_S = 4.5
+PRIMARY_STICKY_S = 60.0
+_primary_skip_until = float("-inf")
+# Shared pool: a timed-out primary call keeps running in its worker thread;
+# the sticky window stops new calls piling up behind it.
+_PRIMARY_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="tts-primary")
+
 
 def synthesize_with_fallback(text: str, voice_id: str, primary: TTSBackend,
-                             fallback: TTSBackend, fallback_voice: str) -> tuple:
-    """Synthesize one sentence with ``primary``; on any exception or empty
-    audio, re-synthesize it with ``fallback`` in ``fallback_voice`` so Spot
-    never goes silent mid-reply (e.g. venue Wi-Fi drops ElevenLabs).
+                             fallback: TTSBackend, fallback_voice: str,
+                             budget_s: float | None = None) -> tuple:
+    """Synthesize one sentence with ``primary``; on any exception, empty
+    audio, or more than ``budget_s`` (default PRIMARY_BUDGET_S) seconds,
+    re-synthesize it with ``fallback`` in ``fallback_voice`` so Spot never
+    goes silent mid-reply (e.g. venue Wi-Fi drops ElevenLabs).
+
+    After any primary failure the primary is skipped for PRIMARY_STICKY_S
+    (Kokoro used directly), then retried.
 
     Returns ``(audio_bytes, "primary" | "fallback")``. The fallback's own
     exception propagates. The switch is logged at most once per minute.
     """
-    global _last_fallback_log
+    global _last_fallback_log, _primary_skip_until
+    now = time.monotonic()
+    if now < _primary_skip_until:
+        return fallback.synthesize(text, fallback_voice), "fallback"
+    budget = PRIMARY_BUDGET_S if budget_s is None else budget_s
     try:
-        audio = primary.synthesize(text, voice_id)
+        future = _PRIMARY_POOL.submit(primary.synthesize, text, voice_id)
+        audio = future.result(timeout=budget)
         if audio:
             return audio, "primary"
         reason = "empty audio"
+    except concurrent.futures.TimeoutError:
+        reason = f"timeout > {budget:.1f}s"
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
     now = time.monotonic()
+    _primary_skip_until = now + PRIMARY_STICKY_S
     if now - _last_fallback_log >= _FALLBACK_LOG_INTERVAL_S:
         _last_fallback_log = now
         print(f"[TTS] primary {type(primary).__name__} failed ({reason}); "
-              f"using fallback voice {fallback_voice}")
+              f"using fallback voice {fallback_voice} for {PRIMARY_STICKY_S:.0f}s")
     return fallback.synthesize(text, fallback_voice), "fallback"
 
 

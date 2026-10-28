@@ -32,6 +32,7 @@ Install (Jetson AGX Orin, JetPack 6, CUDA 12.6, Python 3.10, aarch64):
 """
 
 import os
+import threading
 import time
 from pathlib import Path
 import numpy as np
@@ -137,8 +138,20 @@ class SpotTTS:
 
         # B8: build Kokoro now even when ElevenLabs is primary, so the
         # per-sentence fallback never pays a cold model load mid-reply.
-        if get_fallback_backend() is None:
+        fallback = get_fallback_backend()
+        if fallback is None:
             print("[TTS] WARN: Kokoro fallback unavailable — no per-sentence fallback")
+        elif fallback is not backend:
+            # Only the fallback: nothing else would run it before the first
+            # failure, so prime its CUDA session with one word off-thread.
+            def _warm_fallback():
+                try:
+                    fallback.synthesize("Hi.", DEFAULT_VOICE)
+                    print("[TTS] Kokoro fallback warm")
+                except Exception as e:
+                    print(f"[TTS] Kokoro fallback warm-up failed: {type(e).__name__}: {e}")
+            threading.Thread(target=_warm_fallback, name="tts-fallback-warm",
+                             daemon=True).start()
 
         backend_name = type(backend).__name__
         self._available = True
