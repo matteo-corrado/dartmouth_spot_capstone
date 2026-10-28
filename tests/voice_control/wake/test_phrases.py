@@ -111,3 +111,13 @@ def test_wake_loud_frame_scaled_to_target_peak_no_clip():
     sent = det._stream.waves[0]
     assert np.max(np.abs(sent)) == pytest.approx(TARGET_PEAK, rel=1e-3)
     assert np.max(np.abs(sent)) < 1.0
+
+
+def test_strip_stay_filler():
+    assert strip_wake_phrase("stay spot what is this", ["HEY SPOT"]) == "what is this"
+    assert strip_wake_phrase("heh spot what is this", ["HEY SPOT"]) == "what is this"
+
+
+def test_build_keyword_lines_score_threshold():
+    lines = build_keyword_lines(["HEY SPOT"], lambda p: ["A"], score=2.5, threshold=0.1)
+    assert lines == ["A :2.5 #0.1 @HEY_SPOT"]

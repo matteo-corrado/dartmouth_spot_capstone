@@ -16,7 +16,7 @@ import pathlib
 
 import numpy as np
 
-from .phrases import peak_safe_gain
+from .phrases import MAX_GAIN, peak_safe_gain
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _MODEL_DIR = _PROJECT_ROOT / "models" / "kws"
@@ -42,7 +42,9 @@ class WakeWordDetector:
     via process_frame() — returns True when keyword detected.
     """
 
-    def __init__(self, model_dir=None):
+    def __init__(self, model_dir=None, peak_target: float = TARGET_PEAK):
+        # peak_target <= 0 -> legacy fixed x8 gain; else peak-safe gain to that peak
+        self._peak_target = float(peak_target)
         self._spotter = None
         self._stream = None
         self._available = False
@@ -111,7 +113,9 @@ class WakeWordDetector:
 
         try:
             samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            samples = np.clip(samples * peak_safe_gain(samples, TARGET_PEAK), -1.0, 1.0)
+            gain = (MAX_GAIN if self._peak_target <= 0
+                    else peak_safe_gain(samples, self._peak_target))
+            samples = np.clip(samples * gain, -1.0, 1.0)
             self._stream.accept_waveform(self._sample_rate, samples)
 
             while self._spotter.is_ready(self._stream):

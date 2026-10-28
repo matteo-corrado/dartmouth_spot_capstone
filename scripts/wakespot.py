@@ -205,8 +205,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--enable-arm", action="store_true",
                         help="Forwarded to voice control: deploy the arm + enable "
                              "the gripper mouth at startup.")
-    parser.add_argument("--latency", action="store_true",
-                        help="Forwarded to voice control: print per-stage latency.")
+    parser.add_argument("--latency", choices=["off", "summary", "file", "all"], default=None,
+                        help="Forwarded to voice control: latency telemetry mode.")
     parser.add_argument("--mic-channel", type=int, default=None,
                         help="Forwarded to voice control: mic array channel index.")
     parser.add_argument("--no-transcript-log", action="store_true",
@@ -241,8 +241,8 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
         cmd.append("--skip-services")
     if args.enable_arm:
         cmd.append("--enable-arm")
-    if args.latency:
-        cmd.append("--latency")
+    if args.latency is not None:
+        cmd.extend(["--latency", args.latency])
     if args.mic_channel is not None:
         cmd.extend(["--mic-channel", str(args.mic_channel)])
     if args.no_transcript_log:

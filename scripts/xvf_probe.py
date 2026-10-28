@@ -4,7 +4,8 @@
 Usage:
   spot-env/bin/python scripts/xvf_probe.py live    # deg/speech at 10 Hz (Ctrl-C to stop)
   spot-env/bin/python scripts/xvf_probe.py clap    # speak at FRONT/LEFT/BACK/RIGHT -> mic_yaw_offset_deg / mic_yaw_sign
-  spot-env/bin/python scripts/xvf_probe.py leds    # cycle effects, measure set_ring writes/s
+  spot-env/bin/python scripts/xvf_probe.py leds    # index calibration, then cycle effects, measure set_ring writes/s
+  spot-env/bin/python scripts/xvf_probe.py index   # LED index/orientation -> ring_offset_leds / ring_reverse
 
 Runtime writes only; never saves config or reboots the device.
 """
@@ -101,8 +102,87 @@ def cmd_clap(mic):
     return 0
 
 
+def clock_to_deg(hours):
+    """Clock position (12 = Spot's front, 3 = right) -> degrees clockwise from front."""
+    return (float(hours) * 30.0) % 360
+
+
+def derive_ring_mapping(answers, front_mic_deg, doa_cw):
+    """answers: {led_index: clock_hours} for LEDs 0/3/6/9. doa_cw: True if mic DoA angle
+    increases clockwise seen from above. Returns (front_led, led_cw, offset, reverse)."""
+    pos = {k: clock_to_deg(h) for k, h in answers.items()}
+    steps = []
+    for k in pos:
+        nxt = (k + 3) % 12
+        if nxt in pos:
+            d = ((pos[nxt] - pos[k] + 180) % 360) - 180  # +90 = clockwise
+            steps.append(d)
+    led_cw = sum(steps) > 0
+    direction = 1 if led_cw else -1
+    p0 = pos[0]
+    front_led = round(((-p0) * direction) / 30.0) % 12
+    reverse = led_cw != doa_cw
+    sign = -1 if reverse else 1
+    offset = (front_led - round(front_mic_deg / 30.0) * sign) % 12
+    return front_led, led_cw, offset, reverse
+
+
+def ask_clock(k):  # noqa: ARG001
+    while True:
+        raw = input("Which clock position relative to Spot's FRONT "
+                    "(12 = front, 3 = Spot's right side, 9 = Spot's left)? ").strip()
+        try:
+            v = float(raw)
+        except ValueError:
+            print("  enter a number 1-12")
+            continue
+        if 0 <= v <= 12:
+            return v or 12.0
+        print("  enter a number 1-12")
+
+
+def cmd_index(mic):
+    try:
+        mic.set_led_effect(5)
+        answers = {}
+        for k in (0, 3, 6, 9):
+            mic.set_ring([0x00FF00 if i == k else 0 for i in range(12)])
+            print(f"LED {k} is lit (bright green, all others off)")
+            answers[k] = ask_clock(k)
+        mic.set_ring([0] * 12)
+        mic.start_poller(hz=20.0)
+        front = capture(mic, "FRONT (talk from Spot's front)")
+        right = capture(mic, "RIGHT (Spot's 3 o'clock; sets DoA direction)")
+        if mic.dead or front is None:
+            print("no usable DoA capture for the front; rerun")
+            return 1
+        if right is None:
+            print("WARNING: no RIGHT capture; assuming DoA increases counter-clockwise")
+            doa_cw = False
+        else:
+            cw_err = circ_dist(right, (front + 90) % 360)
+            ccw_err = circ_dist(right, (front - 90) % 360)
+            doa_cw = cw_err < ccw_err
+            if min(cw_err, ccw_err) > SIGN_TOLERANCE_DEG:
+                print("WARNING: RIGHT reading is not ~90 deg from FRONT; direction guess is weak")
+        front_led, led_cw, offset, reverse = derive_ring_mapping(answers, front, doa_cw)
+        print(f"\nLED nearest Spot's front: {front_led}")
+        print(f"LED index increases {'clockwise' if led_cw else 'counter-clockwise'} seen from above")
+        print(f"mic-frame front angle: {front:.1f} deg; DoA increases "
+              f"{'clockwise' if doa_cw else 'counter-clockwise'}")
+        print("\npaste into config/tuning.yaml:")
+        print(f"ring_offset_leds: {offset}")
+        print(f"ring_reverse: {'true' if reverse else 'false'}")
+        return 0
+    finally:
+        mic.set_led_effect(4)
+
+
 def cmd_leds(mic):
     try:
+        rc = cmd_index(mic)
+        if rc:
+            print("index calibration incomplete; continuing with effects test")
         for effect in (1, 3, 4, 5):
             print(f"LED effect {effect}")
             mic.set_led_effect(effect)
@@ -124,14 +204,14 @@ def cmd_leds(mic):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=("live", "clap", "leds"))
+    ap.add_argument("mode", choices=("live", "clap", "leds", "index"))
     args = ap.parse_args()
     mic = MicArray.open()
     if mic is None:
         print("XVF3800 (2886:001a) not found or pyusb missing")
         return 1
     try:
-        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds}[args.mode](mic) or 0
+        return {"live": cmd_live, "clap": cmd_clap, "leds": cmd_leds, "index": cmd_index}[args.mode](mic) or 0
     finally:
         mic.close()
 
