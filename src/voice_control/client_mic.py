@@ -440,9 +440,14 @@ def audio_callback(indata, frames, time_info, status):
     now = time.monotonic()  # local clock — PortAudio's per-stream clock isn't comparable
     if _operator_muted:
         return  # operator mute (spotctl mute) — discard everything
-    if _mic_gated or _speech_busy():
+    if _speech_busy():
         _player_last_busy_at = now
-        return  # discard frame — gated for a response, or Spot is talking
+        return  # discard frame — Spot is talking
+    if _mic_gated:
+        # Gated for a response. Don't bump the tail clock here: the tail is
+        # measured from the last SPEECH frame, so the first frame after the
+        # reopen settle is captured (no clipped first word).
+        return
     if now - _player_last_busy_at < _tuning.speaker_tail_s:
         return  # cooldown — speaker buffer still draining
     if status:
@@ -1851,6 +1856,10 @@ def _brain_ready(brain) -> bool:
         _brain_ok = False
     if _brain_ok:
         print("[Brain] llama-server is up — LLM brain active")
+        try:
+            brain.warm_up_async()  # first turn after a late start shouldn't be cold
+        except Exception:
+            pass
     else:
         print("[Brain] llama-server still not ready — regex fallback for this utterance")
     return _brain_ok
@@ -2002,7 +2011,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # B11: "uh um hmm" — nothing worth a turn.
     if is_filler_only(clean):
         print(f"[Filler only \"{clean}\" — skipping]")
-        return None
+        return "wake_detected" if wake_activated else None
 
     info["reached_llm"] = True
     if on_thinking is not None:
