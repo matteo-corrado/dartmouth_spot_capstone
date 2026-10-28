@@ -103,20 +103,25 @@ _HALT_RE = re.compile(r"\bhalt\b", re.IGNORECASE)
 _FREEZE_RE = SAFETY_PATTERNS[2][0]
 # "stop" only as a whole word: "stops" / "stopped" / "stopping" don't match.
 _STOP_WORD_RE = re.compile(r"\bstop\b", re.IGNORECASE)
-_PREV_WORD_RE = re.compile(r"(\w+)\W*$")
-# Words that make the following "stop" a noun ("the next stop", "bus stop").
+_PREV_WORD_RE = re.compile(r"(\w+)(\W*)$")
+# Only unambiguous noun preceders ("the next stop", "bus stop"). Articles
+# etc. are deliberately absent: "come to a stop" / "uh, stop" (ASR "a stop")
+# are real commands.
 _STOP_NOUN_PRECEDERS = frozenset({
-    "the", "a", "next", "last", "first", "final", "bus", "one", "that", "this",
-    "each", "every", "our", "your", "my", "another", "pit", "full",
+    "next", "last", "bus", "pit", "first", "final", "another",
 })
+_SENTENCE_PUNCT = set(".,!?;:")
 _DASHES = str.maketrans({"–": "-", "—": "-", "‑": "-"})
 
 
 def _has_command_stop(text: str) -> bool:
-    """True if any whole-word "stop" is NOT a noun use."""
+    """True if any whole-word "stop" is NOT a noun use. A "stop" at the start
+    of the text or after sentence punctuation ("next. Stop!") is never exempt."""
     for m in _STOP_WORD_RE.finditer(text):
         prev = _PREV_WORD_RE.search(text[:m.start()])
-        if prev is None or prev.group(1).lower() not in _STOP_NOUN_PRECEDERS:
+        if (prev is None
+                or _SENTENCE_PUNCT.intersection(prev.group(2))
+                or prev.group(1).lower() not in _STOP_NOUN_PRECEDERS):
             return True
     return False
 
@@ -219,12 +224,13 @@ def parse_intent(text: str):
     """
     if not text:
         return None
+    # Safety check runs on the ORIGINAL text: punctuation matters ("next. Stop!").
+    safety = check_safety_command(text)
+    if safety is not None:
+        return safety
     # Clean up Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
     t = re.sub(r'\.\s*', ' ', text).strip()
     t = re.sub(r'\s+', ' ', t)
-    safety = check_safety_command(t)
-    if safety is not None:
-        return {**safety, "raw": text}
     for pat, intent_name, params in COMMAND_PATTERNS:
         m = pat.search(t)
         if not m:
