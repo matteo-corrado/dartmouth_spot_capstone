@@ -10,8 +10,6 @@ import pathlib
 
 import numpy as np
 
-from .phrases import peak_safe_gain
-
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _MODEL_DIR = _PROJECT_ROOT / "models" / "kws"
 
@@ -26,7 +24,8 @@ _SAFETY_KEYWORDS = "safety_keywords.txt"
 KEYWORDS_SCORE = 2.0
 KEYWORDS_THRESHOLD = 0.20
 NUM_TRAILING_BLANKS = 1
-TARGET_PEAK = 0.9  # peak-safe gain target, same as the wake detector
+INPUT_GAIN = 8.0  # match the wake detector's post-AGC gain
+# Fixed gain is the on-device tuned behaviour; peak_safe_gain is pending an eval_safety_recall run.
 
 
 class SafetyKeywordDetector:
@@ -73,7 +72,7 @@ class SafetyKeywordDetector:
             return ""
         try:
             samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            samples = np.clip(samples * peak_safe_gain(samples, TARGET_PEAK), -1.0, 1.0)
+            samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
             self._stream.accept_waveform(self._sample_rate, samples)
             while self._spotter.is_ready(self._stream):
                 self._spotter.decode_stream(self._stream)

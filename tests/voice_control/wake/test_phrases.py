@@ -67,3 +67,47 @@ def test_build_keyword_lines_with_stub_tokenizer():
                                 score=1.5, threshold=0.05)
     assert lines == ["▁HEY ▁SPOT :1.5 #0.05 @HEY_SPOT",
                      "▁LISTEN ▁UP ▁SPOT :1.5 #0.05 @LISTEN_UP_SPOT"]
+
+
+class _StubStream:
+    def __init__(self):
+        self.waves = []
+
+    def accept_waveform(self, rate, samples):
+        self.waves.append(np.array(samples))
+
+
+class _StubSpotter:
+    def is_ready(self, stream):
+        return False
+
+    def get_result(self, stream):
+        return ""
+
+
+def _detector():
+    from src.voice_control.wake.sherpa_onnx import WakeWordDetector
+    det = WakeWordDetector(model_dir="/nonexistent")  # no model -> unavailable
+    det._spotter, det._stream, det._available = _StubSpotter(), _StubStream(), True
+    return det
+
+
+def _pcm(peak):
+    return (np.full(480, peak, np.float32) * 32768).astype(np.int16)
+
+
+def test_wake_quiet_frame_gets_fixed_x8():
+    det = _detector()
+    frame = _pcm(0.05)
+    det.process_frame(frame.tobytes())
+    sent = det._stream.waves[0]
+    np.testing.assert_allclose(sent, frame.astype(np.float32) / 32768.0 * 8.0, rtol=1e-6)
+
+
+def test_wake_loud_frame_scaled_to_target_peak_no_clip():
+    from src.voice_control.wake.sherpa_onnx import TARGET_PEAK
+    det = _detector()
+    det.process_frame(_pcm(0.4).tobytes())
+    sent = det._stream.waves[0]
+    assert np.max(np.abs(sent)) == pytest.approx(TARGET_PEAK, rel=1e-3)
+    assert np.max(np.abs(sent)) < 1.0
