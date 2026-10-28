@@ -25,6 +25,7 @@ KEYWORDS_SCORE = 2.0
 KEYWORDS_THRESHOLD = 0.20
 NUM_TRAILING_BLANKS = 1
 INPUT_GAIN = 8.0  # match the wake detector's post-AGC gain
+# Fixed gain is the on-device tuned behaviour; peak_safe_gain is pending an eval_safety_recall run.
 
 
 class SafetyKeywordDetector:

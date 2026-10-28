@@ -30,7 +30,30 @@ REQUIRED_FILES = [
     "bpe.model",
 ]
 
-KEYWORD_BPE = "▁HE Y ▁SP O T"  # "HEY SPOT" BPE-encoded
+KEYWORD_BPE = "▁HE Y ▁SP O T"  # "HEY SPOT" BPE-encoded (fallback without --phrases-file)
+KWS_SCORE = 1.5
+KWS_THRESHOLD = 0.05
+
+
+def build_keyword_lines(phrases, tokenize, score=KWS_SCORE, threshold=KWS_THRESHOLD):
+    """One keywords.txt line per phrase: '<bpe tokens> :<score> #<thr> @<SLUG>'.
+
+    tokenize(phrase) -> list of BPE token strings.
+    """
+    lines = []
+    for phrase in phrases:
+        slug = "_".join(phrase.upper().split())
+        lines.append(f"{' '.join(tokenize(phrase))} :{score} #{threshold} @{slug}")
+    return lines
+
+
+def _bpe_tokenizer():
+    import sherpa_onnx
+    def tokenize(phrase):
+        return sherpa_onnx.text2token(
+            [phrase], tokens=str(MODEL_DIR / "tokens.txt"),
+            tokens_type="bpe", bpe_model=str(MODEL_DIR / "bpe.model"))[0]
+    return tokenize
 
 
 def check_install():
@@ -53,7 +76,7 @@ def download_file(url, dest):
     print(f"({size_mb:.1f} MB)")
 
 
-def setup():
+def setup(phrases_file=None):
     """Download model files and create keywords.txt."""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -65,10 +88,17 @@ def setup():
             continue
         download_file(f"{BASE_URL}/{f}", dest)
 
-    # Create keywords.txt with "HEY SPOT"
     kw_path = MODEL_DIR / "keywords.txt"
-    kw_path.write_text(KEYWORD_BPE + "\n")
-    print(f"  keywords.txt — created ({KEYWORD_BPE})")
+    if phrases_file:
+        sys.path.insert(0, str(PROJECT_ROOT))
+        from src.voice_control.wake.phrases import load_wake_phrases
+        phrases = load_wake_phrases(phrases_file)
+        kw_lines = build_keyword_lines(phrases, _bpe_tokenizer())
+        kw_path.write_text("\n".join(kw_lines) + "\n")
+        print(f"  keywords.txt — created ({len(kw_lines)} phrases: {', '.join(phrases)})")
+    else:
+        kw_path.write_text(KEYWORD_BPE + "\n")
+        print(f"  keywords.txt — created ({KEYWORD_BPE})")
 
     # Verify
     missing = check_install()
@@ -87,6 +117,8 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Setup sherpa-onnx KWS model")
     parser.add_argument("--check", action="store_true", help="Check existing install")
+    parser.add_argument("--phrases-file", default=None,
+                        help="Wake phrase list, one per line (e.g. config/wake_phrases.txt)")
     args = parser.parse_args()
 
     if args.check:
@@ -103,7 +135,7 @@ def main():
     print(f"Model: {MODEL_NAME}")
     print(f"Target: {MODEL_DIR}\n")
 
-    if setup():
+    if setup(args.phrases_file):
         print("\nDone! Test with: python src/voice_control/wake/sherpa_onnx.py --test-mic")
     else:
         sys.exit(1)
