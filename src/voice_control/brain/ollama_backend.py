@@ -29,6 +29,21 @@ SAMPLING_PROFILES: Dict[str, Dict] = {
 class OllamaBackend:
     name = "ollama"
 
+    def is_available(self) -> bool:
+        """True if Ollama is up and OLLAMA_MODEL is pulled."""
+        try:
+            r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+            if r.status_code != 200:
+                return False
+            models = [m["name"] for m in r.json().get("models", [])]
+            found = OLLAMA_MODEL in models or f"{OLLAMA_MODEL}:latest" in models
+            if not found:
+                print(f"[Brain] Model '{OLLAMA_MODEL}' not found. Available: {models}")
+            return found
+        except Exception as e:
+            print(f"[Brain] Ollama check failed: {type(e).__name__}: {e}")
+            return False
+
     def chat(
         self,
         system: str,

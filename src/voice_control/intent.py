@@ -15,12 +15,10 @@ from typing import Any, Dict, List, Tuple, Pattern
 # - literal values (kept as-is)
 # - strings of the form "$name" to substitute a named capture group
 # - callables(match) to compute a value from the match
+# Safety commands (stop / freeze / estop) are NOT in this table: they go
+# through check_safety_command() below, the single source of truth that
+# client_mic also uses for its zero-latency bypass.
 COMMANDS = [
-    # === SAFETY & STOP ===
-    (r"\b(?:stop|halt)\b",                          "stop", {}),
-    (r"\bfreeze\b",                                 "freeze", {}),
-    (r"\b(?:emergency\s+stop|e[\s-]?stop)\b",       "estop", {}),
-
     # === POSTURE ===
     (r"\b(?:stand|stand up|get up)\b",             "stand", {}),
     (r"\b(?:sit|sit down|lay down)\b",             "sit", {}),
@@ -91,6 +89,77 @@ COMMANDS = [
     (r"\b(?:list|show|what)\s+(?:are\s+)?(?:the\s+)?(?:available\s+)?maps\b", "list_maps", {}),
 ]
 
+# Safety commands that bypass the LLM for zero-latency execution.
+# ORDER MATTERS: estop must be checked before stop so "e stop" / "e-stop"
+# matches the more-specific estop pattern, not the bare stop pattern.
+SAFETY_PATTERNS = [
+    (re.compile(r"emergency\W+stop|\be\W?stop\b|\bestop\b", re.IGNORECASE), "estop"),
+    (re.compile(r"\b(?:stop|halt)\b", re.IGNORECASE), "stop"),
+    (re.compile(r"\bfreeze\b", re.IGNORECASE), "freeze"),
+]
+
+_ESTOP_RE = SAFETY_PATTERNS[0][0]
+_HALT_RE = re.compile(r"\bhalt\b", re.IGNORECASE)
+_FREEZE_RE = SAFETY_PATTERNS[2][0]
+# "stop" only as a whole word: "stops" / "stopped" / "stopping" don't match.
+_STOP_WORD_RE = re.compile(r"\bstop\b", re.IGNORECASE)
+_PREV_WORD_RE = re.compile(r"(\w+)(\W*)$")
+# Only unambiguous noun preceders ("the next stop", "bus stop"). Articles
+# etc. are deliberately absent: "come to a stop" / "uh, stop" (ASR "a stop")
+# are real commands.
+_STOP_NOUN_PRECEDERS = frozenset({
+    "next", "last", "bus", "pit", "first", "final", "another",
+})
+_SENTENCE_PUNCT = set(".,!?;:")
+_DASHES = str.maketrans({"–": "-", "—": "-", "‑": "-"})
+
+
+def _has_command_stop(text: str) -> bool:
+    """True if any whole-word "stop" is NOT a noun use. A "stop" at the start
+    of the text or after sentence punctuation ("next. Stop!") is never exempt."""
+    for m in _STOP_WORD_RE.finditer(text):
+        prev = _PREV_WORD_RE.search(text[:m.start()])
+        if (prev is None
+                or _SENTENCE_PUNCT.intersection(prev.group(2))
+                or prev.group(1).lower() not in _STOP_NOUN_PRECEDERS):
+            return True
+    return False
+
+
+def check_safety_command(text: str):
+    """Return {"intent", "params", "raw"} for a safety command, else None.
+
+    Errs toward stopping ("fire unless benign"):
+    - estop ("emergency stop", "e-stop", "estop") always fires and wins.
+    - halt (-> stop) and freeze fire anywhere.
+    - stop fires anywhere unless every "stop" is a noun use ("the next stop",
+      "bus stop"), so "what's the next stop on the tour" doesn't halt Spot.
+    Never raises; None for empty / non-text input.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    t = text.translate(_DASHES)
+    if _ESTOP_RE.search(t):
+        intent_name = "estop"
+    elif _HALT_RE.search(t) or _has_command_stop(t):
+        intent_name = "stop"
+    elif _FREEZE_RE.search(t):
+        intent_name = "freeze"
+    else:
+        return None
+    return {"intent": intent_name, "params": {}, "raw": text}
+
+
+FILLER_WORDS = frozenset({"uh", "um", "er", "ah", "hmm", "like", "so", "okay"})
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def is_filler_only(text: str) -> bool:
+    """True if fewer than 2 words remain after removing filler words."""
+    words = [w for w in _WORD_RE.findall((text or "").lower()) if w not in FILLER_WORDS]
+    return len(words) < 2
+
+
 # Precompile with IGNORECASE for more robust matching
 COMMAND_PATTERNS: List[Tuple[Pattern, str, Dict[str, Any]]] = [
     (re.compile(pat, re.IGNORECASE), intent, params) for pat, intent, params in COMMANDS
@@ -155,6 +224,10 @@ def parse_intent(text: str):
     """
     if not text:
         return None
+    # Safety check runs on the ORIGINAL text: punctuation matters ("next. Stop!").
+    safety = check_safety_command(text)
+    if safety is not None:
+        return safety
     # Clean up Whisper punctuation artifacts (e.g. "Go to. Corner." → "Go to Corner")
     t = re.sub(r'\.\s*', ' ', text).strip()
     t = re.sub(r'\s+', ' ', t)

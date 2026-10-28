@@ -36,3 +36,21 @@ def test_existing_tones_still_build():
 def test_noop_without_player():
     fb = AudioFeedback(player=None)
     fb.thinking()  # must not raise
+
+
+def test_turn_cues_build_with_beep_labels():
+    fb = AudioFeedback(player=RecordingPlayer(), volume=1.0)
+    names = ("listen_cue", "think_cue", "speak_cue", "released_cue")
+    for name in names:
+        getattr(fb, name)()
+    assert [c[2] for c in fb._player.calls] == [f"beep:{n}" for n in names]
+    for samples, rate, _ in fb._player.calls:
+        assert samples.dtype == np.float32 and np.max(np.abs(samples)) > 0.0
+
+
+def test_speak_cue_is_short_and_soft():
+    fb = AudioFeedback(player=RecordingPlayer(), volume=1.0)
+    fb.speak_cue()
+    samples, rate, _ = fb._player.calls[0]
+    assert np.max(np.abs(samples)) <= 0.15 + 1e-6
+    assert len(samples) <= rate * (0.070 + 0.080) + 1   # 70ms tone + silence tail

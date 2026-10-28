@@ -87,6 +87,11 @@ def _safe_cb(cb: Optional[Callable[[], None]]) -> None:
         print(f"[Player] callback error: {e}")
 
 
+def _is_speech(label: str) -> bool:
+    """Chime tasks are labelled ``"beep:..."``; everything else is speech."""
+    return not label.startswith("beep:")
+
+
 @dataclass
 class _Task:
     """One unit of playback work.
@@ -174,6 +179,7 @@ class AudioPlayer:
 
         # Concurrency primitives.
         self._inflight: int = 0          # source of truth for is_busy()
+        self._speech_inflight: int = 0   # non-"beep:" tasks; is_speech_busy()
         self._inflight_lock = threading.Lock()
         self._reset_lock = threading.Lock()  # serializes force_reset / shutdown
         self._stop = threading.Event()       # signals the worker to exit
@@ -232,6 +238,16 @@ class AudioPlayer:
         with self._inflight_lock:
             return self._inflight > 0
 
+    def is_speech_busy(self) -> bool:
+        """True if any non-chime task (label not starting with ``"beep:"``)
+        is queued or playing. The mic gate uses this so turn chimes do not
+        mute the mic; ``is_busy()`` still counts everything.
+        """
+        if not self._available:
+            return False
+        with self._inflight_lock:
+            return self._speech_inflight > 0
+
     def enqueue_raw(
         self,
         samples: np.ndarray,
@@ -254,6 +270,9 @@ class AudioPlayer:
             if self._stop.is_set():
                 return  # reset/shutdown in progress — drop silently
             self._inflight += 1
+            speech = _is_speech(label)
+            if speech:
+                self._speech_inflight += 1
             try:
                 self._queue.put(_Task(
                     label=label, samples=samples, rate=rate,
@@ -264,6 +283,8 @@ class AudioPlayer:
                 ))
             except Exception:
                 self._inflight -= 1
+                if speech:
+                    self._speech_inflight -= 1
                 raise
 
     def enqueue_render(
@@ -287,6 +308,9 @@ class AudioPlayer:
             if self._stop.is_set():
                 return
             self._inflight += 1
+            speech = _is_speech(label)
+            if speech:
+                self._speech_inflight += 1
             try:
                 self._queue.put(_Task(
                     label=label, render_fn=render_fn,
@@ -297,6 +321,8 @@ class AudioPlayer:
                 ))
             except Exception:
                 self._inflight -= 1
+                if speech:
+                    self._speech_inflight -= 1
                 raise
 
     def wait(self) -> None:
@@ -333,6 +359,7 @@ class AudioPlayer:
                     except queue.Empty:
                         break
                 self._inflight = 0
+                self._speech_inflight = 0
 
             # Wait for the worker to exit cleanly. The chunked write design
             # means it should notice _stop within ~100ms.
@@ -414,6 +441,7 @@ class AudioPlayer:
                     except queue.Empty:
                         break
                 self._inflight = 0
+                self._speech_inflight = 0
                 self._current_task_started_at = None
                 self._current_label = ""
 
@@ -522,6 +550,8 @@ class AudioPlayer:
             finally:
                 with self._inflight_lock:
                     self._inflight = max(0, self._inflight - 1)
+                    if _is_speech(task.label):
+                        self._speech_inflight = max(0, self._speech_inflight - 1)
                     self._current_task_started_at = None
                     self._current_label = ""
                 self._queue.task_done()

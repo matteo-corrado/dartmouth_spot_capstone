@@ -65,6 +65,10 @@ REQUEST_TIMEOUT = 30.0    # seconds per request
 FIRST_REQUEST_TIMEOUT = 120.0  # seconds — model loading into VRAM can be slow
 VLM_TIMEOUT = 60.0       # seconds — VLM inference is slower
 
+# State keys that change every turn; keeping them out of the prompt keeps the
+# llama.cpp KV-cache prefix reusable (B7).
+_VOLATILE_STATE_KEYS = frozenset({"uptime_s", "process_pid"})
+
 # ---------------------------------------------------------------------------
 # System prompt — includes action catalog and JSON output schema
 # ---------------------------------------------------------------------------
@@ -112,8 +116,10 @@ AVAILABLE ACTIONS:
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
 - power_off: Safely power off. No params.
-- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: {{KNOWN_PERSONAS}}. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
-- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
+- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: see KNOWN PERSONAS at the end of this prompt. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
+- enable_mouth: Turn on your gripper "mouth" that moves while you talk. No params. Use for "use your mouth", "talk with your mouth".
+- disable_mouth: Turn off the gripper mouth. No params. Use for "stop moving your mouth", "close your mouth".
+{{EMOTE_ACTION}}- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
 - add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
   • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
   • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
@@ -125,6 +131,7 @@ RULES:
 - For chained requests ("do X then Y"), list multiple actions in order — the robot executes them sequentially.
 - For multi-location trips ("go to A then B then C"), prefer a SINGLE tour action with a locations list over chaining multiple go_to actions.
 - ALWAYS include a "response" — a short spoken reply.
+- For battery_status, status, check_obstacles, list_locations and list_maps, reply ONLY "Let me check." — the robot speaks the real result itself once the data arrives. Never guess battery levels, obstacles, or location lists.
 - Location names must be lowercase with underscores.
 - IMPORTANT: Check "saved_locations" in the robot state. If the user says "go to X" and X matches a saved location name, ALWAYS use go_to (map navigation). Only use go_to_object for objects NOT in saved_locations (e.g. "go to the red chair" when "red_chair" is not a saved location).
 - IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?" are OBSERVATION questions — use describe (look with camera), NOT go_to_object. Only use go_to_object when the user explicitly says "go to X", "walk to X", "find X", or "approach X".
@@ -133,7 +140,7 @@ RULES:
 
 EXAMPLES:
 User: "How are you doing?"
-{"actions": [], "response": "I'm doing great! Battery is looking good and I'm ready to help."}
+{"actions": [], "response": "I'm doing great, thanks for asking! What would you like to know?"}
 
 User: "Go to kitchen then hallway then lab"
 {"actions": [{"action": "tour", "params": {"locations": ["kitchen", "hallway", "lab"]}}], "response": "On my way! I'll visit kitchen, hallway, and lab in order."}
@@ -160,7 +167,7 @@ User: "Is there anything in front of you?"
 {"actions": [{"action": "check_obstacles", "params": {}}], "response": "Let me check."}
 
 User: "Is this room cluttered?"
-{"actions": [{"action": "check_obstacles", "params": {}}], "response": "Checking my obstacle map."}
+{"actions": [{"action": "check_obstacles", "params": {}}], "response": "Let me check."}
 
 User: "Set your volume to 80 percent"
 {"actions": [{"action": "set_volume", "params": {"level": 80}}], "response": "Setting my volume to 80%."}
@@ -185,6 +192,44 @@ User: "Switch to your local voice" / "Go offline mode" / "Use kokoro"
 
 User: "Switch to your premium voice" / "Use elevenlabs"
 {"actions": [{"action": "set_backend", "params": {"name": "elevenlabs"}}], "response": "Bringing in the premium voice."}"""
+
+
+# Emote catalogue (static, so it stays inside the cached prompt prefix).
+# Advertised ONLY when the grammar can emit "emote" (else the LLM would be
+# told about an action it can never produce) AND emotes.py is importable.
+_GRAMMAR_PATH = Path(__file__).parent / "grammar" / "spot_action.gbnf"
+_EMOTE_ACTION_LINE = (
+    '- emote: Perform a fun built-in routine (dance, bow, wag, etc.). '
+    'Params: {"name": "<routine name>"}. Use only a routine name from the '
+    'EMOTES list below.\n'
+)
+
+
+def _emote_prompt_parts(grammar_text: str, section: Optional[str]) -> tuple:
+    """(action bullet, EMOTES section) — both empty unless the grammar
+    mentions "emote" and a non-empty prompt_section() is available."""
+    if "emote" not in grammar_text or not section or not section.strip():
+        return "", ""
+    return _EMOTE_ACTION_LINE, section.strip()
+
+
+def _load_emote_section() -> Optional[str]:
+    try:
+        from src.voice_control.emotes import prompt_section
+        return prompt_section()
+    except ImportError:
+        return None
+
+
+try:
+    _GRAMMAR_TEXT = _GRAMMAR_PATH.read_text(encoding="utf-8")
+except OSError:
+    _GRAMMAR_TEXT = ""
+_EMOTE_ACTION, _EMOTES_TEXT = _emote_prompt_parts(_GRAMMAR_TEXT, _load_emote_section())
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{{EMOTE_ACTION}}", _EMOTE_ACTION)
+if _EMOTES_TEXT:
+    # prompt_section() already starts with its own "EMOTES:" header.
+    SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + _EMOTES_TEXT
 
 
 # ---------------------------------------------------------------------------
@@ -293,28 +338,35 @@ class LLMBrain:
         self._conversation_log = ConversationLog()  # writes to logs/conversations/
 
     def is_available(self) -> bool:
-        """Check if Ollama is running and the model is pulled."""
-        if self._available is not None:
-            return self._available
+        """Check the ACTIVE backend (llama.cpp by default, not Ollama).
+
+        Only a positive result is cached, so a server that comes up after
+        boot is picked up on the next turn instead of leaving the brain in
+        regex-only mode for the whole session.
+        """
+        if self._available:
+            return True
         try:
-            r = requests.get(f"{self.ollama_url}/api/tags", timeout=3)
-            if r.status_code != 200:
-                self._available = False
-                return False
-            models = [m["name"] for m in r.json().get("models", [])]
-            found = self.model in models or f"{self.model}:latest" in models
-            if not found:
-                print(f"[Brain] Model '{self.model}' not found. Available: {models}")
-                print(f"[Brain] Run: ollama pull {self.model}")
-            self._available = found
-            return found
+            ok = bool(_backend().is_available())
         except Exception as e:
-            # Surface the cause once so the user has a starting point
-            # (e.g. "Connection refused" → ollama isn't running, or
-            # "Name or service not known" → wrong host).
-            print(f"[Brain] Ollama check failed: {type(e).__name__}: {e}")
-            self._available = False
-            return False
+            print(f"[Brain] backend availability check failed: {type(e).__name__}: {e}")
+            ok = False
+        self._available = ok or None
+        return ok
+
+    def wait_available(self, timeout_s: float = 90.0, poll_s: float = 2.0) -> bool:
+        """Cold boot: poll is_available() until the backend answers (llama-
+        server returns 503 while loading, or refuses connections before it
+        is up). Returns True as soon as it is available, False on timeout."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            if self.is_available():
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                print(f"[Brain] backend still unavailable after {timeout_s:.0f}s")
+                return False
+            time.sleep(min(poll_s, remaining))
 
     def warm_up(self):
         """Send a trivial prompt through the ACTIVE backend to prime KV cache.
@@ -394,25 +446,27 @@ class LLMBrain:
         if not self.is_available():
             return fallback
         try:
-            r = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": "Return only a 5-10 word voice and style description for a TTS persona. Cover gender, accent, tone, and style. No punctuation, no quotes, no preamble."},
-                        {"role": "user", "content": f"Persona name: {name}"},
-                    ],
-                    "think": False,
-                    "stream": False,
-                    "keep_alive": -1,
-                    "options": {"num_predict": 30, "num_ctx": 4096},
-                },
-                timeout=10.0,
-            )
-            if r.status_code == 200:
-                desc = r.json().get("message", {}).get("content", "").strip()
-                if desc:
-                    return desc[:120]
+            # Active backend (grammar-constrained JSON on llama.cpp), so the
+            # description comes back in the "response" field.
+            with self._backend_lock:
+                raw = _backend().chat(
+                    "Return only a 5-10 word voice and style description for a "
+                    "TTS persona in the \"response\" field, with an empty actions "
+                    "list. Cover gender, accent, tone, and style. No quotes, no preamble.",
+                    [{"role": "user", "content": f"Persona name: {name}"}],
+                    profile="freeform",
+                    max_tokens=60,
+                    timeout=10.0,
+                )
+            # That call used a different system prompt and evicted the main
+            # prompt's KV cache on the single-slot server: re-prime it.
+            self.warm_up_async()
+            try:
+                desc = str(json.loads(raw).get("response", "")).strip()
+            except (json.JSONDecodeError, AttributeError):
+                desc = (raw or "").strip()
+            if desc:
+                return desc[:120]
         except Exception as e:
             print(f"[Brain] describe_persona({name}) failed: {type(e).__name__}: {e}")
         return fallback
@@ -420,16 +474,20 @@ class LLMBrain:
     def _build_messages(self, transcript: str, state: Dict[str, Any]) -> List[Dict[str, str]]:
         """Build message list. State is the live robot snapshot from
         get_robot_state_dict(); session state is owned by self.session_state.
-        Persona prefix prepended BEFORE SYSTEM_PROMPT.
+        Order is cache-friendly for llama.cpp's prompt-prefix reuse: the big
+        static SYSTEM_PROMPT (+ knowledge) first, then the persona prefix,
+        then the changing state block. Volatile keys are dropped.
         """
         persona = get_persona(self.session_state.current_persona, self._persona_registry)
-        merged = {**state, **self.session_state.as_dict()}
+        merged = {k: v for k, v in {**state, **self.session_state.as_dict()}.items()
+                  if k not in _VOLATILE_STATE_KEYS}
         state_lines = "\n".join(f"- {k}: {v}" for k, v in merged.items())
         # Dynamic persona-list — pre-warmed + runtime-added personas all appear as "known"
         known = ", ".join(sorted(self._persona_registry.keys()))
         system_content = (
+            f"{SYSTEM_PROMPT}\n\n"
             f"{persona.prompt_prefix}\n\n"
-            f"{SYSTEM_PROMPT.replace('{{KNOWN_PERSONAS}}', known)}\n\n"
+            f"KNOWN PERSONAS (use set_persona for these, add_persona for anything else): {known}\n\n"
             f"Current robot state:\n{state_lines}"
         )
         messages = [{"role": "system", "content": system_content}]
@@ -617,17 +675,17 @@ class LLMBrain:
             print(f"[Brain] VLM responded in {elapsed:.1f}s")
             print(f"[Brain-timing] path=vlm backend={backend.name} total={elapsed*1000:.0f}ms")
             content = (content or "").strip()
-            return content or "I can see the image but I'm having trouble describing it."
+            return content or "I'm looking, but I can't quite make out what's there."
 
         except requests.Timeout:
             print(f"[Brain] VLM timeout after {VLM_TIMEOUT}s")
-            return "Sorry, the image analysis took too long."
+            return "Sorry, I took too long looking around. Ask me again?"
         except requests.ConnectionError:
             print(f"[Brain] VLM cannot connect to backend '{backend.name}'")
-            return "Sorry, I can't access my vision system right now."
+            return "Sorry, my eyes aren't working right now."
         except Exception as e:
             print(f"[Brain] VLM error: {e}")
-            return "Sorry, something went wrong with my vision."
+            return "Sorry, I couldn't get a good look just now."
 
     def clear_history(self):
         """Clear conversation history."""
@@ -668,9 +726,10 @@ if __name__ == "__main__":
     brain = LLMBrain(model=model)
 
     if not brain.is_available():
-        print(f"\nOllama is not running or model '{model}' is not available.")
-        print(f"1. Start Ollama:  sudo systemctl start ollama")
-        print(f"2. Pull model:    ollama pull {model}")
+        print(f"\nBrain backend not available (SPOT_BRAIN_BACKEND="
+              f"{os.environ.get('SPOT_BRAIN_BACKEND', 'llamacpp')}).")
+        print("llamacpp: sudo systemctl start llama-server  (port 11435)")
+        print(f"ollama:   sudo systemctl start ollama && ollama pull {model}")
         sys.exit(1)
 
     print(f"Using model: {model}")
