@@ -6,6 +6,7 @@ Default backend: "elevenlabs" (premium quality). Falls back to "kokoro"
 (local, no API key needed) if the primary backend cannot be instantiated.
 """
 import os
+import time
 from typing import Iterator, Protocol, runtime_checkable
 
 
@@ -90,6 +91,50 @@ def get_backend() -> TTSBackend:
             # short-circuits to it without re-attempting the broken primary.
             _INSTANCES[name] = _INSTANCES[FALLBACK_BACKEND]
     return _INSTANCES[name]
+
+
+def get_fallback_backend():
+    """Return the memoized FALLBACK_BACKEND (Kokoro) instance, constructing
+    it on first call. SpotTTS calls this at startup so Kokoro is warm even
+    when ElevenLabs is primary. Returns None if it cannot be built."""
+    if FALLBACK_BACKEND not in _INSTANCES:
+        if FALLBACK_BACKEND not in _REGISTRY:
+            return None
+        try:
+            _INSTANCES[FALLBACK_BACKEND] = _REGISTRY[FALLBACK_BACKEND]()
+        except Exception as e:
+            print(f"[TTS] fallback '{FALLBACK_BACKEND}' init failed: {type(e).__name__}: {e}")
+            return None
+    return _INSTANCES[FALLBACK_BACKEND]
+
+
+_FALLBACK_LOG_INTERVAL_S = 60.0
+_last_fallback_log = float("-inf")
+
+
+def synthesize_with_fallback(text: str, voice_id: str, primary: TTSBackend,
+                             fallback: TTSBackend, fallback_voice: str) -> tuple:
+    """Synthesize one sentence with ``primary``; on any exception or empty
+    audio, re-synthesize it with ``fallback`` in ``fallback_voice`` so Spot
+    never goes silent mid-reply (e.g. venue Wi-Fi drops ElevenLabs).
+
+    Returns ``(audio_bytes, "primary" | "fallback")``. The fallback's own
+    exception propagates. The switch is logged at most once per minute.
+    """
+    global _last_fallback_log
+    try:
+        audio = primary.synthesize(text, voice_id)
+        if audio:
+            return audio, "primary"
+        reason = "empty audio"
+    except Exception as e:
+        reason = f"{type(e).__name__}: {e}"
+    now = time.monotonic()
+    if now - _last_fallback_log >= _FALLBACK_LOG_INTERVAL_S:
+        _last_fallback_log = now
+        print(f"[TTS] primary {type(primary).__name__} failed ({reason}); "
+              f"using fallback voice {fallback_voice}")
+    return fallback.synthesize(text, fallback_voice), "fallback"
 
 
 def get_active_backend_name() -> str:

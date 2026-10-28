@@ -46,7 +46,7 @@ from src.voice_control.latency import get_recorder
 # Stage 2E.1: route TTS synth through swappable backend registry.
 import src.voice_control.tts.kokoro      # noqa: F401  (registers backend)
 import src.voice_control.tts.elevenlabs  # noqa: F401  (registers backend)
-from src.voice_control.tts import get_backend
+from src.voice_control.tts import get_backend, get_fallback_backend, synthesize_with_fallback
 from src.voice_control.animation.mouth import envelope
 
 
@@ -135,6 +135,11 @@ class SpotTTS:
             self._available = False
             return
 
+        # B8: build Kokoro now even when ElevenLabs is primary, so the
+        # per-sentence fallback never pays a cold model load mid-reply.
+        if get_fallback_backend() is None:
+            print("[TTS] WARN: Kokoro fallback unavailable — no per-sentence fallback")
+
         backend_name = type(backend).__name__
         self._available = True
         print(f"[TTS] Ready — backend={backend_name}, voice={self.voice}, "
@@ -190,12 +195,19 @@ class SpotTTS:
                 or ("Kokoro" in backend_name and not voice_is_kokoro_shape)
             )
             use_voice = (None if mismatch else voice) or _default_voice_for_backend(backend) or self.voice
+            # B8: a failed (or empty) primary sentence is re-rendered with the
+            # warm Kokoro fallback instead of going silent.
+            fallback = get_fallback_backend()
             try:
-                pcm_bytes = backend.synthesize(text, use_voice)
+                if fallback is None or fallback is backend:
+                    pcm_bytes, used = backend.synthesize(text, use_voice), "primary"
+                else:
+                    pcm_bytes, used = synthesize_with_fallback(
+                        text, use_voice, backend, fallback, DEFAULT_VOICE)
             except Exception as _e:
                 print(f"[DBG-render] FAIL backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} err={type(_e).__name__}:{_e}")
                 raise
-            print(f"[DBG-render] OK backend={type(backend).__name__} voice={use_voice} text={text[:40]!r} bytes={len(pcm_bytes)}")
+            print(f"[DBG-render] OK backend={type(backend).__name__} used={used} voice={use_voice} text={text[:40]!r} bytes={len(pcm_bytes)}")
             # Backend contract: 24 kHz int16 PCM bytes. Convert to float32 in [-1, 1].
             samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
             if gain != 1.0:
