@@ -25,7 +25,7 @@ mic_yaw_sign: -1
 # clockwise from above; LED0 is at ~12:30 relative to Spot's front.
 ring_offset_leds: 6
 ring_reverse: false
-# ring_max_hz: 10.0
+# ring_max_hz: 30.0   # LED ring write cap (Hz); the animator runs at this rate
 # beam_steering: false
 # voiceprint_enabled: false
 # voiceprint_threshold: 0.5

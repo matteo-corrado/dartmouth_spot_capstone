@@ -34,7 +34,7 @@ class Tuning:
     mic_yaw_sign: int = -1             # measured on the robot 2026-10-28
     ring_offset_leds: int = 6          # measured on the device 2026-10-28 (LED0 ~12:30 from front)
     ring_reverse: bool = False
-    ring_max_hz: float = 10.0
+    ring_max_hz: float = 30.0          # LED ring write cap (RingAnimator + direct writes)
     beam_steering: bool = False
     voiceprint_enabled: bool = False
     voiceprint_threshold: float = 0.5
