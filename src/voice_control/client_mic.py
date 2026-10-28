@@ -36,6 +36,8 @@ from src.voice_control.chatbot.persona import get_persona, voice_id_for
 
 import re
 import glob
+import json
+import math
 import time
 import queue
 import random
@@ -94,6 +96,10 @@ from src.voice_control import startup_status  # noqa: F401 — available for lat
 from src.voice_control.response_gate import should_arm_reopen, should_reopen_mic
 from src.voice_control.tuning import get_tuning
 from src.voice_control.barge_in import should_reset_after_player
+from src.voice_control.audio_frontend import (
+    frame_dbfs, FloorTracker, Endpointer, UtteranceStats, passes_gate)
+from src.voice_control.speaker_lock import (
+    SpeakerLock, circular_median_deg, mic_to_body_deg)
 
 _tuning = get_tuning()
 from src.voice_control.voice_state import VoiceState
@@ -130,32 +136,148 @@ def _find_device_by_name(substring: str, kind: str = "input") -> int | None:
 # Both broke the old client_mic <-> state_feedback circular import.
 
 
-LISTENING_TIMEOUT = 15.0  # seconds before requiring wake word again
+# The conversation timeout is Tuning.lock_timeout_s (20 s default; was a fixed
+# 15 s LISTENING_TIMEOUT before the speaker lock).
 
 # ============================================================================
 # Configuration
 # ============================================================================
 SAMPLE_RATE = 16000
 FRAME_MS = 30
+FRAME_S = FRAME_MS / 1000.0      # matches FloorTracker/UtteranceStats frame_s=0.03
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples per frame
 BYTES_PER_FRAME = FRAME_SAMPLES * 2  # int16 = 2 bytes
 
 SILERO_VAD_PATH = "/mnt/ssd/vad-models/silero_vad.onnx"
 VAD_WINDOW_SAMPLES = 512         # Silero default @ 16 kHz = 32 ms; VAD buffers internally
-SILENCE_TIMEOUT_SHORT = 1.2      # Silence timeout for short utterances (< 2s)
-SILENCE_TIMEOUT_LONG = 2.25      # Silence timeout for longer utterances (> 2s, e.g. chained commands)
-SILENCE_CROSSOVER = 2.0          # Switch from short to long timeout after this much speech (seconds)
-MAX_UTTERANCE_SECONDS = 20       # Force-send after this duration (up from 8 — allows long chains)
-MAX_UTTERANCE_FRAMES = int(MAX_UTTERANCE_SECONDS * SAMPLE_RATE / FRAME_SAMPLES)
-SPEECH_ONSET_FRAMES = 3          # Consecutive VAD+energy frames to confirm speech onset (~90ms)
-NAV_ONSET_FRAMES = 5             # Higher onset threshold during navigation (150ms, reduces motor noise false triggers)
-PREROLL_FRAMES = 5               # Keep last N frames before onset (~150ms) to capture word beginnings
+# End silence: Tuning.end_silence_s_short until the utterance is this long,
+# then Tuning.end_silence_s (chained commands pause mid-sentence).
+SILENCE_CROSSOVER = 2.0
+PREROLL_FRAMES = 10              # frames kept before onset (~300ms; covers Silero's onset lag)
+TRAILING_KEEP_FRAMES = 10        # silence kept after the last speech frame for ASR (~300ms)
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
-ENERGY_THRESHOLD_MULTIPLIER = 2.0  # Speech must be this many times louder than noise
-NOISE_EMA_ALPHA = 0.03           # EMA smoothing for adaptive noise floor (faster adaptation)
-NOISE_FLOOR_MIN = 0.001          # Minimum noise floor (prevent threshold from dropping to zero)
-NOISE_FLOOR_MAX = 0.05           # Maximum noise floor (prevent threshold from going absurdly high)
-NAV_ENERGY_MULT = 5.0            # Extra energy multiplier during navigation (suppresses motor noise)
+NAV_SPEECH_DB_BOOST = 6.0        # added to Tuning.min_speech_dbfs while the robot moves
+LOCK_ACCEPT_MAX_SAMPLES = 100    # cap DoA samples per lock.accept (medoid is O(n^2))
+UTTERANCE_LOG_DIR = project_root / "logs" / "utterances"
+
+
+def _frames(seconds: float) -> int:
+    """Seconds -> 30 ms frame count (Endpointer is frame-based)."""
+    return max(1, int(round(seconds / FRAME_S)))
+
+
+def dbfs_from_rms(rms: float) -> float:
+    """Linear RMS (full scale 1.0) -> dBFS, floored at -120."""
+    if rms <= 1e-6:
+        return -120.0
+    return max(-120.0, 20.0 * math.log10(rms))
+
+
+def speech_degs(samples) -> list:
+    """Mic-frame degrees of the speech-flagged DoA samples (t, deg, speech).
+    Non-finite readings are dropped before lock/accept."""
+    out = []
+    for _t, deg, speech in samples:
+        if speech and deg is not None and math.isfinite(float(deg)):
+            out.append(float(deg))
+    return out
+
+
+def last_speech_t(utt) -> float:
+    """Timestamp of the last speech-flagged frame (span end for DoA, so the
+    end-silence tail isn't counted); last frame if none flagged."""
+    for t, _f, _d, s in reversed(utt):
+        if s:
+            return t
+    return utt[-1][0]
+
+
+def trim_trailing(utt, keep_frames: int):
+    """Drop end-silence frames beyond `keep_frames` after the last speech
+    frame (the endpointer waits ~1.5 s of silence; ASR doesn't need it)."""
+    last = None
+    for i in range(len(utt) - 1, -1, -1):
+        if utt[i][3]:
+            last = i
+            break
+    if last is None:
+        return list(utt)
+    return list(utt[:last + 1 + keep_frames])
+
+
+def conversation_expired(lock, listening_since: float, now: float, timeout_s: float) -> bool:
+    """Conversation timeout. Locked: SpeakerLock.expired. Unlocked (no mic /
+    no direction readings): wall clock since listening started, so an
+    unlocked LISTENING state can't stay open forever in a crowd."""
+    if lock.locked:
+        return lock.expired(now)
+    return (now - listening_since) > timeout_s
+
+
+def _body(deg):
+    if deg is None:
+        return None
+    return round(mic_to_body_deg(deg, _tuning.mic_yaw_offset_deg, _tuning.mic_yaw_sign), 1)
+
+
+def _rnd(x):
+    return None if x is None else round(float(x), 1)
+
+
+def build_utterance_record(endpoint, end_silence_s, duration_s, floor_db, stats,
+                           lock_mic_deg, utt_mic_deg, accepted, transcript=None,
+                           reached_llm=False, latency_s=None, drop_reason=None) -> dict:
+    """One metrics line per utterance (logs/utterances/<date>.jsonl)."""
+    return {
+        "kind": "utterance",
+        "ts": time.time(),
+        "floor_dbfs": _rnd(floor_db),
+        "speech_dbfs_median": _rnd(stats.speech_db_median),
+        "speech_dbfs_p90": _rnd(stats.speech_db_p90),
+        "snr_db": _rnd(stats.snr_db(floor_db)),
+        "endpoint": endpoint,
+        "end_silence_s": end_silence_s,
+        "duration_s": round(duration_s, 2),
+        "lock_mic_deg": _rnd(lock_mic_deg),
+        "utt_mic_deg": _rnd(utt_mic_deg),
+        "lock_body_deg": _body(lock_mic_deg),
+        "utt_body_deg": _body(utt_mic_deg),
+        "accepted": accepted,
+        "drop_reason": drop_reason,
+        "transcript": transcript,
+        "reached_llm": reached_llm,
+        "latency_s": None if latency_s is None else round(latency_s, 2),
+    }
+
+
+def build_idle_record(state_name, floor_db, frame_db, lock_mic_deg) -> dict:
+    return {"kind": "idle", "ts": time.time(), "state": state_name,
+            "floor_dbfs": _rnd(floor_db), "frame_dbfs": _rnd(frame_db),
+            "lock_mic_deg": _rnd(lock_mic_deg), "lock_body_deg": _body(lock_mic_deg)}
+
+
+class UtteranceLog:
+    """Append-only JSONL metrics. Opens lazily; an I/O error is logged once
+    and never reaches the voice loop. store_transcript=False -> null."""
+
+    def __init__(self, log_dir, store_transcript: bool = True):
+        self._dir = pathlib.Path(log_dir)
+        self.store_transcript = store_transcript
+        self._failed = False
+
+    def write(self, record: dict) -> None:
+        if self._failed:
+            return
+        if not self.store_transcript and "transcript" in record:
+            record = dict(record, transcript=None)
+        try:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            path = self._dir / f"{time.strftime('%Y-%m-%d')}.jsonl"
+            with open(path, "a") as fh:
+                fh.write(json.dumps(record) + "\n")
+        except (OSError, TypeError, ValueError) as e:
+            self._failed = True
+            print(f"[Metrics] utterance log disabled: {type(e).__name__}: {e}")
 
 # Inter-action waits when chaining LLM actions (e.g. "walk forward then sit").
 # Empirical values — give Spot enough time for the previous command to finish
@@ -181,12 +303,12 @@ _DESCRIBE_ACKS = (
 # ============================================================================
 # Bounded so that a wedged main loop or a long mic-mute window can't grow
 # the queue without limit. 33 frames at 30ms each = ~1s of headroom, well
-# above the 0.15s SPEAKER_TAIL_COOLDOWN_S grace period. On overflow we
+# above the 0.15s Tuning.speaker_tail_s grace period. On overflow we
 # drop frames in the callback (see audio_callback) rather than blocking
 # PortAudio's high-priority thread.
 AUDIO_QUEUE_MAX = 33
 audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAX)
-MIC_CHANNEL = 0  # 0=left (beamformed), 1=right (ASR); set from --channel arg
+MIC_CHANNEL = _tuning.mic_channel  # 0=left (beamformed), 1=right (ASR); --mic-channel
 
 # Mic-mute interlock — derived from AudioPlayer state instead of a flag.
 # The audio callback discards input frames whenever the player is busy
@@ -224,6 +346,65 @@ _status = {
 }
 _MOTION_COMMANDS = ("stop", "freeze", "sit", "stand", "stow")
 
+# XVF3800 control (DoA, LED ring, fixed beams). Optional: None when unplugged
+# and treated as absent once `dead` (any USB error) — the loop never stops.
+_mic = None
+_mic_dead_logged = False
+# Speaker lock, MIC frame degrees (body frame only for status/metrics/gaze).
+_lock = SpeakerLock(_tuning.lock_window_deg, _tuning.lock_timeout_s, _tuning.lock_nudge)
+
+
+def _mic_usable() -> bool:
+    return _mic is not None and not getattr(_mic, "dead", True)
+
+
+def _check_mic_alive() -> None:
+    """Log once when the XVF3800 dies mid-session; lock/ring then degrade."""
+    global _mic_dead_logged
+    if _mic is not None and getattr(_mic, "dead", False) and not _mic_dead_logged:
+        _mic_dead_logged = True
+        print("[MicArray] XVF3800 control lost — speaker lock + ring disabled, voice continues")
+
+
+def _mic_speech_degs(t0: float, t1: float) -> list:
+    """Speech-flagged DoA degrees (mic frame) in [t0, t1] (monotonic)."""
+    if not _mic_usable():
+        return []
+    try:
+        return speech_degs(_mic.samples_between(t0, t1))
+    except Exception as e:
+        print(f"[MicArray] DoA read failed: {e}")
+        return []
+
+
+def _body_deg(deg):
+    return None if deg is None else mic_to_body_deg(
+        deg, _tuning.mic_yaw_offset_deg, _tuning.mic_yaw_sign)
+
+
+def _open_mic_array():
+    """Open the XVF3800 control interface + start the DoA poller. Never raises."""
+    try:
+        from src.voice_control.mic_array import MicArray
+        mic = MicArray.open()
+    except Exception as e:
+        print(f"[MicArray] unavailable: {type(e).__name__}: {e}")
+        return None
+    if mic is None:
+        print("[MicArray] XVF3800 control not found — no speaker lock / ring")
+        return None
+    try:
+        mic.start_poller(20.0)
+    except Exception as e:
+        print(f"[MicArray] DoA poller failed: {e} — no speaker lock")
+    print("[MicArray] XVF3800 control ready (DoA poller 20 Hz)")
+    return mic
+
+
+def _new_endpointer() -> Endpointer:
+    return Endpointer(_tuning.onset_frames, _frames(_tuning.end_silence_s_short),
+                      _frames(_tuning.max_utterance_s))
+
 # The mic-mute watchdog lives inside AudioPlayer (audio_player.py) as its own
 # daemon thread. Putting it there instead of the main loop here means it can
 # still recover from a wedge that happens *inside* process_utterance, when
@@ -245,7 +426,7 @@ def audio_callback(indata, frames, time_info, status):
     """Sounddevice callback - converts stereo to mono PCM16.
 
     Mute logic: while the AudioPlayer is busy (TTS speaking or beep playing)
-    we discard frames, and we keep discarding for SPEAKER_TAIL_COOLDOWN_S
+    we discard frames, and we keep discarding for Tuning.speaker_tail_s
     after it goes idle so the OS audio buffer has time to fully drain.
     The watchdog that recovers a wedged player runs in the main loop, not
     here — this callback runs on PortAudio's high-priority thread and must
@@ -269,7 +450,7 @@ def audio_callback(indata, frames, time_info, status):
         mono = indata[:, 0].astype(np.float32)
     pcm16 = (mono * 32767).astype(np.int16).tobytes()
     try:
-        audio_queue.put_nowait(pcm16)
+        audio_queue.put_nowait((now, pcm16))  # monotonic stamp (DoA/lock clock)
     except queue.Full:
         # Drop the frame instead of blocking PortAudio's callback thread.
         # ~1s of frames are already buffered; if the main loop is that far
@@ -369,8 +550,8 @@ def _open_input_stream_with_retry(device, callback, *,
 # ============================================================================
 def calibrate_noise_floor(duration_sec: float, device=None) -> float:
     """
-    Measure ambient noise to establish initial energy threshold.
-    Returns noise_rms (seeds the adaptive noise floor).
+    Measure ambient noise. Returns the MEASURED noise RMS (always — it seeds
+    the FloorTracker once, A2); a high reading only warns.
     """
     print(f"\n[Calibrating noise floor for {duration_sec}s - please stay quiet...]")
 
@@ -397,13 +578,14 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> float:
         noise_rms = np.sqrt(np.mean(noise_audio ** 2))
         print(f"[Noise floor RMS: {noise_rms:.5f}]")
 
-        # If noise is suspiciously high, robot motors may be running during calibration.
-        # Cap to a reasonable value so speech detection still works.
+        # Suspiciously high noise: robot motors / crowd during calibration.
+        # Keep the measured value (the floor tracker falls instantly if the
+        # room gets quieter) but tell the operator.
         if noise_rms > 0.003:
-            print(f"[WARNING: High noise ({noise_rms:.5f}) — robot motors running? Capping to 0.001]")
-            noise_rms = 0.001
+            print(f"[WARNING: High noise ({noise_rms:.5f}, {dbfs_from_rms(noise_rms):.1f} dBFS) "
+                  f"— robot motors or crowd running during calibration?]")
 
-        return noise_rms
+        return float(noise_rms)
 
     except Exception as e:
         print(f"[Calibration error: {e}]")
@@ -413,12 +595,6 @@ def calibrate_noise_floor(duration_sec: float, device=None) -> float:
 # ============================================================================
 # Audio Processing
 # ============================================================================
-def compute_rms(pcm_bytes: bytes) -> float:
-    """Compute RMS energy of PCM16 audio."""
-    audio = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-    return np.sqrt(np.mean(audio ** 2))
-
-
 def pcm16_to_float32(pcm_bytes: bytes) -> np.ndarray:
     """Convert PCM16 bytes to float32 array."""
     return np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
@@ -546,6 +722,8 @@ def cleanup_spot():
 
 def _is_robot_moving() -> bool:
     """Check if robot is actively navigating (motor noise expected)."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        return False  # no robot; don't import spot_dispatch (bosdyn) per utterance
     try:
         from src.voice_control.spot_dispatch import is_navigating
         return is_navigating()
@@ -613,6 +791,11 @@ def _enter_state(new_state):
             _state_leds.set_state(new_state)
         except Exception as e:
             print(f"[Indicator] LED failed: {type(e).__name__}: {e}")
+
+
+def _signal_reject():
+    """Visual-only cue that an utterance from outside the lock was ignored."""
+    print("[Indicator] reject (off-lock speaker)")
 
 
 # ============================================================================
@@ -734,7 +917,19 @@ def main():
         default=None,
         help="Latency JSONL file path (default: logs/latency-{timestamp}.jsonl). Only used when --latency=file or all.",
     )
+    parser.add_argument("--mic-channel", type=int, default=_tuning.mic_channel,
+                        help="XVF3800 input channel (0=beamformed, 1=ASR); default Tuning.mic_channel")
+    parser.add_argument("--no-transcript-log", action="store_true",
+                        help="Privacy: conversation + utterance logs store transcript: null")
     args = parser.parse_args()
+
+    global MIC_CHANNEL
+    MIC_CHANNEL = args.mic_channel
+    if args.no_transcript_log:
+        os.environ["SPOT_NO_TRANSCRIPT_LOG"] = "1"  # read by ConversationLog
+    store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "").strip().lower() not in (
+        "1", "true", "yes", "on")
+    utt_log = UtteranceLog(UTTERANCE_LOG_DIR, store_transcript=store_transcript)
 
     if args.dry_run:
         os.environ["SPOT_DRY_RUN"] = "1"
@@ -785,9 +980,11 @@ def main():
 
     # Calibrate noise floor (seeds the adaptive noise tracker)
     noise_rms = calibrate_noise_floor(NOISE_CALIBRATION_SECONDS, args.device)
-    rolling_noise_rms = noise_rms  # Will be updated adaptively during operation
-    energy_threshold = rolling_noise_rms * ENERGY_THRESHOLD_MULTIPLIER
-    print(f"[Energy threshold: {energy_threshold:.5f} ({ENERGY_THRESHOLD_MULTIPLIER}x noise, adaptive)]")
+    floor = FloorTracker(_tuning.floor_window_s, _tuning.floor_percentile,
+                         _tuning.floor_rise_db_per_s, frame_s=FRAME_S)
+    floor.seed(dbfs_from_rms(noise_rms))  # seed ONCE (seed clears the window)
+    print(f"[Noise floor: {floor.floor_db:.1f} dBFS (gate: speech >= {_tuning.min_speech_dbfs:.0f} dBFS, "
+          f"SNR >= {_tuning.min_snr_db:.0f} dB)]")
 
     # Connect to ASR
     asr_server = "localhost:50055"
@@ -972,6 +1169,10 @@ def main():
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
 
+    # XVF3800 control (DoA for the speaker lock, LED ring). Optional.
+    global _mic
+    _mic = _open_mic_array()
+
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
         stream = _open_input_stream_with_retry(args.device, audio_callback)
@@ -1012,18 +1213,23 @@ def main():
     # Main Loop State
     # ========================================================================
     window = b""
-    speech_buffer = bytearray()
-    speech_float_buffer = []
-    speech_frame_count = 0  # track audio frames (not wall clock) for max duration
-
-    is_speaking = False
-    last_speech_time = None
+    window_t = time.monotonic()
     frame_count = 0
-    consecutive_speech = 0       # Tracks consecutive VAD-positive frames for onset debounce
-    pending_speech_frames = []   # Buffers frames during onset confirmation
     last_vad_error_log_time = 0.0  # Token-bucket guard for VAD failure logs (one/min max)
     from collections import deque
-    preroll_buffer = deque(maxlen=PREROLL_FRAMES)  # Ring buffer for pre-onset audio
+    # Pre-roll: appended on EVERY frame in every state (A16). Each entry is
+    # (t_monotonic, pcm16, dbfs, is_speech). Sized to cover the onset frames
+    # plus Silero's min_speech_duration lag so first words aren't clipped.
+    preroll_buffer = deque(maxlen=PREROLL_FRAMES + _tuning.onset_frames)
+
+    # Front-end (Task 10): VAD on every frame -> Endpointer; FloorTracker
+    # seeded ONCE from calibration; SNR gate at utterance end.
+    ep = _new_endpointer()
+    in_utt = False
+    utt = []                       # entries as in preroll_buffer
+    stats = None
+    end_sil_s = _tuning.end_silence_s_short
+    last_idle_log = 0.0
 
     # Stage 2F P0a: barge-in reset bookkeeping. `player_was_busy` tracks the
     # AudioPlayer busy edge across iterations; `response_pending` is armed only
@@ -1034,8 +1240,7 @@ def main():
 
     # Stage 2F P6: True once the current turn has announced THINKING — i.e. a
     # real transcript reached the brain (past STT + the safety/wake early-returns).
-    # Gates the RESPONDING indicator and the reopen chime so a noise/empty-STT
-    # turn stays fully silent.
+    # Gates the RESPONDING indicator so a noise/empty-STT turn stays silent.
     gate_announced = False
 
     def _announce_thinking():
@@ -1047,7 +1252,119 @@ def main():
 
     # Wake word state
     state = VoiceState.WAKE_WORD if use_wake_word else VoiceState.LISTENING
-    listening_start_time = time.time()
+    # Conversation clock (monotonic): fallback timeout when no direction lock.
+    listening_since = time.monotonic()
+    _enter_state(state)
+
+    def _on_wake(t_wake):
+        """Wake fired (KWS frame at t_wake, or ASR fallback): lock onto the
+        speaker's direction, then enter LISTENING (A10). A wake while already
+        locked re-locks to the new speaker."""
+        nonlocal state, listening_since
+        now_m = time.monotonic()
+        degs = _mic_speech_degs(t_wake - 1.5, t_wake)
+        ang = _lock.lock(degs, now_m)
+        if ang is not None:
+            print(f"[Lock] speaker at {ang:.0f} deg (mic), "
+                  f"{_body_deg(ang):.0f} deg (body)")
+            if _tuning.beam_steering and _mic_usable():
+                _mic.set_fixed_beams(math.radians(ang))
+        else:
+            print("[Lock] no direction readings — accepting all directions")
+        _status["locked_deg"] = _body_deg(ang)
+        state = VoiceState.LISTENING
+        listening_since = now_m
+        _enter_state(VoiceState.LISTENING)
+
+    def _release(cue: bool):
+        """Drop the speaker lock + fixed beams and go back to WAKE_WORD."""
+        nonlocal state, ep, in_utt, utt
+        ep = _new_endpointer()  # drop any half-recorded utterance
+        in_utt = False
+        utt = []
+        _lock.release()
+        _status["locked_deg"] = None
+        if _mic_usable():
+            _mic.set_fixed_beams(None)
+        state = VoiceState.WAKE_WORD
+        if wake_detector:
+            wake_detector.reset()
+        _enter_state(VoiceState.WAKE_WORD)
+        if cue:
+            _play_cue("released_cue")
+
+    def _finish_utterance(endpoint):
+        """Endpoint reached: SNR gate, lock check, then ASR/brain."""
+        nonlocal state, listening_since, response_pending, gate_announced
+        global _mic_gated
+        floor_db = floor.floor_db
+        t0 = utt[0][0]
+        t1 = last_speech_t(utt)
+        degs = _mic_speech_degs(t0, t1)
+        record = dict(
+            endpoint=endpoint, end_silence_s=end_sil_s,
+            duration_s=len(utt) * FRAME_S, floor_db=floor_db, stats=stats,
+            lock_mic_deg=_lock.angle, utt_mic_deg=circular_median_deg(degs))
+
+        min_db = _tuning.min_speech_dbfs + (NAV_SPEECH_DB_BOOST if _is_robot_moving() else 0.0)
+        if not passes_gate(stats, floor_db, min_db, _tuning.min_snr_db):
+            print(f"[Gate] dropped: speech {stats.speech_db_median:.1f} dBFS, "
+                  f"SNR {stats.snr_db(floor_db):.1f} dB (need >= {min_db:.0f} dBFS, "
+                  f">= {_tuning.min_snr_db:.0f} dB)")
+            utt_log.write(build_utterance_record(**record, accepted=False,
+                                                 drop_reason="gate"))
+            return
+        if not _lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic()):
+            print(f"[Lock] rejected utterance from {record['utt_mic_deg']:.0f} deg "
+                  f"(locked {_lock.angle:.0f} deg)")
+            _signal_reject()
+            utt_log.write(build_utterance_record(**record, accepted=False,
+                                                 drop_reason="lock"))
+            return
+        listening_since = time.monotonic()
+
+        print(f"\n>>> Processing ({endpoint})...")
+        safety_only = (state == VoiceState.WAKE_WORD)
+        if not safety_only:
+            # Commit: mute the mic now (gate at STT start), but defer the
+            # THINKING indicator until process_utterance confirms real words
+            # bound for the LLM (via on_thinking).
+            _mic_gated = True
+            gate_announced = False
+        info = {}
+        t_proc = time.monotonic()
+        audio = [pcm16_to_float32(f) for _, f, _, _ in trim_trailing(utt, TRAILING_KEEP_FRAMES)]
+        try:
+            result = process_utterance(stub, None, audio, brain,
+                                       safety_only=safety_only, tts=tts,
+                                       has_wake_detector=bool(wake_detector),
+                                       on_thinking=(None if safety_only else _announce_thinking),
+                                       info=info)
+        except Exception as e:
+            # A per-utterance failure (ASR/LLM/TTS) must drop the turn, not
+            # crash voice control. result=None routes to the idle-based gate
+            # release so the mic reopens.
+            print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
+            result = None
+        latency = time.monotonic() - t_proc
+        _status["last_latency_s"] = round(latency, 2)
+        if info.get("transcript"):
+            _status["last_transcript"] = info["transcript"] if store_transcript else "<not logged>"
+        utt_log.write(build_utterance_record(
+            **record, accepted=True, transcript=info.get("transcript"),
+            reached_llm=bool(info.get("reached_llm")), latency_s=latency))
+
+        if result != "wake_detected" and not safety_only and gate_announced:
+            response_pending = True
+            _enter_state(VoiceState.RESPONDING)
+            state = VoiceState.RESPONDING
+        elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
+            print(">>> Now listening for commands...")
+            _on_wake(t1)
+            _drain_audio_queue()
+        elif use_wake_word:
+            # safety-only / ignored utterance: keep prior behavior
+            _drain_audio_queue()
 
     # Operator control server (spotctl). Immediate commands run on its HTTP
     # threads via _on_immediate; queued ones are drained here between frames.
@@ -1056,18 +1373,17 @@ def main():
     ctl_srv = _start_control_server(ctl_q)
 
     def _on_queued(name, arg):
-        nonlocal state, listening_start_time
+        nonlocal state, listening_since
         global _crowd_mode, _voiceprint_mode
         if name == "listen":
+            # Open the conversation with no direction lock (accept all).
+            _lock.release()
+            _status["locked_deg"] = None
             state = VoiceState.LISTENING
-            listening_start_time = time.time()
+            listening_since = time.monotonic()
             _enter_state(VoiceState.LISTENING)
         elif name in ("release", "reset"):
-            state = VoiceState.WAKE_WORD
-            if wake_detector:
-                wake_detector.reset()
-            _enter_state(VoiceState.WAKE_WORD)
-            _play_cue("released_cue")
+            _release(cue=True)
             if name == "reset" and brain is not None:
                 brain.history.clear()
         elif name == "say":
@@ -1090,6 +1406,8 @@ def main():
         while True:
             _drain_control(ctl_q, _on_queued)
             _status["state"] = state.name
+            _check_mic_alive()
+
             # Stage 2F P0a: on the player busy->idle edge after a TTS response,
             # reset streaming-detector state so the speaker tail + stale VAD/KWS
             # decisions can't corrupt the next detection. Never touches `state`.
@@ -1099,11 +1417,9 @@ def main():
                 if wake_detector:
                     wake_detector.reset()
                 preroll_buffer.clear()
-                pending_speech_frames.clear()
-                consecutive_speech = 0
-                is_speaking = False
-                speech_buffer.clear()
-                speech_float_buffer.clear()
+                ep = _new_endpointer()
+                in_utt = False
+                utt = []
                 _drain_audio_queue(keep_tail=False)  # full drain: no late phantom commands
                 response_pending = False
                 print("[Mic] detector reset after TTS response")
@@ -1112,11 +1428,11 @@ def main():
             # Stage 2F P6 gate release (IDLE-based, not TTS-edge-based, so a turn
             # that plays no audio — e.g. a noise burst with an empty ASR result —
             # can't wedge the gate shut). Once gated and the player is idle, start
-            # the 0.5s settle; reopen to LISTENING when it elapses.
+            # the settle; reopen when it elapses.
             if _mic_gated:
                 now_m = time.monotonic()
                 if busy:
-                    _mic_reopen_at = None  # still speaking/chiming — hold the gate
+                    _mic_reopen_at = None  # still speaking — hold the gate
                 elif should_arm_reopen(_mic_gated, _mic_reopen_at, busy):
                     _mic_reopen_at = now_m + _tuning.reopen_delay_s
                 elif should_reopen_mic(_mic_gated, _mic_reopen_at, now_m):
@@ -1130,20 +1446,27 @@ def main():
                     # very next frame so a quick reply's first word is kept.
                     _drain_audio_queue(keep_tail=False)
                     preroll_buffer.clear()
-                    state = VoiceState.LISTENING
-                    listening_start_time = time.time()
-                    # Always cue: the listen chime fires as the mic opens
-                    # (beeps no longer mute the mic, so nothing is lost).
-                    _enter_state(VoiceState.LISTENING)
+                    ep = _new_endpointer()
+                    in_utt = False
+                    utt = []
                     gate_announced = False
-                    print(">>> Listening for follow-up (no wake needed)...")
+                    if _crowd_mode and use_wake_word:
+                        # Crowd mode: every turn needs a fresh wake (A11/10).
+                        _release(cue=False)
+                        print(">>> Crowd mode — say the wake word for the next turn")
+                    else:
+                        state = VoiceState.LISTENING
+                        listening_since = now_m
+                        _lock.touch(now_m)  # conversation clock restarts at reopen
+                        # Always cue: the listen chime fires as the mic opens
+                        # (beeps no longer mute the mic, so nothing is lost).
+                        _enter_state(VoiceState.LISTENING)
+                        print(">>> Listening for follow-up (no wake needed)...")
             # Get audio from queue. Short timeout so we still cycle (and stay
-            # responsive to SIGTERM / KeyboardInterrupt) even when the audio
-            # callback has stopped putting frames in the queue — which is
-            # what happens whenever the AudioPlayer is busy (mic muted) or
-            # the watchdog has just force-reset the player.
+            # responsive to SIGTERM / KeyboardInterrupt / spotctl) even when the
+            # audio callback has stopped putting frames in the queue.
             try:
-                pcm = audio_queue.get(timeout=0.2)
+                window_t, pcm = audio_queue.get(timeout=0.2)
             except queue.Empty:
                 continue
             window += pcm
@@ -1152,7 +1475,24 @@ def main():
             while len(window) >= BYTES_PER_FRAME:
                 frame = window[:BYTES_PER_FRAME]
                 window = window[BYTES_PER_FRAME:]
+                t_frame = window_t  # callback blocksize == 1 frame, so exact
                 frame_count += 1
+
+                # ---- per-frame front end: dBFS + VAD on EVERY frame ----
+                db = frame_dbfs(frame)
+                try:
+                    vad.accept_waveform(pcm16_to_float32(frame))
+                    is_speech = vad.is_speech_detected()
+                    while not vad.empty():  # A15: don't let segments pile up
+                        vad.pop()
+                except Exception as e:
+                    if time.time() - last_vad_error_log_time > 60.0:
+                        print(f"[VAD] accept_waveform failed: {type(e).__name__}: {e}")
+                        last_vad_error_log_time = time.time()
+                    is_speech = False
+                floor.update(db, is_speech)
+                _status["floor_dbfs"] = round(floor.floor_db, 1)
+                preroll_buffer.append((t_frame, frame, db, is_speech))
 
                 # Stage 2F C1: always-on safety check (cold stop/freeze/estop).
                 # Runs in WAKE_WORD state before the wake early-continue so a
@@ -1163,231 +1503,85 @@ def main():
                         intent = check_safety_command(kw)
                         if intent:
                             print(f"[SAFETY-KWS] '{kw}' — executing immediately")
+                            _abort_chain.set()
                             if execute_on_spot(intent):
                                 beep.command_ok()
                             else:
                                 beep.error()
                             safety_detector.reset()
-                            consecutive_speech = 0
-                            pending_speech_frames.clear()
                             continue
 
-                # ============================================================
-                # Wake word detection (dedicated detector, runs on every frame)
-                # ============================================================
-                if state == VoiceState.WAKE_WORD and wake_detector:
+                # Wake word (dedicated detector). Runs in LISTENING too, so a
+                # new speaker's wake re-locks onto them (Task 10 change 9).
+                if wake_detector and state in (VoiceState.WAKE_WORD, VoiceState.LISTENING):
                     if wake_detector.process_frame(frame):
                         print(">>> Wake word detected!")
-                        beep.wake_detected()
-                        state = VoiceState.LISTENING
-                        listening_start_time = time.time()
-                        # Don't drain audio — remaining speech ("stand up" in
-                        # "Hey Spot stand up") stays in buffer for VAD to pick up
-                    # Cold stop/freeze/estop is handled above by the always-on
-                    # safety KWS (Stage 2F C1). The VAD->ASR path below still
-                    # serves the ASR-wake fallback (no dedicated detector).
+                        was_idle = state == VoiceState.WAKE_WORD
+                        _on_wake(t_frame)
+                        if was_idle:
+                            # Fresh endpointer; the in-breath command ("Hey Spot
+                            # stand up") is still arriving and pre-roll has the tail.
+                            ep = _new_endpointer()
+                            in_utt = False
+                            utt = []
 
-                # Calculate frame energy
-                frame_rms = compute_rms(frame)
+                # In WAKE_WORD mode with a dedicated detector, don't record —
+                # the keyword spotter handles wake at frame level (no ASR on
+                # crowd noise).
+                if state == VoiceState.WAKE_WORD and wake_detector:
+                    continue
+                if state not in (VoiceState.WAKE_WORD, VoiceState.LISTENING):
+                    continue
 
-                # Energy gating: only check VAD if energy is above threshold
-                # During navigation, raise threshold to suppress motor noise
-                # Follow mode uses lower multiplier — user is nearby speaking
-                effective_threshold = energy_threshold
-                if _is_robot_moving():
-                    if _is_follow_mode():
-                        effective_threshold *= 2.0  # Light — user is close
+                # Conversation timeout (A11): lock.expired replaces the old
+                # fixed LISTENING_TIMEOUT; wall-clock fallback when unlocked.
+                if (state == VoiceState.LISTENING and not in_utt and use_wake_word
+                        and conversation_expired(_lock, listening_since, time.monotonic(),
+                                                 _tuning.lock_timeout_s)):
+                    print("[Conversation timeout — say 'Hey Spot' to activate]")
+                    _release(cue=True)
+                    continue
+
+                ev = ep.feed(is_speech, db, floor.floor_db)
+                if ev == "start":
+                    in_utt = True
+                    utt = list(preroll_buffer)  # includes this frame
+                    stats = UtteranceStats(frame_s=FRAME_S)
+                    for _, _, d, s in utt:
+                        stats.add(d, s)
+                    end_sil_s = _tuning.end_silence_s_short
+                    ep.set_end_silence_frames(_frames(end_sil_s))
+                    if state == VoiceState.WAKE_WORD:
+                        print("\n>>> Speech detected (wake word mode — safety only)...")
                     else:
-                        effective_threshold *= NAV_ENERGY_MULT
+                        print("\n>>> Speech detected...")
+                elif in_utt:
+                    utt.append((t_frame, frame, db, is_speech))
+                    stats.add(db, is_speech)
+                    dur = len(utt) * FRAME_S
+                    if dur >= SILENCE_CROSSOVER and end_sil_s != _tuning.end_silence_s:
+                        # Longer utterances (chains) get the longer end silence.
+                        end_sil_s = _tuning.end_silence_s
+                        ep.set_end_silence_frames(_frames(end_sil_s))
+                    if len(utt) % 17 == 0:  # ~every 0.5s of audio
+                        print(f"    Recording: {dur:.1f}s")
 
-                if frame_rms > effective_threshold:
-                    try:
-                        # Silero VAD: feed float32, then check global is_speech_detected.
-                        # 480-sample frames vs 512 window is fine — VAD buffers internally.
-                        samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32) / 32768.0
-                        vad.accept_waveform(samples)
-                        is_speech = vad.is_speech_detected()
-                    except Exception as e:
-                        if time.time() - last_vad_error_log_time > 60.0:
-                            print(f"[VAD] accept_waveform failed: {type(e).__name__}: {e}")
-                            last_vad_error_log_time = time.time()
-                        is_speech = False
-                else:
-                    is_speech = False
+                if ev in ("end", "cap") and in_utt:
+                    in_utt = False
+                    if ev == "cap":
+                        print(f"\n>>> Max duration reached ({len(utt) * FRAME_S:.1f}s)")
+                    _finish_utterance(ev)
+                    utt = []
+                    stats = None
 
-                # ============================================================
-                # LISTENING timeout: return to WAKE_WORD after idle period
-                # ============================================================
-                if state == VoiceState.LISTENING and not is_speaking:
-                    if time.time() - listening_start_time > LISTENING_TIMEOUT:
-                        print("[Listening timeout — say 'Hey Spot' to activate]")
-                        state = VoiceState.WAKE_WORD
-                        if wake_detector:
-                            wake_detector.reset()
-                        continue
-
-                # ============================================================
-                # Speech Detection State Machine (with onset debounce)
-                # ============================================================
-                if is_speech:
-                    consecutive_speech += 1
-
-                    if not is_speaking:
-                        # In WAKE_WORD mode with dedicated detector, don't record —
-                        # keyword spotter handles wake detection at frame level.
-                        # Skips ASR entirely, eliminating crowd noise latency.
-                        if state == VoiceState.WAKE_WORD and wake_detector:
-                            consecutive_speech = 0
-                            pending_speech_frames.clear()
-                            continue
-
-                        # Buffer frames while confirming onset
-                        pending_speech_frames.append(frame)
-                        # Use higher onset threshold during navigation to reduce false triggers
-                        onset_threshold = NAV_ONSET_FRAMES if _is_robot_moving() else SPEECH_ONSET_FRAMES
-                        if consecutive_speech < onset_threshold:
-                            continue  # Wait for more consecutive VAD frames
-
-                        # Onset confirmed — start recording with pre-roll + pending frames
-                        if state == VoiceState.WAKE_WORD:
-                            print("\n>>> Speech detected (wake word mode — safety only)...")
-                        else:
-                            print("\n>>> Speech detected...")
-                        is_speaking = True
-                        speech_frame_count = 0
-                        speech_buffer.clear()
-                        speech_float_buffer.clear()
-                        # Include pre-roll frames (captures word beginnings before VAD trigger)
-                        for pf in preroll_buffer:
-                            speech_buffer.extend(pf)
-                            speech_float_buffer.append(pcm16_to_float32(pf))
-                            speech_frame_count += 1
-                        preroll_buffer.clear()
-                        for pf in pending_speech_frames:
-                            speech_buffer.extend(pf)
-                            speech_float_buffer.append(pcm16_to_float32(pf))
-                            speech_frame_count += 1
-                        pending_speech_frames.clear()
-                        last_speech_time = time.time()
-                    else:
-                        # Already recording — add frame normally
-                        last_speech_time = time.time()
-                        speech_buffer.extend(frame)
-                        speech_float_buffer.append(pcm16_to_float32(frame))
-                        speech_frame_count += 1
-
-                        # Progress indicator (based on audio frames, not wall clock)
-                        audio_duration = speech_frame_count * FRAME_MS / 1000.0
-                        if speech_frame_count % 17 == 0:  # ~every 0.5s of audio
-                            print(f"    Recording: {audio_duration:.1f}s")
-
-                        # Max duration check (based on audio frames, not wall clock)
-                        if speech_frame_count >= MAX_UTTERANCE_FRAMES:
-                            print(f"\n>>> Max duration reached ({audio_duration:.1f}s), processing...")
-                            safety_only = (state == VoiceState.WAKE_WORD)
-                            if not safety_only:
-                                # Commit: mute the mic now (gate at STT start), but defer
-                                # the THINKING indicator until process_utterance confirms
-                                # real words bound for the LLM (via on_thinking) — a
-                                # noise/empty transcript never chimes.
-                                _mic_gated = True
-                                gate_announced = False
-                            try:
-                                result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                           brain, safety_only=safety_only, tts=tts,
-                                                           has_wake_detector=bool(wake_detector),
-                                                           on_thinking=(None if safety_only else _announce_thinking))
-                            except Exception as e:
-                                # A per-utterance failure (ASR/LLM/TTS) must drop the
-                                # turn, not crash voice control. result=None routes to
-                                # the idle-based gate release so the mic reopens.
-                                print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
-                                result = None
-                            is_speaking = False
-                            speech_buffer.clear()
-                            speech_float_buffer.clear()
-                            if result != "wake_detected" and not safety_only and gate_announced:
-                                response_pending = True
-                                _enter_state(VoiceState.RESPONDING)
-                                state = VoiceState.RESPONDING
-                            elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
-                                print(">>> Now listening for commands...")
-                                beep.wake_detected()
-                                state = VoiceState.LISTENING
-                                listening_start_time = time.time()
-                                _drain_audio_queue()
-                            elif use_wake_word:
-                                # safety-only / ignored utterance: keep prior behavior
-                                _drain_audio_queue()
-
-                else:
-                    consecutive_speech = 0
-                    pending_speech_frames.clear()
-                    # Fill pre-roll ring buffer when idle (captures audio before speech onset)
-                    if not is_speaking:
-                        preroll_buffer.append(frame)
-
-                    if is_speaking:
-                        # Add trailing frames for context
-                        if len(speech_float_buffer) > 0:
-                            elapsed_silence = time.time() - last_speech_time
-
-                            # Add some trailing silence
-                            if elapsed_silence < 0.3:
-                                speech_buffer.extend(frame)
-                                speech_float_buffer.append(pcm16_to_float32(frame))
-
-                            # Check silence timeout
-                            speech_duration = len(speech_float_buffer) * FRAME_MS / 1000.0
-                            effective_silence = (SILENCE_TIMEOUT_SHORT if speech_duration < SILENCE_CROSSOVER
-                                                 else SILENCE_TIMEOUT_LONG)
-                            if elapsed_silence > effective_silence:
-                                print(f"\n>>> Processing...")
-                                safety_only = (state == VoiceState.WAKE_WORD)
-                                if not safety_only:
-                                    # Commit: mute the mic now (gate at STT start), but defer
-                                    # the THINKING indicator until process_utterance confirms
-                                    # real words bound for the LLM (via on_thinking) — a
-                                    # noise/empty transcript never chimes.
-                                    _mic_gated = True
-                                    gate_announced = False
-                                try:
-                                    result = process_utterance(stub, speech_buffer, speech_float_buffer,
-                                                               brain, safety_only=safety_only, tts=tts,
-                                                               has_wake_detector=bool(wake_detector),
-                                                               on_thinking=(None if safety_only else _announce_thinking))
-                                except Exception as e:
-                                    # A per-utterance failure (ASR/LLM/TTS) must drop the
-                                    # turn, not crash voice control. result=None routes to
-                                    # the idle-based gate release so the mic reopens.
-                                    print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
-                                    result = None
-                                is_speaking = False
-                                speech_buffer.clear()
-                                speech_float_buffer.clear()
-                                if result != "wake_detected" and not safety_only and gate_announced:
-                                    response_pending = True
-                                    _enter_state(VoiceState.RESPONDING)
-                                    state = VoiceState.RESPONDING
-                                elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
-                                    print(">>> Now listening for commands...")
-                                    beep.wake_detected()
-                                    state = VoiceState.LISTENING
-                                    listening_start_time = time.time()
-                                    _drain_audio_queue()
-                                elif use_wake_word:
-                                    # safety-only / ignored utterance: keep prior behavior
-                                    _drain_audio_queue()
-                    else:
-                        # Fully idle: update adaptive noise floor
-                        rolling_noise_rms = (1 - NOISE_EMA_ALPHA) * rolling_noise_rms + NOISE_EMA_ALPHA * frame_rms
-                        rolling_noise_rms = max(NOISE_FLOOR_MIN, min(NOISE_FLOOR_MAX, rolling_noise_rms))
-                        energy_threshold = rolling_noise_rms * ENERGY_THRESHOLD_MULTIPLIER
-
-                # Periodic status when idle
-                if not is_speaking and frame_count % 166 == 0:  # ~5 seconds
+                # Idle metrics line (1 Hz) + periodic console status
+                now_m = time.monotonic()
+                if not in_utt and now_m - last_idle_log >= 1.0:
+                    last_idle_log = now_m
+                    utt_log.write(build_idle_record(state.name, floor.floor_db, db, _lock.angle))
+                if not in_utt and frame_count % 166 == 0:  # ~5 seconds
                     if args.debug_audio:
-                        print(f"[{state.name} rms={frame_rms:.5f} noise={rolling_noise_rms:.5f} threshold={energy_threshold:.5f}]")
+                        print(f"[{state.name} dbfs={db:.1f} floor={floor.floor_db:.1f}]")
                     elif state == VoiceState.WAKE_WORD:
                         print("[Say 'Hey Spot' to activate...]")
                     else:
@@ -1455,7 +1649,7 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
-                      has_wake_detector=False, on_thinking=None):
+                      has_wake_detector=False, on_thinking=None, info=None):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
@@ -1464,6 +1658,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         tts: SpotTTS instance for spoken responses (None = no speech output).
         has_wake_detector: If True, dedicated wake word detector is active —
                           skip ASR-based wake phrase detection (detector handles it).
+        info: optional dict filled with "transcript" and "reached_llm" for
+              the utterance metrics line.
 
     Returns:
         "wake_detected" if a wake phrase was found (ASR fallback only), None otherwise.
@@ -1501,9 +1697,12 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     t_asr_end = time.time()
     print(f"[Timing] ASR: {t_asr_end - t_asr_start:.2f}s")
 
+    if info is None:
+        info = {}
     if not transcript:
         print("[No speech recognized]")
         return None
+    info["transcript"] = transcript
 
     print("\n" + "=" * 60)
     print(f"HEARD: \"{transcript}\"")
@@ -1588,6 +1787,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # Stage 2F P6: the utterance survived STT (real words, not a safety command,
     # not a bare wake phrase) and is about to be dispatched to the brain — signal
     # THINKING now (not before STT) so noise/empty transcripts never chime.
+    info["reached_llm"] = True
     if on_thinking is not None:
         on_thinking()
 
