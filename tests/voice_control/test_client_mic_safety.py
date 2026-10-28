@@ -105,8 +105,96 @@ def test_on_safety_kw_hushes_aborts_and_dispatches(monkeypatch):
     monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
     cm._abort_chain.clear()
     cm._on_safety_kw("estop")
+    deadline = time.monotonic() + 1
+    while not resets and time.monotonic() < deadline:
+        time.sleep(0.01)  # hush runs on its own daemon thread
     assert sent == ["estop"] and resets == [1] and cm._abort_chain.is_set()
     cm._abort_chain.clear()
+
+
+def test_halt_dispatched_before_slow_hush(monkeypatch):
+    # force_reset can take seconds: the halt must not wait for it.
+    order = []
+    release = threading.Event()
+
+    class SlowPlayer:
+        def force_reset(self):
+            order.append("hush-start")
+            release.wait(2)
+
+    monkeypatch.setattr(cm, "_audio_player", SlowPlayer())
+    monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
+    monkeypatch.setattr(cm, "execute_on_spot",
+                        lambda i, brain=None, speak=None: order.append("dispatch") or True)
+    monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
+    t0 = time.monotonic()
+    cm._on_safety_kw("stop")
+    assert time.monotonic() - t0 < 0.5      # returned without waiting on the hush
+    assert order[0] == "dispatch"
+    release.set()
+    cm._abort_chain.clear()
+
+
+def test_safety_queue_drops_oldest():
+    q = queue.Queue(maxsize=2)
+    for x in (1, 2, 3):
+        cm._put_drop_oldest(q, x)
+    assert [q.get_nowait(), q.get_nowait()] == [2, 3]
+
+
+def test_health_goes_false_after_consecutive_errors(monkeypatch):
+    monkeypatch.setattr(cm, "SAFETY_ERROR_WARN_N", 3)
+
+    class Bad:
+        def process_frame(self, pcm):
+            raise RuntimeError("onnx")
+
+        def reset(self):
+            pass
+
+    q, stop, health = queue.Queue(), threading.Event(), {}
+    for _ in range(3):
+        q.put(b"x")
+    t = threading.Thread(target=cm.safety_kws_loop, args=(Bad(), q, stop, lambda k: None),
+                         kwargs=dict(health=health), daemon=True)
+    t.start()
+    deadline = time.monotonic() + 2
+    while health.get("ok", True) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert health["ok"] is False
+    stop.set()
+    t.join(1)
+
+
+def test_status_reports_safety_kws_ok(monkeypatch):
+    monkeypatch.setattr(cm, "_safety_active", False)
+    assert cm._on_immediate("status", None)["safety_kws_ok"] is False
+
+
+def test_safety_hit_during_utterance_blocks_motion(monkeypatch):
+    # A KWS halt lands while the user is still speaking; that utterance's own
+    # motion command (regex path) must not dispatch afterwards.
+    sent = []
+    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "walk forward")
+    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    monkeypatch.setattr(cm, "execute_on_spot",
+                        lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
+    monkeypatch.setattr(cm, "get_recorder", lambda: None)
+    monkeypatch.setattr(cm, "_last_safety_at", 50.0)
+    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
+    assert sent == []
+    monkeypatch.setattr(cm, "_last_safety_at", 10.0)
+    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
+    assert sent == ["walk"]
+    cm._abort_chain.clear()
+
+
+def test_dry_run_print_hides_raw_words(monkeypatch, capsys):
+    monkeypatch.setenv("SPOT_DRY_RUN", "1")
+    monkeypatch.setattr(cm, "_store_transcript", False)
+    cm.execute_on_spot({"intent": "sit", "params": {}, "raw": "please sit secretword"})
+    assert "secretword" not in capsys.readouterr().out
 
 
 def test_dry_run_safety_prints_and_skips_dispatch(monkeypatch, capsys):

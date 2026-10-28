@@ -425,40 +425,62 @@ SAFETY_REFRACTORY_S = 1.5        # ignore audio this long after a hit
 _safety_q = queue.Queue(maxsize=SAFETY_QUEUE_MAX)
 _safety_stop = threading.Event()
 _safety_active = False           # True once the safety thread is running
+_safety_thread = None
+_safety_health = {"ok": False}   # safety_kws_ok in spotctl status
+SAFETY_ERROR_WARN_N = 50         # consecutive detector errors before "unhealthy"
+# Monotonic time of the last safety halt (KWS, transcript or operator). Motion
+# dispatch for an utterance that started before it is skipped (see
+# process_utterance) so _abort_chain.clear() can't erase a hit.
+_last_safety_at = float("-inf")
 _SAFETY_LABELS = {"stop": "stop", "halt": "stop", "freeze": "freeze",
                   "estop": "estop", "e stop": "estop", "e-stop": "estop",
                   "emergency stop": "estop"}
 
 
 def safety_kws_loop(detector, q, stop_event, on_hit,
-                    refractory_s=SAFETY_REFRACTORY_S, clock=time.monotonic):
+                    refractory_s=SAFETY_REFRACTORY_S, clock=time.monotonic, health=None):
     """Feed frames from `q` to `detector`; call on_hit(kw) per detection.
     Frames during the refractory window after a hit are dropped. Returns
-    within ~0.1 s of stop_event being set."""
+    within ~0.1 s of stop_event being set. `health["ok"]` goes False after
+    SAFETY_ERROR_WARN_N consecutive detector errors or if the loop dies."""
+    health = health if health is not None else {}
+    health["ok"] = True
+    errors = 0
     last_hit = None
-    while not stop_event.is_set():
-        try:
-            pcm = q.get(timeout=0.1)
-        except queue.Empty:
-            continue
-        if last_hit is not None and clock() - last_hit < refractory_s:
-            continue
-        try:
-            kw = detector.process_frame(pcm)
-        except Exception as e:
-            print(f"[SafetyKWS] detector error: {e}")
-            kw = ""
-        if not kw:
-            continue
-        last_hit = clock()
-        try:
-            on_hit(kw)
-        except Exception as e:
-            print(f"[SafetyKWS] handler error: {type(e).__name__}: {e}")
-        try:
-            detector.reset()
-        except Exception:
-            pass
+    try:
+        while not stop_event.is_set():
+            try:
+                pcm = q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if last_hit is not None and clock() - last_hit < refractory_s:
+                continue
+            try:
+                kw = detector.process_frame(pcm)
+                if errors >= SAFETY_ERROR_WARN_N:
+                    print("[SafetyKWS] detector recovered")
+                errors = 0
+                health["ok"] = True
+            except Exception as e:
+                errors += 1
+                if errors == SAFETY_ERROR_WARN_N:
+                    health["ok"] = False
+                    print(f"[SafetyKWS] !!! UNHEALTHY: {errors} consecutive detector errors "
+                          f"({e}) — spoken stop may not work; use spotctl stop / e-stop")
+                kw = ""
+            if not kw:
+                continue
+            last_hit = clock()
+            try:
+                on_hit(kw)
+            except Exception as e:
+                print(f"[SafetyKWS] handler error: {type(e).__name__}: {e}")
+            try:
+                detector.reset()
+            except Exception:
+                pass
+    finally:
+        health["ok"] = False
 
 
 def _safety_intent_for(kw: str):
@@ -478,13 +500,26 @@ def _on_safety_kw(kw: str) -> None:
         print(f"[SAFETY-KWS] unmapped label {kw!r} — ignored")
         return
     print(f"[SAFETY-KWS] '{kw}' — executing {intent['intent']} immediately")
+    _mark_safety()
+    # Halt FIRST; force_reset can take seconds (worker join + stream reopen),
+    # so the hush runs on its own daemon thread and neither waits on the other.
+    _dispatch_safety(intent)
+    threading.Thread(target=_hush_player, name="safety-hush", daemon=True).start()
+
+
+def _mark_safety() -> None:
+    """Record a safety halt: abort any chain + timestamp it (see process_utterance)."""
+    global _last_safety_at
+    _last_safety_at = time.monotonic()
     _abort_chain.set()
+
+
+def _hush_player() -> None:
     if _audio_player is not None:
         try:
             _audio_player.force_reset()  # hush: stop talking now
         except Exception as e:
             print(f"[SAFETY-KWS] hush failed: {e}")
-    _dispatch_safety(intent)
 
 
 def _dispatch_safety(intent) -> bool:
@@ -519,14 +554,40 @@ def safety_startup_ok(have_detector: bool, dry_run: bool, allow_missing: bool) -
 
 def _start_safety_thread(detector):
     """Start the safety-KWS daemon thread; returns it."""
-    global _safety_active
+    global _safety_active, _safety_thread
     _safety_stop.clear()
     t = threading.Thread(target=safety_kws_loop,
                          args=(detector, _safety_q, _safety_stop, _on_safety_kw),
+                         kwargs=dict(health=_safety_health),
                          name="safety-kws", daemon=True)
     t.start()
+    _safety_thread = t
     _safety_active = True
     return t
+
+
+def _stop_safety_thread() -> None:
+    """Signal the safety thread and wait briefly for it (shutdown)."""
+    _safety_stop.set()
+    t = _safety_thread
+    if t is not None:
+        t.join(timeout=0.5)
+
+
+def _put_drop_oldest(q, item) -> None:
+    """Non-blocking put; on overflow discard the OLDEST item (safety audio
+    must stay current)."""
+    try:
+        q.put_nowait(item)
+    except queue.Full:
+        try:
+            q.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            pass
 
 
 def _chime_busy() -> bool:
@@ -575,10 +636,7 @@ def audio_callback(indata, frames, time_info, status):
     # state — gated, Spot speaking, operator-muted — so a spoken stop/freeze
     # always works. (Spot saying "stop" itself may halt it: acceptable.)
     if _safety_active:
-        try:
-            _safety_q.put_nowait(pcm16)
-        except queue.Full:
-            pass
+        _put_drop_oldest(_safety_q, pcm16)
     if _operator_muted:
         return  # operator mute (spotctl mute) — discard everything else
     if _speech_busy():
@@ -796,7 +854,8 @@ def execute_on_spot(intent: dict, brain=None, speak=None) -> bool:
     """
     intent_name = intent.get("intent", "")
     if os.environ.get("SPOT_DRY_RUN") == "1" and intent_name not in _STATE_ONLY_INTENTS:
-        print(f"[dry-run] would dispatch: {intent}")
+        shown = intent if _store_transcript else {k: v for k, v in intent.items() if k != "raw"}
+        print(f"[dry-run] would dispatch: {shown}")
         return True
     try:
         from src.voice_control.spot_dispatch import dispatch_intent
@@ -896,7 +955,7 @@ def _run_safety(text: str) -> bool:
     if not safety:
         return False
     print(f"[SAFETY] {safety['intent']} — executing immediately")
-    _abort_chain.set()
+    _mark_safety()
     _dispatch_safety(safety)
     return True
 
@@ -983,11 +1042,7 @@ _anim = None  # RingAnimator (owns ring writes + throttling) when available
 
 def _make_ring_animator(mic):
     """RingAnimator(mic, max_hz=30.0) if the module exists; None -> direct writes."""
-    # TODO(ring lane merge): drop this ImportError guard once ring_animator lands.
-    try:
-        from src.voice_control.ring_animator import RingAnimator
-    except ImportError:
-        return None
+    from src.voice_control.ring_animator import RingAnimator
     try:
         return RingAnimator(mic, max_hz=30.0)
     except Exception as e:
@@ -1088,7 +1143,9 @@ def _hush():
 def _status_snapshot() -> dict:
     """Plain-attribute read; never blocks."""
     s = dict(_status)
-    s.update(muted=_operator_muted, crowd=_crowd_mode, voiceprint=_voiceprint_mode)
+    s.update(muted=_operator_muted, crowd=_crowd_mode, voiceprint=_voiceprint_mode,
+             safety_kws_ok=bool(_safety_active and _safety_health.get("ok")
+                                and _safety_thread is not None and _safety_thread.is_alive()))
     return s
 
 
@@ -1103,11 +1160,11 @@ def _on_immediate(name: str, arg=None) -> dict:
     if name == "status":
         return _status_snapshot()
     if name == "hush":
-        _abort_chain.set()
+        _mark_safety()
         _hush()
         return {"ok": True}
     if name in _MOTION_COMMANDS:
-        _abort_chain.set()
+        _mark_safety()
         ok = execute_on_spot({"intent": name, "params": {}, "raw": f"spotctl {name}"})
         return {"ok": bool(ok)}
     if name in ("mute", "unmute"):
@@ -1125,6 +1182,27 @@ def _toggle(current: bool, arg) -> bool:
     if a in ("0", "off", "false", "no"):
         return False
     return not current
+
+
+def _shutdown_runtime() -> None:
+    """Stop the safety thread, ring, beams and mic, then the robot session
+    and player. Safe to call on any exit path."""
+    _stop_safety_thread()
+    if _anim is not None:
+        try:
+            _anim.stop()  # clears the ring
+        except Exception:
+            pass
+    if _mic is not None:
+        try:
+            if not _mic.dead:
+                _mic.set_fixed_beams(None)
+                if _anim is None:
+                    _mic.set_led_effect(0)  # ring off
+            _mic.close()
+        except Exception:
+            pass
+    cleanup_spot()
 
 
 def _start_control_server(ctl_q):
@@ -1410,6 +1488,11 @@ def main():
     #     If the probe fails, auto-degrade.
     #
     # Caller can opt out by passing --dry-run explicitly (skips everything).
+    # Fail closed BEFORE --map powers on / stands the robot.
+    if args.map and not safety_startup_ok(safety_detector is not None, args.dry_run,
+                                          args.allow_no_safety_kws):
+        cleanup_spot()
+        return
     if not args.dry_run:
         if args.map:
             print(f"\n[Spot] Eager session init with map: {args.map}")
@@ -1441,7 +1524,10 @@ def main():
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
 
-    if not safety_startup_ok(safety_detector is not None, args.dry_run, args.allow_no_safety_kws):
+    # No-map path: the TCP probe above only connects (no power/stand); the
+    # check runs after it so an unreachable robot (auto dry-run) still starts.
+    if not args.map and not safety_startup_ok(safety_detector is not None, args.dry_run,
+                                              args.allow_no_safety_kws):
         cleanup_spot()
         return
 
@@ -1461,6 +1547,7 @@ def main():
     except Exception as e:
         print(f"Audio error: {e}")
         print("Run with --list-devices to see available devices")
+        _shutdown_runtime()
         return
 
     mode = f"LLM Brain ({DEFAULT_MODEL})" if brain else "Regex-only (legacy)"
@@ -1626,7 +1713,7 @@ def main():
                                        safety_only=safety_only, tts=tts,
                                        has_wake_detector=bool(wake_detector),
                                        on_thinking=(None if safety_only else _announce_thinking),
-                                       info=info)
+                                       info=info, utt_t0=t0)
         except Exception as e:
             # A per-utterance failure (ASR/LLM/TTS) must drop the turn, not
             # crash voice control. result=None routes to the idle-based gate
@@ -1697,10 +1784,13 @@ def main():
             _check_mic_alive()
             _flush_ring()
             if _operator_muted and in_utt:
-                # Muted mid-utterance: drop the half-recorded utterance.
+                # Muted mid-utterance: drop the half-recorded utterance and
+                # every pre-mute frame still queued.
                 ep = _new_endpointer()
                 in_utt = False
                 utt = []
+                preroll_buffer.clear()
+                _drain_audio_queue(keep_tail=False)
             # Conversation timeout (A11) on every loop tick, so it still fires
             # while muted / no frames arrive. lock.expired replaces the old
             # fixed LISTENING_TIMEOUT; wall-clock fallback when unlocked.
@@ -1799,7 +1889,7 @@ def main():
                 # A chime (beep, not speech) in flight + speaker tail: never
                 # let it start/extend an utterance (chime-only turn loop).
                 # Frames still go to pre-roll so speech right after is kept.
-                masked, chime_ended = chime_mask.update(_chime_busy(), time.monotonic())
+                masked, chime_ended = chime_mask.update(_chime_busy(), t_frame)
                 if masked:
                     is_speech = False
                 elif chime_ended and not in_utt:
@@ -1893,22 +1983,7 @@ def main():
             stream.close()
         except Exception:
             pass
-        _safety_stop.set()
-        if _anim is not None:
-            try:
-                _anim.stop()  # clears the ring
-            except Exception:
-                pass
-        if _mic is not None:
-            try:
-                if not _mic.dead:
-                    _mic.set_fixed_beams(None)
-                    if _anim is None:
-                        _mic.set_led_effect(0)  # ring off
-                _mic.close()
-            except Exception:
-                pass
-        cleanup_spot()
+        _shutdown_runtime()
 
 
 def partition_drain(frames, keep_count):
@@ -2071,7 +2146,7 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
-                      has_wake_detector=False, on_thinking=None, info=None):
+                      has_wake_detector=False, on_thinking=None, info=None, utt_t0=None):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
@@ -2082,6 +2157,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                           skip ASR-based wake phrase detection (detector handles it).
         info: optional dict filled with "transcript" and "reached_llm" for
               the utterance metrics line.
+        utt_t0: monotonic time of the utterance's first frame; motion is not
+              dispatched if a safety halt happened at/after it.
 
     Returns:
         "wake_detected" if a wake phrase was found (ASR fallback only), None otherwise.
@@ -2099,6 +2176,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # New turn: forget earlier operator stops. A stop arriving from here on
     # (during ASR, LLM or the chain itself) aborts this turn's action chain.
     _abort_chain.clear()
+    if utt_t0 is not None and _last_safety_at >= utt_t0:
+        _abort_chain.set()  # a halt landed during this utterance: keep it
     t_utterance_start = time.time()
 
     # Combine audio
@@ -2266,6 +2345,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 if filler is not None:
                     filler.cancel()
                 if chunker is not None:
+                    if _abort_chain.is_set():
+                        chunker.suppressed = True  # hushed: don't speak the tail
                     chunker.flush()
                     brain.on_token_callback = None
             t_llm_end = time.time()
@@ -2400,7 +2481,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                                 _say(tts, fallback, voice_id)
                     else:
                         if execute_on_spot(intent, brain=brain,
-                                           speak=(tts.speak if tts else None)):
+                                           speak=((lambda t: _say(tts, t)) if tts else None)):
                             print(f">>> SUCCESS" if len(actions) == 1 else f">>> {cmd} SUCCESS")
                         else:
                             beep.error()
@@ -2451,7 +2532,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             params = intent.get('params', {})
             print(f"Command: {cmd}" + (f" {params}" if params else ""))
 
-            if execute_on_spot(intent):
+            if _abort_chain.is_set():
+                print("[Dispatch] skipped — safety halt during this utterance")
+            elif execute_on_spot(intent):
                 print(">>> SUCCESS")
             else:
                 print(">>> FAILED")
