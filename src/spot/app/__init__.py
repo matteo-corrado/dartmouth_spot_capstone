@@ -1,0 +1,1 @@
+"""Spot app package (placeholder)."""

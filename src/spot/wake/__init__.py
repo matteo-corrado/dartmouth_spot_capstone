@@ -1,0 +1,1 @@
+"""Spot wake package (placeholder)."""

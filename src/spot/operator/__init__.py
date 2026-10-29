@@ -1,0 +1,1 @@
+"""Spot operator package (placeholder)."""

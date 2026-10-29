@@ -1,0 +1,1 @@
+"""Spot brain package (placeholder)."""
