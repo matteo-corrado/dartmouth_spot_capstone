@@ -5,6 +5,9 @@ import math
 import pytest
 
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import ARM, CONNECTION, NAV, SAFETY_GEN
+import src.spot.robot.arm as arm_mod
+import src.spot.robot.state as state_mod
 import src.voice_control.tuning as tuning
 from tests.voice_control.test_arm_policy import FakeCmd
 
@@ -17,14 +20,14 @@ def _sh0(proto):
 @pytest.fixture
 def cmd(monkeypatch):
     c = FakeCmd()
-    monkeypatch.setattr(d, "_spot_session", {"cmd": c, "robot": object()})
-    monkeypatch.setattr(d, "_arm_pose", "talk")
-    monkeypatch.setattr(d, "_closing", False)
-    monkeypatch.setattr(d, "_gaze_deg", 0.0)
+    monkeypatch.setattr(CONNECTION, "_session", {"cmd": c, "robot": object()})
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(CONNECTION, "_closing", False)
+    monkeypatch.setattr(ARM, "_gaze_deg", 0.0)
     monkeypatch.setattr(d, "_gaze_t", 0.0)
-    monkeypatch.setattr(d, "_arm_settle_until", 0.0)
-    monkeypatch.setattr(d, "is_navigating", lambda: False)
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)
+    monkeypatch.setattr(ARM, "_settle_until", 0.0)
+    monkeypatch.setattr(NAV, "is_navigating", lambda: False)
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: True)
     monkeypatch.setattr(tuning, "_cached", tuning.Tuning(gaze_max_deg=45.0))
     clock = {"t": 1000.0}
     monkeypatch.setattr(d.time, "monotonic", lambda: clock["t"])
@@ -47,7 +50,7 @@ def test_default_limit_is_20():
 
 
 def test_gaze_turns_sh0_slowly_in_joints_pose(cmd, monkeypatch):
-    monkeypatch.setattr(d, "block_until_arm_arrives",
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives",
                         lambda *a: pytest.fail("gaze must not block"))
     assert d.gaze_at_bearing(30.0) is True
     (kind, proto), = cmd.sent
@@ -105,20 +108,20 @@ def test_behind_ignored(cmd):
 
 @pytest.mark.parametrize("pose", ["stowed", "walk"])
 def test_only_in_talk_pose(cmd, monkeypatch, pose):
-    monkeypatch.setattr(d, "_arm_pose", pose)
+    monkeypatch.setattr(ARM, "_pose", pose)
     assert d.gaze_at_bearing(30.0) is False
     assert d.gaze_at_bearing(None) is False
     assert cmd.sent == []
 
 
 def test_not_while_walking_or_dancing(cmd, monkeypatch):
-    monkeypatch.setattr(d, "is_navigating", lambda: True)
+    monkeypatch.setattr(NAV, "is_navigating", lambda: True)
     assert d.gaze_at_bearing(30.0) is False
     assert cmd.sent == []
 
 
 def test_not_unless_standing_and_powered(cmd, monkeypatch):
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: False)
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: False)
     assert d.gaze_at_bearing(30.0) is False
     assert cmd.sent == []
 
@@ -131,8 +134,8 @@ def test_gaze_off_when_limit_zero(cmd, monkeypatch):
 
 def test_blocked_after_stop(cmd, monkeypatch):
     """A stop stows the arm (and bumps the safety gen): no gaze follows it."""
-    monkeypatch.setattr(d, "_close_mouth", lambda: None)
-    monkeypatch.setattr(d, "_session_context", object())
+    monkeypatch.setattr(ARM, "close_mouth", lambda: None)
+    monkeypatch.setattr(CONNECTION, "_context", object())
     gen = d.current_safety_gen()
     d.dispatch_intent({"intent": "stop", "params": {}})
     n = len(cmd.sent)
@@ -168,8 +171,8 @@ def test_pose_send_resets_gaze_memory(cmd):
 
 
 def test_no_session_never_connects(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     assert d.gaze_at_bearing(30.0) is False
 
 
@@ -222,7 +225,7 @@ def test_client_gaze_uses_gen_from_request_time(cmd, monkeypatch):
     cm._gaze_at_speaker(30.0)
     body, gen = q.get_nowait()
     assert body == 30.0 and gen == d.current_safety_gen()
-    monkeypatch.setattr(d, "_safety_gen", d._safety_gen + 1)  # stop before pickup
+    monkeypatch.setattr(SAFETY_GEN, "_gen", d._safety_gen + 1)  # stop before pickup
     assert d.gaze_at_bearing(body, gen) is False
     assert cmd.sent == []
 

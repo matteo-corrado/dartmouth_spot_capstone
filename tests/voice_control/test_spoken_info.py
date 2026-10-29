@@ -6,6 +6,7 @@ import pytest
 from bosdyn.api import robot_state_pb2
 
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import CONNECTION
 import src.voice_control.perception.obstacle_query as oq
 
 
@@ -23,7 +24,7 @@ class FakeStateClient:
 @pytest.fixture
 def sess(monkeypatch):
     s = {"cmd": object(), "state": FakeStateClient(), "robot": object()}
-    monkeypatch.setattr(d, "_spot_session", s)
+    monkeypatch.setattr(CONNECTION, "_session", s)
     return s
 
 
@@ -58,8 +59,8 @@ def test_obstacles_none_spoken(sess, monkeypatch):
 
 
 def test_list_locations_no_robot_needed(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no session"))
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no session"))
     monkeypatch.setattr(d, "_list_saved_locations",
                         lambda: {"poster_table": "w1", "front_door": "w2", "waypoint_3": "w3"})
     ok, said = _run("list_locations")
@@ -73,7 +74,7 @@ def test_list_locations_empty(monkeypatch):
 
 
 def test_list_maps_no_map_loaded(monkeypatch):
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no session"))
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no session"))
     monkeypatch.setattr(d, "list_available_maps", lambda root: [])
     ok, said = _run("list_maps")
     assert ok and said == ["I don't have any maps saved yet."]
@@ -87,11 +88,11 @@ def test_list_maps_spoken(monkeypatch):
 
 
 def test_graceful_line_without_robot(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(CONNECTION, "_session", None)
 
     def no_robot(*a, **k):
         raise RuntimeError("robot unreachable")
-    monkeypatch.setattr(d, "ensure_spot_session", no_robot)
+    monkeypatch.setattr(CONNECTION, "ensure", no_robot)
     ok, said = _run("battery_status")
     assert ok is False and said == ["I can't reach my sensors right now."]
 
@@ -102,6 +103,6 @@ def test_speak_none_prints(sess, capsys):
 
 
 def test_state_dict_has_no_volatile_keys(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(CONNECTION, "_session", None)
     st = d.get_robot_state_dict()
     assert "uptime_s" not in st and "process_pid" not in st

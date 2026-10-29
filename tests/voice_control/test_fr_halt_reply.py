@@ -6,6 +6,9 @@ import pytest
 
 import src.voice_control.client_mic as cm
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import ARM, CONNECTION, NAV, SAFETY_GEN
+import src.spot.robot.arm as arm_mod
+import src.spot.robot.state as state_mod
 from tests.voice_control.test_arm_policy import FakeCmd, FakeState
 
 
@@ -111,15 +114,15 @@ def robot(monkeypatch):
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
-    monkeypatch.setattr(d, "_spot_session", sess)
-    monkeypatch.setattr(d, "_session_context", object())
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: True)
-    monkeypatch.setattr(d, "_arm_pose", "talk")
-    monkeypatch.setattr(d, "_pose_before_walk", None)
-    monkeypatch.setattr(d, "_mouth_resume", False)
-    monkeypatch.setattr(d, "_talk_resume", False)
-    monkeypatch.setattr(d, "_last_brain", None)
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)
+    monkeypatch.setattr(CONNECTION, "_session", sess)
+    monkeypatch.setattr(CONNECTION, "_context", object())
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: True)
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(ARM, "_pose_before_walk", None)
+    monkeypatch.setattr(ARM, "_mouth_resume", False)
+    monkeypatch.setattr(ARM, "_talk_resume", False)
+    monkeypatch.setattr(ARM, "_last_brain", None)
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: True)
     yield cmd, m
     d._cancel_nav()
 
@@ -139,10 +142,10 @@ def test_stop_from_talk_still_stops_first_then_resume_restores(robot):
 
 
 def test_no_resume_when_not_in_talk_or_after_estop(robot, monkeypatch):
-    monkeypatch.setattr(d, "_arm_pose", "stowed")
+    monkeypatch.setattr(ARM, "_pose", "stowed")
     d.dispatch_intent({"intent": "stop", "params": {}})
     assert d._talk_resume is False
-    monkeypatch.setattr(d, "_arm_pose", "talk")
+    monkeypatch.setattr(ARM, "_pose", "talk")
     d.dispatch_intent({"intent": "estop", "params": {}})
     assert d._talk_resume is False
 
@@ -157,7 +160,7 @@ def test_resume_cleared_by_sit(robot):
 def test_resume_loses_to_a_racing_stop(robot, monkeypatch):
     cmd, m = robot
     d.dispatch_intent({"intent": "stop", "params": {}})
-    monkeypatch.setattr(d, "_aborted", lambda gen: True)  # a stop bumped the generation
+    monkeypatch.setattr(SAFETY_GEN, "aborted", lambda gen: True)  # a stop bumped the generation
     assert d.resume_talk_after_halt(d.current_safety_gen()) is False
     assert d.get_arm_pose() == "stowed" and m.log == ["off"]
 
@@ -165,7 +168,7 @@ def test_resume_loses_to_a_racing_stop(robot, monkeypatch):
 def test_resume_keeps_mouth_off_if_arm_never_arrives(robot, monkeypatch):
     cmd, m = robot
     d.dispatch_intent({"intent": "stop", "params": {}})
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: False)
     d.resume_talk_after_halt(d.current_safety_gen()).join(2)
     assert m.log == ["off"] and not m.enabled
 
@@ -177,7 +180,7 @@ def test_stop_during_arm_raise_keeps_mouth_off(robot, monkeypatch):
     def arrives_after_a_stop(c, i, t):
         d.dispatch_intent({"intent": "stop", "params": {}})  # stop lands mid-raise
         return True
-    monkeypatch.setattr(d, "block_until_arm_arrives", arrives_after_a_stop)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", arrives_after_a_stop)
     d.resume_talk_after_halt(d.current_safety_gen()).join(2)
     assert m.log == ["off", "off"] and d.get_arm_pose() == "stowed"
 
@@ -198,10 +201,10 @@ def test_estop_after_stop_cancels_pending_resume(robot):
 def test_not_standing_clears_pending_resume(robot, monkeypatch):
     cmd, m = robot
     d.dispatch_intent({"intent": "stop", "params": {}})
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: False)
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: False)
     assert d.resume_talk_after_halt(d.current_safety_gen()) is False
     assert d._talk_resume is False
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)  # re-stood later
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: True)  # re-stood later
     assert d.resume_talk_after_halt(d.current_safety_gen()) is False
     assert d.get_arm_pose() == "stowed"
 
@@ -248,7 +251,7 @@ def test_hush_skips_stream_rebuild_when_nothing_plays(monkeypatch):
 
 def test_resume_waits_while_moving(robot, monkeypatch):
     d.dispatch_intent({"intent": "stop", "params": {}})
-    monkeypatch.setattr(d, "is_navigating", lambda: True)
+    monkeypatch.setattr(NAV, "is_navigating", lambda: True)
     assert d.resume_talk_after_halt(d.current_safety_gen()) is False and d._talk_resume is True
 
 
@@ -266,8 +269,8 @@ class _TimedCmd(FakeCmd):
 @pytest.mark.parametrize("name", ["stop", "freeze", "estop"])
 def test_safety_path_rpcs_all_have_timeouts(robot, monkeypatch, name):
     cmd = _TimedCmd()
-    monkeypatch.setattr(d, "_spot_session", {"cmd": cmd, "state": FakeState(), "robot": object()})
-    monkeypatch.setattr(d, "_is_standing", lambda s: True)
+    monkeypatch.setattr(CONNECTION, "_session", {"cmd": cmd, "state": FakeState(), "robot": object()})
+    monkeypatch.setattr(state_mod, "is_standing", lambda s: True)
     d.dispatch_intent({"intent": name, "params": {}})
     stops = [t for (k, _), t in zip(cmd.sent, cmd.timeouts) if k in ("stop", "mobility")]
     assert len(stops) >= 2 and all(t == d.RPC_TIMEOUT_S for t in stops)
@@ -281,9 +284,9 @@ def test_stow_during_nav_sends_second_stop_after_join(robot, monkeypatch, mode):
     ev = threading.Event()
     t = threading.Thread(target=ev.wait, args=(5,), daemon=True)
     t.start()
-    monkeypatch.setattr(d, "_nav_thread", t)
-    monkeypatch.setattr(d, "_nav_stop_event", ev)
-    monkeypatch.setattr(d, "_nav_mode", mode)
+    monkeypatch.setattr(NAV, "_thread", t)
+    monkeypatch.setattr(NAV, "_stop_event", ev)
+    monkeypatch.setattr(NAV, "_mode", mode)
     d.dispatch_intent({"intent": "stow", "params": {}})
     k = cmd.kinds()
     assert k[:2] == ["stop", "stop"]  # first stop, nav join, then the re-stop

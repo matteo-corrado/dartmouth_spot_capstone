@@ -8,6 +8,8 @@ import pytest
 from bosdyn.api import robot_state_pb2
 
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import ARM, CONNECTION, NAV
+import src.spot.robot.arm as arm_mod
 import src.voice_control.perception.obstacle_query as oq
 from src.voice_control.emotes import DANCES
 from tests.voice_control.test_arm_policy import FakeCmd, _Mouth
@@ -59,14 +61,14 @@ def env(monkeypatch):
     cmd = FakeCmd()
     choreo = FakeChoreo()
     sess = {"cmd": cmd, "state": FakeState(), "robot": FakeRobot(choreo)}
-    monkeypatch.setattr(d, "_spot_session", sess)
-    monkeypatch.setattr(d, "_session_context", object())
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: True)
-    monkeypatch.setattr(d, "_close_mouth", lambda: None)
-    monkeypatch.setattr(d, "_arm_pose", "talk")
-    monkeypatch.setattr(d, "_pose_before_walk", None)
+    monkeypatch.setattr(CONNECTION, "_session", sess)
+    monkeypatch.setattr(CONNECTION, "_context", object())
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: True)
+    monkeypatch.setattr(ARM, "close_mouth", lambda: None)
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(ARM, "_pose_before_walk", None)
     monkeypatch.setattr(d, "_last_routine", None)
-    monkeypatch.setattr(d, "_mouth_resume", False)
+    monkeypatch.setattr(ARM, "_mouth_resume", False)
     monkeypatch.setattr(oq, "clearance_scan", CLEAR)
     yield SimpleNamespace(cmd=cmd, choreo=choreo, sess=sess)
     d._cancel_nav()
@@ -153,7 +155,7 @@ def test_refuses_when_sitting(env):
 
 
 def test_refuses_while_navigating(env, monkeypatch):
-    monkeypatch.setattr(d, "is_navigating", lambda: True)
+    monkeypatch.setattr(NAV, "is_navigating", lambda: True)
     said = []
     assert d.dispatch_intent({"intent": "emote", "params": {"name": "dance"}},
                              speak=said.append) is False
@@ -191,7 +193,7 @@ def test_interrupted_routine_stops_and_keeps_arm_stowed(env):
 
 
 def test_failed_stow_restores_previous_pose(env, monkeypatch):
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: False)
     d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
     _join()
     assert env.choreo.executed == []
@@ -227,7 +229,7 @@ def test_stop_not_delayed_by_emote_arm_wait(env, monkeypatch):
     def slow_never(c, i, t):
         time.sleep(t)
         return False
-    monkeypatch.setattr(d, "block_until_arm_arrives", slow_never)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", slow_never)
     d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
     time.sleep(0.5)  # parked in the arm-stow wait
     t = time.time()
@@ -259,7 +261,7 @@ def test_stow_mid_dance_re_stops(env):
 
 
 def test_closing_blocks_live_session_use(env, monkeypatch):
-    monkeypatch.setattr(d, "_closing", True)
+    monkeypatch.setattr(CONNECTION, "_closing", True)
     assert d.dispatch_intent({"intent": "stand", "params": {}}) is False
     assert env.cmd.kinds() == []
     with pytest.raises(RuntimeError):
