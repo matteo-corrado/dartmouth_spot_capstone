@@ -1842,7 +1842,10 @@ def _fresh_person(session, target, phrase, speak, gen):
         me = clean_phrase(phrase) in ("me", "myself", "us")
         say(MSG_CANT_SEE_YOU if me else CANT_SEE_THAT_LINE)
         return None
-    near.sort(key=lambda p: (p[0], p[1].distance_m is None, p[1].distance_m or 0.0))
+    # closest in bearing; on a tie prefer a depth range (goto drops a ground
+    # range under 4 m for a person, R23), then a known, nearer range
+    near.sort(key=lambda p: (round(p[0], 1), p[1].distance_method != "depth",
+                             p[1].distance_m is None, p[1].distance_m or 0.0))
     return near[0][1]
 
 
@@ -1903,26 +1906,27 @@ def _vision_person_target(session, phrase, speak, gen):
         if not _aborted(gen):
             _say(speak, _vision_spoken(text))
 
-    _selecting = True
+    _selecting = True  # also over the fresh look: the gaze worker stays off the GPU/arm
     try:
         from src.voice_control.vision.people import select_person
-        target, msg = select_person(session["robot"], phrase, say,
-                                    gaze=lambda b: _selection_gaze(b, gen),
-                                    clock=_gen_clock(gen), sleep=_gen_sleep(gen),
-                                    abort=lambda: _aborted(gen))
-    except Exception as e:
-        print(f"[Spot] vision: person selection failed: {e}")
-        say(VISION_DOWN_LINE)
-        return None
+        try:
+            target, msg = select_person(session["robot"], phrase, say,
+                                        gaze=lambda b: _selection_gaze(b, gen),
+                                        clock=_gen_clock(gen), sleep=_gen_sleep(gen),
+                                        abort=lambda: _aborted(gen))
+        except Exception as e:
+            print(f"[Spot] vision: person selection failed: {e}")
+            say(VISION_DOWN_LINE)
+            return None
+        if _aborted(gen):
+            return None
+        if target is None:
+            say(msg or CANT_SEE_THAT_LINE)
+            return None
+        # The selection may be seconds old: walk only toward a fresh sighting.
+        return _fresh_person(session, target, phrase, speak, gen)
     finally:
         _selecting = False
-    if _aborted(gen):
-        return None
-    if target is None:
-        say(msg or CANT_SEE_THAT_LINE)
-        return None
-    # The selection may be seconds old: walk only toward a fresh sighting.
-    return _fresh_person(session, target, phrase, speak, gen)
 
 
 def _recentre_after_selection(session, gen):

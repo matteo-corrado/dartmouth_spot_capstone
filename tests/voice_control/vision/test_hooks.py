@@ -1073,3 +1073,24 @@ def test_session_robot_never_dropped(monkeypatch, robot):
     monkeypatch.setattr(FI, "find", boom)
     _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=FakeTTS())
     assert d._spot_session["robot"] is robot
+
+
+def test_selecting_flag_held_over_the_fresh_look(fake, monkeypatch):
+    seen = []
+    monkeypatch.setattr(P, "select_person", lambda *a, **k: (_det(label="person"), None))
+    monkeypatch.setattr(W, "snapshot", lambda *a, **k: seen.append(d._selecting) or [])
+    d.dispatch_intent({"intent": "follow_me", "params": {}})
+    assert seen == [True] and d._selecting is False
+
+
+def test_fresh_look_prefers_depth_range_at_same_bearing(fake, monkeypatch):
+    rec = Rec(ActionResult("I'm here.", True))
+    monkeypatch.setattr(FO, "follow", rec.follow)
+    monkeypatch.setattr(P, "select_person", lambda *a, **k: (_det(label="person"), None))
+    ground = _det(label="person", dist=2.0, bearing=1.0)
+    ground.distance_method = "ground"
+    depth = _det(label="person", dist=2.2, bearing=1.0, source="frontright_fisheye_image")
+    monkeypatch.setattr(W, "snapshot", lambda *a, **k: [ground, depth])
+    assert d.dispatch_intent({"intent": "follow_me", "params": {}})
+    _join_nav()
+    assert rec.calls[0][2] is depth
