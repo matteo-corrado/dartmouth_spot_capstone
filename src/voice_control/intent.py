@@ -61,6 +61,7 @@ COMMANDS = [
     (r"\blook around\b",                            "look_around", {}),
     (r"\b(?:find|look for|search for|locate|where is|where's|where are|do you see|can you see)\s+(?:the\s+|a\s+|an\s+|my\s+|any\s+)?(?P<what>.+?)(?:\s*[?.!]|$)", "find", {"what": "$what"}),
     (r"\b(?:follow me|come with me|tag along)\b",  "follow_me", {}),
+    (r"\b(?:social|friendly) mode\b", "social_mode", {}),
 
     # === NAVIGATION ===
     (r"\b(?:go to|navigate to|drive to|walk to)\s+(?P<location>[\w\s]+?)(?:\s*\.|$|\s+stop|\s+halt|\s+freeze)",  "go_to", {"location": "$location"}),
@@ -282,7 +283,7 @@ SHORT_COMMAND_WORDS = frozenset({"dance", "stow", "wave", "bow", "nod", "spin",
 # normal-volume utterance that passes the loudness gate (safety review I-2).
 # "find" too: the regex treats it as a camera answer, but the brain may still
 # read "find a chair" as a go-to, so a quiet one stays blocked as before.
-SHORT_PATH_BLOCKED_INTENTS = frozenset({"walk", "turn", "walk_to", "follow_me", "patrol",
+SHORT_PATH_BLOCKED_INTENTS = frozenset({"walk", "turn", "walk_to", "follow_me", "social_mode", "patrol",
                                         "come_back", "go_to_object", "power_off", "find"})
 # No "thank you"/"you": those are classic ASR hallucinations on noise.
 SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok", "sure"})

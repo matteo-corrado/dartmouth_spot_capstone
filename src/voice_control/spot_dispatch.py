@@ -70,7 +70,7 @@ _home_waypoint = None
 # and the gripper mouth is latched off for the whole walk / routine.
 LOCOMOTION_INTENTS = frozenset({
     "walk_to", "turn", "walk", "strafe", "go_to", "tour", "patrol",
-    "come_back", "go_to_object", "follow_me",
+    "come_back", "go_to_object", "follow_me", "social_mode",
 })
 SAFETY_INTENTS = frozenset({"stop", "freeze", "estop"})
 SHUTDOWN_INTENTS = frozenset({"power_off", "shutdown", "sit"})  # stop, stow, then act
@@ -114,6 +114,8 @@ def arm_policy_for(intent_name: str, current_pose: str) -> tuple[str, str]:
     """(pose before, pose after) for an intent. Pure."""
     if intent_name in SAFETY_INTENTS or intent_name in SHUTDOWN_INTENTS:
         return ("stowed", "stowed")
+    if intent_name == "social_mode" and _talk_is_walk_pose():
+        return ("talk", "talk")  # the gripper camera watches people the whole time
     if intent_name in LOCOMOTION_INTENTS:
         if current_pose == "talk" and _talk_is_walk_pose():
             return ("talk", "talk")  # same folded pose: no re-pose, mouth stays on
@@ -1105,6 +1107,7 @@ GAZE_MIN_INTERVAL_S = 2.0   # ... and at most this often
 GAZE_BEHIND_DEG = 150.0     # a speaker this far behind is ambiguous: ignore
 GAZE_HARD_MAX_DEG = 60.0    # code cap on tuning gaze_max_deg (arm reach, safety review)
 GAZE_RPC_TIMEOUT_S = 0.5    # < SAFETY_LOCK_TIMEOUT_S: a stop's stow never loses the lock race
+SOCIAL_GAZE_INTERVAL_S = 0.5  # social mode re-aims the gripper at most this often
 SELECT_AIM_TOL_DEG = 4.0    # person selection: re-aim unless already this close
 _selecting = False          # person selection owns the gaze: other gaze requests are no-ops
 
@@ -1126,7 +1129,16 @@ def gaze_sh0_deg(body_deg, max_deg: float):
     return max(-max_deg, min(max_deg, b))
 
 
-def gaze_at_bearing(body_deg: float | None, gen=None, *, selection: bool = False) -> bool:
+def _gaze_nav_ok(track: bool) -> bool:
+    """Gaze is for a standing robot; social-mode tracking is the one exception
+    (its own nav thread, which never gazes while a move settles)."""
+    if track:
+        return _nav_mode == "social" and is_navigating()
+    return not is_navigating()
+
+
+def gaze_at_bearing(body_deg: float | None, gen=None, *, selection: bool = False,
+                    track: bool = False) -> bool:
     """Turn the folded arm (shoulder yaw sh0, slow joint move) toward a
     body-frame bearing. None -> back to centre.
 
@@ -1137,10 +1149,13 @@ def gaze_at_bearing(body_deg: float | None, gen=None, *, selection: bool = False
     no gaze follows a stop's stow. Non-blocking; never brings up a session;
     never raises. While a person selection runs (_selecting) only its own
     aims (selection=True, 4 deg min change) are sent; other requests no-op.
+    track=True is social mode's person tracking: allowed only while the
+    "social" nav thread runs (instead of only when not navigating), 4 deg min
+    change, at most every SOCIAL_GAZE_INTERVAL_S.
     """
     global _gaze_deg, _gaze_t
     sess = _spot_session
-    if sess is None or _closing or _arm_pose != "talk" or is_navigating():
+    if sess is None or _closing or _arm_pose != "talk" or not _gaze_nav_ok(track):
         return False
     if _selecting and not selection:
         return False
@@ -1161,16 +1176,16 @@ def gaze_at_bearing(body_deg: float | None, gen=None, *, selection: bool = False
             return False  # the arm is still folding / re-centring
         last = _gaze_deg
         if last is not None:
-            min_change = SELECT_AIM_TOL_DEG if selection else GAZE_MIN_CHANGE_DEG
+            min_change = SELECT_AIM_TOL_DEG if (selection or track) else GAZE_MIN_CHANGE_DEG
             if abs(target - last) <= min_change and not (target == 0.0 and last != 0.0):
                 return False
-            if now - _gaze_t < GAZE_MIN_INTERVAL_S:
+            if now - _gaze_t < (SOCIAL_GAZE_INTERVAL_S if track else GAZE_MIN_INTERVAL_S):
                 return False
         if not _standing_and_powered(sess):
             return False
         sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
         with _arm_lock:
-            if (_aborted(gen) or _closing or _arm_pose != "talk" or is_navigating()
+            if (_aborted(gen) or _closing or _arm_pose != "talk" or not _gaze_nav_ok(track)
                     or time.monotonic() < _arm_settle_until or (_selecting and not selection)):
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
@@ -1940,6 +1955,30 @@ def _recentre_after_selection(session, gen):
     _hold_gaze()
 
 
+def _social_sense(robot):
+    """Social mode sensing: surround fisheyes + gripper, with depth, YOLO26-pose."""
+    from src.voice_control.vision import social as vision_social
+    from src.voice_control.vision.cameras import capture
+    from src.voice_control.vision.world import detect_frames
+    frames = capture(robot, list(vision_social.SOURCES), with_depth=True)
+    return frames, detect_frames(frames, model=vision_social.MODEL, labels={"person"})
+
+
+def _social_models():
+    """(emotion, gesture) callables warmed at startup; None for any not loaded
+    (never loads here: a TensorRT build must not run under the dispatch lock)."""
+    try:
+        from src.voice_control.vision import social_models
+    except Exception as e:
+        print(f"[Spot] social mode: face/gesture models unavailable ({e})")
+        return None, None
+    emotion, gesture = social_models.loaded("emotion"), social_models.loaded("gesture")
+    if emotion is None or gesture is None:
+        print(f"[Spot] social mode: emotion={'on' if emotion else 'off'} "
+              f"gesture={'on' if gesture else 'off'} (pose + distance still used)")
+    return emotion, gesture
+
+
 def _start_vision_nav(session, gen, speak, token, mode, run, paused_text) -> bool:
     """Run ``run(io, stop_event) -> ActionResult`` as THE nav thread. ``gen`` is
     the safety generation taken at request time (never read at pickup). The
@@ -2542,6 +2581,35 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 session, gen, speak, token, "follow",
                 lambda io, ev: vision_follow(io, target, ev),
                 FOLLOW_TEXTS["paused"])
+
+        elif name == "social_mode":
+            # Friendly Spot comfort loop; the gripper camera stands in for the PTZ
+            token = _reset_nav_outcome()
+            gen = _dispatch_gen
+            print("[Spot] Starting social mode...")
+            if not _vision_ready(speak):
+                return False
+            if not _standing_and_powered(session):
+                _say(speak, NOT_STANDING_LINE)
+                return False
+            if _arm_pose == "stowed":
+                # The gripper camera must be up to watch people (from "walk" the
+                # locomotion tuck already moved it to "talk" via arm_policy_for).
+                if not _arm_send(cmd_client, "talk", timeout_s=5.0, gen=gen):
+                    _say(speak, "I couldn't raise my arm to watch you, so I'll stay put.")
+                    return False
+            if _aborted(gen) or _arm_pose != "talk":
+                return False
+            from src.voice_control.vision import social as vision_social
+            robot = session["robot"]
+            perceiver = vision_social.Perceiver(*_social_models())
+            return _start_vision_nav(
+                session, gen, speak, token, "social",
+                lambda io, ev: vision_social.social(
+                    io, lambda: _social_sense(robot), ev,
+                    aim=lambda b: gaze_at_bearing(b, gen, track=True),
+                    perceiver=perceiver),
+                vision_social.TEXTS["paused"])
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)

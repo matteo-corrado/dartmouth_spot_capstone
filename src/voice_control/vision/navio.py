@@ -99,8 +99,11 @@ class SpotNavIO:
             if sd._aborted(self.gen) or (self.stop_event is not None
                                          and self.stop_event.is_set()):
                 return False
-            cmd_client.robot_command(cmd, end_time_secs=time.time() + end_s,
-                                     timeout=RPC_TIMEOUT_S)
+            if end_s is None:
+                cmd_client.robot_command(cmd, timeout=RPC_TIMEOUT_S)
+            else:
+                cmd_client.robot_command(cmd, end_time_secs=time.time() + end_s,
+                                         timeout=RPC_TIMEOUT_S)
         except Exception as e:
             logger.warning("navio: motion command failed: %s", e)
             sent_ok = False
@@ -169,6 +172,22 @@ class SpotNavIO:
             logger.warning("navio: velocity build failed: %s", e)
             return False
         return self._send(cmd, VEL_END_S)
+
+    def posture(self, body_height: float) -> bool:
+        """Stand in place at ``body_height`` m from nominal (negative = crouch,
+        clamped to [-0.25, 0]). False if aborted or failed."""
+        try:
+            from bosdyn.client.robot_command import RobotCommandBuilder
+            if self.aborted():
+                return False
+            h = max(-0.25, min(0.0, float(body_height)))
+            if not math.isfinite(h):
+                return False
+            cmd = RobotCommandBuilder.synchro_stand_command(body_height=h)
+        except Exception as e:
+            logger.warning("navio: posture build failed: %s", e)
+            return False
+        return self._send(cmd, None)
 
     def halt(self) -> None:
         """Unconditional stop_command. Never raises."""

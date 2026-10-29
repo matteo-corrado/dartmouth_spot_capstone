@@ -2596,6 +2596,11 @@ def _warm_vision_models():
                 print(f"[Vision] {name} ready ({m.provider})")
             except Exception as e:  # noqa: BLE001 - a failed dummy is not a failed load
                 print(f"[Vision] {name} dummy detect failed: {type(e).__name__}: {e}")
+        try:  # social mode's face-emotion + gesture models (optional)
+            from src.voice_control.vision import social_models
+            social_models.warm()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Vision] social models skipped: {type(e).__name__}: {e}")
     finally:
         # Only now: until every load has finished, the runtime's model lock may be
         # held by a TensorRT build (go-to/follow refuse, gaze is not refined).

@@ -17,6 +17,13 @@ from src.voice_control import llm_brain
 from src.voice_control.vision.types import ActionResult, Detection
 from tests.voice_control.test_arm_policy import FakeCmd, FakeState
 
+
+@pytest.fixture(autouse=True)
+def _no_social_warm(monkeypatch):
+    """Warm-up tests must not load the real face/gesture models (TensorRT build)."""
+    from src.voice_control.vision import social_models
+    monkeypatch.setattr(social_models, "warm", lambda: None)
+
 # importlib, not ``from vision import goto``: the package re-exports the functions.
 G = importlib.import_module("src.voice_control.vision.goto")
 FO = importlib.import_module("src.voice_control.vision.follow")
