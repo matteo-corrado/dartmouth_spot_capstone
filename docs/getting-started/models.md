@@ -105,4 +105,4 @@ ollama list
 
 ## ASR Backend
 
-The ASR backend (`src/voice_control/server.py`) requires no model download. It is auto-started by `run_voice_control.py`. A Parakeet-based model download step will be added in Stage 2.
+The ASR backend (`src/spot/stt/server.py`; `src/voice_control/server.py` is a shim that forwards to it) requires no model download. It is auto-started by `run_voice_control.py`. A Parakeet-based model download step will be added in Stage 2.

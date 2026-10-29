@@ -81,7 +81,7 @@ This installs:
 
 ## 7. ASR Backend
 
-The ASR backend runs as a gRPC server (`src/voice_control/server.py`) on port 50055. It is auto-started by `run_voice_control.py` — no manual setup required. A Parakeet-based replacement is planned for Stage 2.
+The ASR backend runs as a gRPC server (`src/spot/stt/server.py`; `src/voice_control/server.py` is a shim that forwards to it) on port 50055. It is auto-started by `run_voice_control.py` — no manual setup required. A Parakeet-based replacement is planned for Stage 2.
 
 ## 8. Ollama (LLM / VLM)
 

@@ -103,7 +103,7 @@ speech at normal conversational distance.
 | Component | File | Purpose |
 |---|---|---|
 | Voice Client | `src/voice_control/client_mic.py` | Main audio loop: VAD, speech detection, ASR dispatch, LLM orchestration |
-| ASR Bridge Server | `src/voice_control/server.py` | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
+| ASR Bridge Server | `src/spot/stt/server.py` (`src/voice_control/server.py` is a shim) | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
 | LLM Brain | `src/spot/brain/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
 | Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision) |
 | Wake Word Detector | `src/spot/wake/sherpa_onnx.py` | sherpa-onnx keyword spotter for "Hey Spot" |

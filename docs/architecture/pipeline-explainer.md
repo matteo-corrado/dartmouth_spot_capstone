@@ -2,7 +2,7 @@
 
 How a spoken sentence becomes a robot action and a spoken reply, stage by stage: which module does each job, what goes in and out, what you can tune, how each stage fails, and how to debug it.
 
-Written for someone who has not seen this code. Line references (`file:line`) are against the poster-demo branch at commit `cd4528d` ("startup status template: say safety switch instead of e-stop"). They drift as code changes; the function names are the stable handle. Paths are relative to the repo root; `src/voice_control/` is shortened to `vc/`. Modules that moved in the 2026-10 restructure are written with their new `src/spot/...` paths (line numbers were taken before the move and may be off); `client_mic.py`, `spot_dispatch.py` and `server.py` are still under `vc/` while they are being split (see [package-map.md](package-map.md)).
+Written for someone who has not seen this code. Line references (`file:line`) are against the poster-demo branch at commit `cd4528d` ("startup status template: say safety switch instead of e-stop"). They drift as code changes; the function names are the stable handle. Paths are relative to the repo root; `src/voice_control/` is shortened to `vc/`. Modules that moved in the 2026-10 restructure are written with their new `src/spot/...` paths (line numbers were taken before the move and may be off); `client_mic.py` and `spot_dispatch.py` are still under `vc/` while they are being split, and `server.py` there is a shim that forwards to `src/spot/stt/server.py` (see [package-map.md](package-map.md)).
 
 Operators: the day-of runbook is [daily-operations.md](../getting-started/daily-operations.md). This page explains *why* things behave as they do.
 

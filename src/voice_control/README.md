@@ -2,7 +2,7 @@
 
 This directory contains the voice I/O system for controlling Spot via natural language commands.
 
-> **Being restructured.** Most modules have moved to `src/spot/` (see `docs/architecture/package-map.md`). Files here that are not `client_mic.py`, `server.py` or `spot_dispatch.py` are thin alias shims, and `client_mic.py`/`spot_dispatch.py` are being split.
+> **Being restructured.** Most modules have moved to `src/spot/` (see `docs/architecture/package-map.md`). `server.py` and most other files here are thin shims that forward to the new location. `client_mic.py` and `spot_dispatch.py` are real code and are being split.
 
 ## Architecture
 

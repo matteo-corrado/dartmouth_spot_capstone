@@ -2,13 +2,13 @@
 
 Where everything lives after the 2026-10 restructure. Code is under `src/spot/`. Each folder owns one job and exposes one small interface, so you can change or swap one part without reading the rest.
 
-Status note: `client_mic.py`, `spot_dispatch.py` and `server.py` in `src/voice_control/` are still the launch paths while they are being split. Other old paths in `src/voice_control/` are thin alias shims that forward to the new location (they are removed later). Parts marked TODO below depend on work that has not landed yet.
+Status note: `client_mic.py` and `spot_dispatch.py` in `src/voice_control/` are still the launch paths while they are being split. `server.py` there is already a shim that forwards to `src/spot/stt/server.py`. Other old paths in `src/voice_control/` are thin alias shims that forward to the new location (they are removed later). Parts marked TODO below depend on work that has not landed yet.
 
 ## Packages
 
 | Package | Owns | Interface | Swap or add |
 |---|---|---|---|
-| `core/` | The event bus, the feature registry, tuning values, latency, startup status, voice state | `EventBus.subscribe/publish`, `Registry`, `Tuning` | Add an event name to `EVENTS` in `core/events.py`. Tuning keys live in `tuning.yaml` |
+| `core/` | The event bus, the feature registry, tuning values, latency, startup status, voice state | `EventBus.subscribe/publish`, `Registry`, `Tuning` | Add an event name to `EVENTS` in `core/events.py`. Tuning keys live in `config/tuning.yaml` |
 | `audio/` | Playback, chimes, echo/frontend processing, barge-in, response gate, mic capture | `AudioPlayer`, `chimes`; `AudioCapture` <!-- TODO(T10) --> | Replace a stage by editing that one file. New sound: add to `chimes.py` |
 | `mic/` | The XVF3800 mic array: LED ring, ring animation, state feedback, Spot's LEDs | `xvf3800`, `ring_animator`, `state_feedback`, `spot_leds`; `Ring` <!-- TODO(T10) --> | New mic hardware: write a new `xvf3800`-style module with the same calls |
 | `wake/` | Wake word ("Hey Spot") | Detector with `process_frame`; `WakeDetector` protocol and `make_wake()` <!-- TODO(T15) --> | New engine: add a file next to `sherpa_onnx.py` and `livekit.py`, pick it by `SPOT_WAKE_BACKEND` |
