@@ -82,10 +82,19 @@ def main(argv=None) -> int:
     else:
         sys.path.insert(0, str(REPO))
         from src.voice_control.vision.runtime import load_model
+        off_trt = []
         for m in MODELS:
             t = time.time()
             model = load_model(m, model_dir=out)
             print(f"warm {m}: provider={model.provider} ({time.time() - t:.1f}s)")
+            if model.provider != "trt":
+                off_trt.append(f"{m}={model.provider}")
+        if off_trt:
+            print(f"total {time.time() - t0:.1f}s")
+            print("WARNING: TensorRT warm-build fell back for " + ", ".join(off_trt)
+                  + "; vision will run slowly (follow needs a GPU provider). "
+                    "Check TensorRT / trt_cache and re-run.", file=sys.stderr)
+            return 1
     print(f"total {time.time() - t0:.1f}s")
     return 0
 
