@@ -311,6 +311,9 @@ def _robot_owners():
     """The robot owner singletons (SAFETY_GEN, CONNECTION, ARM, NAV), created
     at import of src.spot.robot (Task 9). Importing connects nothing."""
     import src.spot.robot as _r
+    # Preload: the first stop (safety thread / spotctl) must not pay the
+    # dispatcher import before send_stop (base imported it eagerly here too).
+    import src.spot.robot.dispatcher  # noqa: F401
     return _r
 
 

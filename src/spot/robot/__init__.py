@@ -29,4 +29,39 @@ NAV = NavRunner()
 # lookup, no import on a stop path -- so a test patch on the module is seen.
 # The module is imported whether or not "mouth" is in ENABLED: with the
 # feature disabled these calls still run (no-ops while nothing is owed).
-from src.spot.features.mouth import handlers as mouth_handlers  # noqa: E402
+# Guarded: if the features package or the mouth modules raise at import,
+# src.spot.robot must still import (estop_run, spotctl, the stop path), so the
+# failure is printed loudly and a no-op stand-in is bound instead. In robot
+# mode main's feature check (C6) still refuses to start on such a failure.
+
+
+class _NoMouth:
+    """Stand-in when the mouth handlers failed to import: every core call
+    is a no-op that never raises."""
+    AUTO_ARM_STAND_WAIT_S = 0.0
+
+    def __init__(self, error):
+        self.error = error
+
+    def _cancel_auto_arm(self):
+        return None
+
+    def _auto_arm_after_stand(self):
+        return None
+
+    def start_auto_arm(self, gen, wait_s=0.0):
+        return None
+
+    def _handle_disable_mouth(self, params, session=None):
+        print(f"[Spot] disable_mouth skipped: mouth handlers unavailable ({self.error})")
+        return False
+
+
+try:
+    from src.spot.features.mouth import handlers as mouth_handlers  # noqa: E402
+except Exception as _e:  # noqa: BLE001
+    import traceback as _tb
+    print(f"[Spot] ⚠️  MOUTH HANDLERS FAILED TO IMPORT ({type(_e).__name__}: {_e}); "
+          "auto-arm / disable_mouth are no-ops", flush=True)
+    _tb.print_exc()
+    mouth_handlers = _NoMouth(f"{type(_e).__name__}: {_e}")

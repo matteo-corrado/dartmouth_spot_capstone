@@ -483,3 +483,32 @@ def test_raise_before_run_try_closes_control_server_and_stream(monkeypatch):
         _app.main(ARGS)
     assert closed == ["ctl.stop", "stream.stop", "stream.close"]
     assert calls == [1]
+
+
+def test_startup_preloads_dispatcher_before_conversation():
+    """Fix round 1: the robot-owners step (3) imports the dispatcher, so the
+    first stop does not cold-import it before send_stop. Fresh interpreter,
+    dry-run, nothing opened."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    code = ("import sys, src.spot.app.main as m; "
+            "before = 'src.spot.robot.dispatcher' in sys.modules; "
+            "m._robot_owners(); "
+            "print('PRELOAD', before, 'src.spot.robot.dispatcher' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True,
+                         text=True, timeout=120, env=dict(os.environ, SPOT_DRY_RUN="1"))
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "PRELOAD False True" in out.stdout
+
+
+def test_robot_owners_step_runs_before_conversation(monkeypatch):
+    import sys
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    loaded = []
+    monkeypatch.setattr(_ul, "UtteranceLog",
+                        lambda *a, **k: loaded.append("src.spot.robot.dispatcher" in sys.modules))
+    _app.main(ARGS)
+    assert loaded == [True]
