@@ -85,7 +85,7 @@ Ledger: `.superpowers/sdd/2026-10-29-restructure/progress.md` (gitignored) in th
 | `perception/*`, `world_objects.py` | `src/spot/perception/{…,world_objects}.py` |
 | `visual_nav.py` | `src/spot/features/visual_nav/navigator.py` |
 | `emotes.py`, `gaze.py` | `src/spot/features/dance/emotes.py`, `src/spot/features/gaze/math.py` |
-| `tuning.py`, `latency.py`, `startup_status.py`, `voice_state.py`, `src/config.py` | `src/spot/core/{tuning,latency,startup_status,voice_state,config}.py` |
+| `tuning.py`, `latency.py`, `startup_status.py`, `voice_state.py` | `src/spot/core/{tuning,latency,startup_status,voice_state}.py` (`src/config.py` stays put) |
 | `control_server.py` | `src/spot/operator/control_server.py` |
 
 **Shim template (Wave 2, one-to-one moves only):**
@@ -110,6 +110,7 @@ Exception: `server.py` and `client_mic.py` are run as scripts. Their shims don't
 **Files:**
 - Create: `src/spot/__init__.py` and `__init__.py` in `app, core, audio, mic, wake, safety, stt, tts, conversation, brain, robot, nav, perception, operator, features`
 - Create: `src/spot/core/events.py`, `src/spot/core/registry.py`, `src/spot/features/enabled.py` (empty list)
+- Note: `tts`, `wake`, `brain` and `perception` get placeholder `__init__.py` files here. Wave 2 lanes overwrite them with the moved real `__init__.py` content (`tts` is 179 lines). That's expected, not clobbering.
 - Test: `tests/spot/core/test_events.py`, `tests/spot/core/test_registry.py`
 
 **Interfaces — Produces:**
@@ -175,6 +176,17 @@ Exception: `server.py` and `client_mic.py` are run as scripts. Their shims don't
   - `{"kind": "say", "text": ...}`.
 - Clip source: env `SPOT_DEMO_AUDIO`, default `/home/spotdog/spot/dartmouth_spot_capstone/tests/audio/demo`, plus `tests/audio/*_lab.wav`. If the clips are missing, `pytest.skip("demo recordings not present")`.
 
+**Real-time constraint:**
+- The endpointer, `ChimeMask`, `RingThrottle`, filler and lock timeout read `time.monotonic()`.
+- So the harness feeds audio **at real time**. Speeding it up changes decisions, and faking the clock needs a src seam.
+- Budget several minutes per run. Mark the test `@pytest.mark.slow`, registered in `pyproject.toml` markers. Gates run it with `pytest tests/integration -m slow`.
+
+**Fallback:** if `main()` cannot be driven without a src change:
+- the harness drives `audio_callback` + `process_utterance` + `_finish_utterance` through the module directly, with the same fakes;
+- the controller records that choice in the ledger.
+
+**Wave 1 gate:** T2 has run twice on base with identical output before any Wave 2 lane is dispatched.
+
 - [ ] **Step 1:** Write `test_conversation_matches_golden`.
   - It runs `run_pipeline` on the fixed clip list stored in `golden/conversation.json["clips"]`.
   - Then `assert records == golden["records"]`, comparing floats rounded to 2 dp.
@@ -226,9 +238,10 @@ Every task is the same recipe, applied to its rows of the old → new map:
 - **T8 brain:**
   - The `intent…knowledge` rows and the conversation rows (`conversation_log`, `session_state`, `speaker_lock`, `speaker_embed`).
   - `knowledge/` and `grammar/` are data. Fix every path constant that reads them, then add a test asserting each path constant exists on disk.
+  - Also grep `scripts/*.sh`, `*.service` and docker config for `knowledge/` and `grammar/` paths, and update them.
 - **T8b robot leaf, nav, perception, core, operator** (safety-reviewer):
   - Rows `src/session.py`, `src/estop.py`, nav, perception, `world_objects`, `visual_nav`, `emotes`, `gaze`, core, `control_server`.
-  - `src/config.py` → `src/spot/core/config.py`. Do not print or log any value it reads.
+  - `src/config.py` is **not moved**. It stays where it is: 8 lines, credentials-adjacent, and the sensitive-file hook may block its shim. New code imports `from src.config import …` as today.
 
 **Wave 2 gate:**
 - A reviewer reads the merged wave diff. Every old path is a 3-line alias (or the T6 script shim), and no logic line changed: `git diff -M --stat` shows renames with ≥95% similarity.
@@ -261,16 +274,23 @@ Every task is the same recipe, applied to its rows of the old → new map:
 - `dispatcher` module:
   - `dispatch_intent(intent, brain=None, speak=None) -> bool`, `dispatch_safety(intent, brain=None, speak=None) -> bool`, `resume_talk_after_halt(gen)`
   - core handlers for `stop, freeze, estop, stand, sit, power_off, shutdown, stow, selfright, status, battery_status`
-  - `LEGACY_FEATURE_DISPATCH: Callable` hook that calls `spot_dispatch._dispatch_core` for every other intent, until Wave 4 empties it
+  - `registry_dispatch(name, params, ctx) -> bool | None`: returns `None` when the action is not registered, otherwise the handler's result.
+  - `dispatch_intent` tries `registry_dispatch` first. Only on `None` does it fall through to `LEGACY_FEATURE_DISPATCH`, which calls `spot_dispatch._dispatch_core`.
+  - A registered handler that returns `False` is never re-dispatched to legacy.
+  - Task 16 deletes the legacy hook once Wave 4 has emptied it.
+  - `REGISTRY` singleton lives in `src/spot/features/__init__.py`. `Ctx` is a frozen dataclass in `src/spot/features/ctx.py`: `connection`, `arm`, `safety`, `nav`, `speak`, `brain`, `bus`, `tuning`.
   - the constant sets keep their exact current values: `LOCOMOTION_INTENTS`, `SAFETY_INTENTS`, `SHUTDOWN_INTENTS`, `ABORTING_INTENTS`, `_UNLOCKED_INTENTS`, `INFO_INTENTS`. Task 16 replaces them.
 - Module-level singletons, created once in `src/spot/robot/__init__.py`: `SAFETY_GEN`, `CONNECTION`, `ARM`, `NAV`. They are the owner objects; `main` passes them on. Tests patch attributes on these objects.
+  - **Deliberate exception to spec §5** ("no singletons reached by import"). The spec allows it where a test proves identical behaviour needs it, and here about 260 monkeypatch sites do.
+  - A singleton keeps each port to a mechanical patch-target change. Threading every owner through constructors would rewrite those tests' setup.
+  - Retiring the singletons is a post-restructure upgrade.
 
 - [ ] **Step 1:** Port the listed tests' patch targets to the owner objects (e.g. `monkeypatch.setattr(d, "_arm_pose", "talk")` → `monkeypatch.setattr(ARM, "_pose", "talk")`). Assertions stay byte-identical. Run them. Expected: FAIL (ImportError).
 - [ ] **Step 2:** Move the code in this order: `safety/gen.py` → `connection` → `state` → `arm` → `motion` → `nav/runner` → `dispatcher`. Run `pytest -q` after each move; it must stay green except for not-yet-moved ported tests.
   - `spot_dispatch.py` re-exports moved names (`from src.spot.robot.arm import arm_policy_for` style) so `client_mic.py` and the unported tests keep working.
 - [ ] **Step 3:** Write `tests/spot/robot/test_stop_order.py::test_stop_path_order_unchanged`.
-  - With a fake `cmd_client` and a recording of calls, `dispatch_safety({"intent": "stop"})` must produce the same call sequence as recorded on the base: stop RPC → mouth disable → stow decision → safety gen bump.
-  - Record the expected list from the base commit's `spot_dispatch` in the test (run the old code once and paste the sequence).
+  - With a fake `cmd_client` and a recording of calls, `dispatch_safety` must produce, for each of `stop`, `freeze` and `estop`, the same call sequence as the base commit.
+  - Record that sequence by running the base's `spot_dispatch` once, and paste it into the test as the expected list. **The recording is the truth.** Never change code to match a sequence written anywhere else.
 - [ ] **Step 4:** Verify.
   - `pytest -q`: BASE_COUNT + new tests pass.
   - `git diff <base> -- tests/voice_control | grep '^[-+] *assert'`: Expected: empty (no assertion line changed).
@@ -288,6 +308,8 @@ Every task is the same recipe, applied to its rows of the old → new map:
   - `src/spot/conversation/{gate.py, utterance_log.py, filler.py, loop.py}`
   - `src/spot/app/main.py`
 - Modify: `src/voice_control/client_mic.py` → a script shim plus re-exports of every moved name used by tests or scripts.
+  - Keep its project-root `sys.path` bootstrap, so `python src/voice_control/client_mic.py` can import `src.spot`.
+  - Keep `src/voice_control` on `sys.path` as well, for the bare `asr_pb2` alias.
 - Tests: port every `tests/voice_control/test_client_mic_*.py`, plus `test_drain_queue`, `test_filler`, `test_short_path`, `test_voiceprint_gate`, `test_state_feedback`, `test_spot_leds`, `test_fr_speaking_cue` and the client_mic parts of `test_auto_arm`, `test_fr_halt_reply`, `test_gaze_dispatch` and `wake/test_safety_kws`. Patch targets only.
 
 **Interfaces:**
@@ -326,22 +348,17 @@ Every task is the same recipe, applied to its rows of the old → new map:
 
 ### Tasks 11–14: Feature folders (Wave 4, parallel)
 
-Each feature `X` gets `src/spot/features/X/__init__.py`, which exports `FEATURE: Feature` (T1 types), plus `handlers.py` holding the code moved from `spot_dispatch.py`. Each lane:
-- deletes its own handler functions and its own `if name == ...` branches from `spot_dispatch._dispatch_core`, replacing each branch with `return registry_dispatch(name, params, ctx)`;
-- touches no other branch.
-
-`Ctx` is a frozen dataclass in `src/spot/features/ctx.py`, created by T11 (the other lanes import it; the controller merges T11 first):
-- `connection: Connection`, `arm: Arm`, `safety: SafetyGen`, `nav: NavRunner`
-- `speak: Callable[[str], None] | None`, `brain: object | None`
-- `bus: EventBus`, `tuning: Tuning`
-
-`registry_dispatch(name, params, ctx) -> bool` is in `src/spot/robot/dispatcher.py`. T9 doesn't define it, so T11 adds it. It looks up `REGISTRY.action(name)` and returns `False` if the action is missing.
+Each feature `X` gets `src/spot/features/X/__init__.py`, which exports `FEATURE: Feature` (T1 types), plus `handlers.py` holding the code moved from `spot_dispatch.py`.
+- A lane **only deletes** its own handler functions and its own `if name == ...` branches from `spot_dispatch._dispatch_core`. It adds nothing there.
+- This works because T9's `dispatch_intent` already tries the registry first, so a registered feature never reaches the legacy chain.
+- Pure deletions in separate regions merge cleanly.
+- `Ctx`, `REGISTRY` and `registry_dispatch` come from T9.
 
 **Declarations:** each `ActionSpec` copies its flags from the current hand-written sets (spec 6.3 list) and its `grammar_params` / `prompt_line` text verbatim from `spot_action.gbnf` / `llm_brain.py`. `IntentRule`s copy the regex rules from `intent.py`, each with a `priority` equal to the rule's current index × 10.
 
 | Task | Features (intents) | Extra |
 |---|---|---|
-| T11 | `dance` (`emote`), `gaze` (no intent; `start` runs the gaze worker; subscribes to `speaker_locked`) | creates `ctx.py`, `registry_dispatch`, `REGISTRY` singleton in `src/spot/features/__init__.py`; clearance scan stays in `perception`, called by dance |
+| T11 | `dance` (`emote`), `gaze` (no intent; `start` runs the gaze worker; subscribes to `speaker_locked`) | clearance scan stays in `perception`, called by dance |
 | T12 | `mouth` (`enable_mouth`, `disable_mouth`; `start` = auto-arm after stand), `settings` (`set_persona`, `add_persona`, `set_volume`, `set_backend`) | per spec 7.1b: close-mouth-before-stow and the talk pose stay in `Arm` |
 | T13 | `walk` (`walk`, `turn`, `strafe`, `body_height`, `set_speed`), `follow` (`follow_me`) | |
 | T14 | `navigation` (`walk_to`, `go_to`, `tour`, `patrol`, `come_back`, `load_map`, `save_location`, `list_maps`, `list_locations`), `visual_nav` (`go_to_object`, `check_obstacles`, `describe`) | |
@@ -351,7 +368,7 @@ Steps per task:
 - [ ] **Step 2:** Port that feature's handler tests' patch targets (assertions unchanged). Expected: FAIL.
 - [ ] **Step 3:** Move the handlers and write `FEATURE`. Add the name to `enabled.py`. One line per feature, in the order `dance, gaze, mouth, settings, walk, follow, navigation, visual_nav`; the controller resolves the trivial list-merge.
 - [ ] **Step 4 (T13 only):** Write `tests/spot/features/test_disabled.py::test_disabled_feature_intent_is_refused`.
-  - Load the registry without `walk`. `dispatch_intent({"intent": "walk", "params": {}})` returns False and raises nothing.
+  - Load the registry without `walk`, after T13 has removed walk's legacy branches. `dispatch_intent({"intent": "walk", "params": {}})` returns False and raises nothing.
   - On the base, an unknown intent does the same; assert parity by calling `dispatch_intent({"intent": "no_such_intent"})` too.
 - [ ] **Step 5:** `pytest -q` and `pytest tests/integration`. Both PASS.
 - [ ] **Step 6:** Commit `spot: <X> feature folder(s)`.
@@ -422,7 +439,10 @@ Steps per task:
   - `test_intent_table_identical`: same rules, same order.
   - `test_disabling_dance_removes_emote_everywhere`: grammar, prompt, sets and intent rules.
 - [ ] **Step 2:** Run. Expected: the identity tests FAIL until generation exists.
-- [ ] **Step 3:** Implement generation, then switch every consumer from the hand-written constant to `REGISTRY.names(flag)` / generated text. Delete the hand-written constants. Delete `spot_action.gbnf` from `src` (the golden copy stays in tests).
+- [ ] **Step 3:** Before deleting anything, check how the grammar reaches llama-server.
+  - Run: `grep -rn "spot_action.gbnf\|gbnf" src scripts config *.service scripts/*.service scripts/*.sh 2>/dev/null`
+  - If any non-Python consumer reads the file by path (service unit, shell script, docker config), keep a generated `spot_action.gbnf` written at startup to the same path, instead of deleting it.
+- [ ] **Step 3b:** Implement generation, then switch every consumer from the hand-written constant to `REGISTRY.names(flag)` / generated text. Delete the hand-written constants, `LEGACY_FEATURE_DISPATCH`, and the now-empty `spot_dispatch._dispatch_core` feature chain. Delete `spot_action.gbnf` from `src` only if Step 3 found no path consumer (the golden copy stays in tests).
 - [ ] **Step 4:** `pytest -q` and `pytest tests/integration`. PASS.
 - [ ] **Step 5:** Commit `spot: grammar, intent table, intent sets and prompt generated from features`.
 
