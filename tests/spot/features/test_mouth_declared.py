@@ -47,7 +47,7 @@ def test_core_callbacks_resolve_to_feature():
     assert sd.AUTO_ARM_STAND_WAIT_S == mouth_h.AUTO_ARM_STAND_WAIT_S == 8.0
 
 
-def test_enable_mouth_ensure_failure_touches_no_state(monkeypatch):
+def test_disable_mouth_ensure_failure_touches_no_state(monkeypatch):
     """Legacy order: the session comes up before the handler runs, so a
     failed bring-up returns False with the auto-arm opt-in untouched."""
     from src.spot.robot import ARM, CONNECTION
