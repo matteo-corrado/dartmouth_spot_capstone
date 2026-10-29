@@ -58,13 +58,49 @@ def test_describe_front_survives_missing_model():
 
 
 def test_also_line_people_first_max_three():
-    dets = [_det("chair", .9, 90), _det("backpack", .8, 170), _det("person", .4, 0),
-            _det("cup", .7, -90)]
+    dets = [_det("chair", .9, 90), _det("backpack", .8, 170), _det("person", .4, 135),
+            _det("cup", .3, -90)]
     line = D.also_line(dets)
-    assert line.startswith("I can also spot a person in front")
     assert "cup" not in line
-    assert line == ("I can also spot a person in front, a chair on my left "
+    assert line == ("I can also spot a person behind-left, a chair on my left "
                     "and a backpack behind me.")
+
+
+def test_also_line_drops_front_sectors():
+    dets = [_det("person", .9, 0), _det("cat", .8, 40), _det("dog", .8, -40),
+            _det("chair", .5, 90), _det("bed", .4, 180)]
+    line = D.also_line(dets)
+    assert line == "I can also spot a chair on my left and a bed behind me."
+    assert D.also_line([_det("person", .9, 0)]) == D.OFFER_LINE
+
+
+def test_lower_first():
+    assert D._lower_first("A hallway.") == "a hallway."
+    assert D._lower_first("I'm in a hall.") == "I'm in a hall."
+    assert D._lower_first("I see a door.") == "I see a door."
+
+
+def test_describe_front_vlm_none_is_honest():
+    with mock.patch.object(D, "capture", _capture()), \
+         mock.patch.object(D, "stitch_front", lambda a, b: np.zeros((8, 8), np.uint8)), \
+         mock.patch.object(D, "detect_frames", lambda f, **k: []), \
+         mock.patch.object(D, "ask_vlm", return_value=None):
+        res = D.describe(None)
+    assert not res.ok and res.text == D.UNCLEAR_LINE
+
+
+def test_describe_front_missing_camera_and_no_cameras():
+    def cap_one(robot, sources, with_depth=False):
+        return {s: _frame(s) for s in sources if s == D.FRONT_SOURCES[0]}
+    with mock.patch.object(D, "capture", cap_one), \
+         mock.patch.object(D, "detect_frames", lambda f, **k: []), \
+         mock.patch.object(D, "ask_vlm", return_value="A door.") as vlm:
+        res = D.describe(None)
+    assert res.ok and len(vlm.call_args[0][1]) == 1
+    with mock.patch.object(D, "capture", lambda r, s, with_depth=False: {}), \
+         mock.patch.object(D, "ask_vlm") as vlm:
+        res = D.describe(None)
+    assert not res.ok and res.text == D.NOTHING_LINE and vlm.call_count == 0
 
 
 def test_also_line_empty_offer():
@@ -79,7 +115,7 @@ def test_describe_side_one_call():
 def test_describe_around_four_calls():
     res, vlm = _run(lambda: D.describe(None, "around"))
     assert vlm.call_count == 4
-    assert res.text.startswith("In front, ") and "On my left, " in res.text
+    assert res.text.startswith("In front, a hallway.") and "On my left, " in res.text
 
 
 def test_templates_have_no_stop_words():

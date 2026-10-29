@@ -45,3 +45,10 @@ def test_find_vlm_none_is_no():
 def test_find_vlm_yes_is_uncertain():
     res, _ = _find("zorblax", [], vlm_text="Yes, I do.")
     assert res.text == "I think I see a zorblax in front of me, but I'm not certain."
+
+
+def test_find_strips_article_from_phrase():
+    for phrase, expect in (("a zorblax", "zorblax"), ("the keys", "keys")):
+        res, vlm = _find(phrase, [], vlm_text="Yes.")
+        assert res.text == f"I think I see a {expect} in front of me, but I'm not certain."
+        assert f"do you see a {expect}?" in vlm.call_args[0][0]

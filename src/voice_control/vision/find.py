@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from .cameras import BODY_SOURCES, HAND_SOURCE, capture, distance_words, sector
-from .describe import FRONT_SOURCES, front_images, _article
+from .describe import FRONT_SOURCES, front_images, article
 from .types import ActionResult
 from .vlm import ask_vlm
 from .vocab import resolve_label
@@ -20,17 +20,28 @@ MAYBE_LINE = "I think I see {art} {phrase} in front of me, but I'm not certain."
 FIND_PROMPT = "Answer yes or no first: do you see a {phrase}?"
 
 
+_LEAD_WORDS = {"a", "an", "the", "my", "some"}
+
+
+def _clean(phrase: str) -> str:
+    words = phrase.strip().split()
+    while words and words[0].lower() in _LEAD_WORDS:
+        words.pop(0)
+    return " ".join(words)
+
+
 def _vlm_check(robot, phrase: str) -> ActionResult:
     frames = capture(robot, FRONT_SOURCES + [HAND_SOURCE])
     images = front_images(frames)
     answer = ask_vlm(FIND_PROMPT.format(phrase=phrase), images, max_tokens=40) if images else None
     if answer and answer.strip().lower().lstrip("\"' ").startswith("yes"):
-        return ActionResult(MAYBE_LINE.format(art=_article(phrase), phrase=phrase), True,
+        return ActionResult(MAYBE_LINE.format(art=article(phrase), phrase=phrase), True,
                             {"detections": [], "uncertain": True})
     return ActionResult(NO_LINE, False, {"detections": []})
 
 
 def find(robot, phrase: str) -> ActionResult:
+    phrase = _clean(phrase) or phrase
     hit = resolve_label(phrase)
     if hit is not None:
         kind, name = hit
@@ -50,7 +61,7 @@ def find(robot, phrase: str) -> ActionResult:
                 dist = NEAR_DIST
             else:
                 dist = FAR_DIST.format(words=distance_words(best.distance_m))
-            text = YES_LINE.format(art=_article(name), label=name,
+            text = YES_LINE.format(art=article(name), label=name,
                                    where=sector(best.bearing_deg), dist=dist)
             return ActionResult(text, True, {"detections": dets})
     return _vlm_check(robot, phrase)

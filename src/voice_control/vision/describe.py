@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from .cameras import BODY_SOURCES, HAND_SOURCE, capture, sector
+from .cameras import HAND_SOURCE, capture, sector
 from .stitch import stitch_front
 from .types import ActionResult, CameraFrame, Detection
 from .vlm import ask_vlm, encode_jpeg
@@ -35,6 +35,7 @@ ALSO_LINE = "I can also spot {items}."
 DESCRIBE_PROMPT = "What do you see in front of you? Describe it in two or three sentences."
 HINT_PROMPT = " Things I can pick out: {labels}."
 
+FRONT_SECTORS = ("in front", "front-left", "front-right")  # covered by the stitched view
 PITCH_MIN_DEG = -60.0
 YAW_MAX_DEG = 60.0
 
@@ -51,7 +52,7 @@ def gripper_faces_forward(frame: CameraFrame) -> bool:
     return abs(yaw) <= YAW_MAX_DEG and pitch > PITCH_MIN_DEG
 
 
-def _article(word: str) -> str:
+def article(word: str) -> str:
     return "an" if word[:1].lower() in "aeiou" else "a"
 
 
@@ -60,10 +61,11 @@ def also_line(dets: list[Detection], max_items: int = 3) -> str:
     best: dict[str, Detection] = {}
     for d in sorted(dets, key=lambda d: d.conf, reverse=True):
         best.setdefault(d.label, d)
+    best = {k: d for k, d in best.items() if sector(d.bearing_deg) not in FRONT_SECTORS}
     ranked = sorted(best.values(), key=lambda d: (d.label != "person", -d.conf))[:max_items]
     if not ranked:
         return OFFER_LINE
-    items = [f"{_article(d.label)} {d.label} {sector(d.bearing_deg)}" for d in ranked]
+    items = [f"{article(d.label)} {d.label} {sector(d.bearing_deg)}" for d in ranked]
     joined = items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
     return ALSO_LINE.format(items=joined)
 
@@ -131,8 +133,14 @@ def _describe_side(robot, side: str, question: str) -> str | None:
     return ask_vlm(question or DESCRIBE_PROMPT, [encode_jpeg(frame.image)])
 
 
+_KEEP_CAPS = ("I", "I'm", "I'll", "I've", "I'd")
+
+
 def _lower_first(s: str) -> str:
-    return s[:1].lower() + s[1:] if s[:2].isalpha() and not s[:2].isupper() and s[:2] != "I " else s
+    first = s.split(" ", 1)[0].rstrip(",.;:!?")
+    if not s or first in _KEEP_CAPS:
+        return s
+    return s[0].lower() + s[1:]
 
 
 def describe(robot, side: str = "front", question: str = "") -> ActionResult:
