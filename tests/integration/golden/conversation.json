@@ -57,6 +57,14 @@
    "clip": "lab/adv_hey_dog_lab.wav"
   },
   {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "lab/adv_hey_stop_lab.wav"
+  },
+  {
    "kind": "state",
    "to": "WAKE_WORD",
    "clip": "lab/adv_hey_stop_lab.wav"
@@ -1344,9 +1352,25 @@
    "clip": "safety/safety_stop_far_quiet.wav"
   },
   {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_stop_normal.wav"
+  },
+  {
    "kind": "state",
    "to": "WAKE_WORD",
    "clip": "safety/safety_stop_normal.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_stop_quiet.wav"
   },
   {
    "kind": "state",
@@ -1354,30 +1378,22 @@
    "clip": "safety/safety_stop_quiet.wav"
   },
   {
-   "kind": "dispatch",
-   "intent": "stop",
-   "params": {},
-   "via": "safety_kws",
-   "safety": true,
-   "clip": "safety/safety_stop_quiet2.wav"
-  },
-  {
    "kind": "state",
    "to": "WAKE_WORD",
    "clip": "safety/safety_stop_quiet2.wav"
   },
   {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_quiet3.wav"
+  },
+  {
    "kind": "dispatch",
    "intent": "stop",
    "params": {},
    "via": "safety_kws",
    "safety": true,
-   "clip": "safety/safety_stop_quiet3.wav"
-  },
-  {
-   "kind": "state",
-   "to": "WAKE_WORD",
-   "clip": "safety/safety_stop_quiet3.wav"
+   "clip": "safety/safety_stop_sentence.wav"
   },
   {
    "kind": "state",
