@@ -14,7 +14,7 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "tuning.yaml"
 class Tuning:
     mic_channel: int = 1
     min_speech_dbfs: float = -50.0
-    min_snr_db: float = 2.0
+    min_snr_db: float = 6.0  # p90-over-floor; replay 2026-10-28: ch1 commands 6.9-13.2, noise 3.7-5.8
     onset_frames: int = 3
     end_silence_s: float = 1.2
     end_silence_s_short: float = 1.0

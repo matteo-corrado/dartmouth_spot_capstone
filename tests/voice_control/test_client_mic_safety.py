@@ -95,6 +95,9 @@ def test_on_safety_kw_hushes_aborts_and_dispatches(monkeypatch):
     sent, resets = [], []
 
     class P:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             resets.append(1)
 
@@ -118,6 +121,9 @@ def test_halt_dispatched_before_slow_hush(monkeypatch):
     release = threading.Event()
 
     class SlowPlayer:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             order.append("hush-start")
             release.wait(2)
@@ -141,6 +147,9 @@ def test_hush_starts_without_waiting_for_slow_dispatch(monkeypatch):
     seen_during_dispatch = []
 
     class P:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             hushed.set()
 
@@ -229,7 +238,7 @@ def test_safety_hit_during_utterance_blocks_motion(monkeypatch):
     sent = []
     monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "walk forward")
     monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
     monkeypatch.setattr(cm, "execute_on_spot",
                         lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
     monkeypatch.setattr(cm, "get_recorder", lambda: None)

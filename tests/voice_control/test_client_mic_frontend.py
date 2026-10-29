@@ -109,3 +109,18 @@ def test_dead_mic_degrades(monkeypatch):
     assert cm._mic_speech_degs(0, 1) == []
     cm._check_mic_alive()
     assert cm._mic_dead_logged is True
+
+
+def test_conversation_clock_resets_only_for_turns_that_reached_llm():
+    from src.voice_control.speaker_lock import SpeakerLock
+    L = SpeakerLock(35, 20, 0.3); L.lock([10], 0)
+    # loud noise passed the gate but never reached intent/LLM: no refresh
+    assert cm.refresh_conversation(L, 0.0, 15.0, reached_llm=False) == 0.0
+    assert L.expired(20.5) is True
+    # a processed turn restarts both clocks
+    assert cm.refresh_conversation(L, 0.0, 15.0, reached_llm=True) == 15.0
+    assert L.expired(20.5) is False
+    # unlocked fallback uses the returned listening_since
+    U = SpeakerLock(35, 20, 0.3)
+    assert cm.conversation_expired(U, cm.refresh_conversation(U, 0.0, 15.0, False), 21.0, 20) is True
+    assert cm.conversation_expired(U, cm.refresh_conversation(U, 0.0, 15.0, True), 21.0, 20) is False

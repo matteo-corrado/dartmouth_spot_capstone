@@ -154,10 +154,16 @@ FILLER_WORDS = frozenset({"uh", "um", "er", "ah", "hmm", "like", "so", "okay"})
 _WORD_RE = re.compile(r"[a-z0-9']+")
 
 
-def is_filler_only(text: str) -> bool:
+# Answers, not filler, once Spot is talking with someone ("Want to see a dance?" "Okay.")
+_CONVERSATION_ACKS = frozenset({"okay", "ok"})
+
+
+def is_filler_only(text: str, mid_conversation: bool = False) -> bool:
     """True only if no word remains after removing filler words (one-word
-    commands like "sit" or "hello" still go through)."""
-    words = [w for w in _WORD_RE.findall((text or "").lower()) if w not in FILLER_WORDS]
+    commands like "sit" or "hello" still go through). mid_conversation=True
+    keeps "okay" as a real answer."""
+    filler = FILLER_WORDS - _CONVERSATION_ACKS if mid_conversation else FILLER_WORDS
+    words = [w for w in _WORD_RE.findall((text or "").lower()) if w not in filler]
     return len(words) == 0
 
 

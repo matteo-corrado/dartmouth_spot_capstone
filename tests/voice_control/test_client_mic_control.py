@@ -71,6 +71,9 @@ def test_hush_resets_player_and_aborts_chain(monkeypatch):
     calls = []
 
     class P:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             calls.append("reset")
 

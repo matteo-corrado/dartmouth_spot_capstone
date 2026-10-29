@@ -95,6 +95,7 @@ _last_traj = None           # (cmd_id, deadline) of the last trajectory sent
 _safety_gen = 0             # bumped by every aborting intent (any thread)
 _dispatch_gen = None        # _safety_gen when the current locked dispatch began
 _mouth_resume = False       # re-enable the mouth when the arm returns to "talk"
+_talk_resume = False        # a safety halt stowed the talk pose: restore on the next turn
 _closing = False            # set by close_spot_session: no new bring-up after that
 
 
@@ -895,6 +896,7 @@ def _handle_enable_mouth(params):
             return False
         _pose_before_walk = None
         _mouth_resume = False
+        _set_talk_resume(False)
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
         tts.mouth.enable()
@@ -909,6 +911,7 @@ def _handle_disable_mouth(params, session=None):
     """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
     global _pose_before_walk, _mouth_resume
     _mouth_resume = False
+    _set_talk_resume(False)
     try:
         from src.voice_control.spot_tts import get_tts
         tts = get_tts()
@@ -1376,10 +1379,81 @@ def _dispatch_safety(intent, brain=None, speak=None):
     cmd_client = sess["cmd"]
     was_emote = _nav_mode == "emote"
     _send_stop(cmd_client)  # FIRST, before any thread join
+    was_talk = _in_talk_mode()  # read-only; before the stop branch latches the mouth
     ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
     _stow_now(cmd_client, resend_stop=was_emote,
               then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
+    if name == "estop":
+        _set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
+    elif was_talk:
+        _set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
+
+
+def current_safety_gen() -> int:
+    """Snapshot for resume_talk_after_halt(gen): any stop after it wins."""
+    return _safety_gen
+
+
+def _in_talk_mode() -> bool:
+    """True if the arm is in (or will return to) the "talk" pose with the mouth on."""
+    return _arm_pose == "talk" or _pose_before_walk == "talk" or _mouth_resume
+
+
+def _set_talk_resume(on: bool):
+    global _talk_resume
+    _talk_resume = bool(on)
+
+
+def resume_talk_after_halt(gen):
+    """Final-review I1: a stop/freeze stowed the arm and latched the mouth off.
+    Called by client_mic at the start of the next turn that may move; sends the
+    arm back to "talk" without waiting, and a daemon thread re-enables the
+    mouth once it arrives. Needs a standing, powered, idle robot; otherwise the
+    flag stays for a later turn. `gen` is current_safety_gen() taken at the
+    start of the turn; any stop since then wins. Returns the thread or False."""
+    if not _talk_resume or _closing or gen is None or _aborted(gen):
+        return False
+    sess = _spot_session
+    if sess is None or is_navigating() or _arm_pose != "stowed":
+        return False
+    try:
+        if not _standing_and_powered(sess):
+            _set_talk_resume(False)  # sat / powered off / e-stopped: don't keep it for later
+            return False
+        from src.voice_control.spot_tts import get_tts
+        tts = get_tts()
+        if tts is None or tts.mouth is None:
+            _set_talk_resume(False)
+            return False
+        cmd = sess["cmd"]
+        with _arm_lock:
+            if _aborted(gen) or _arm_pose != "stowed":
+                return False
+            cmd_id = send_arm_pose(cmd, "talk", rpc_timeout=RPC_TIMEOUT_S)
+            _set_arm_pose("talk")
+            _set_talk_resume(False)
+
+        def _enable_when_up():
+            # Like enable_mouth: the claw only animates once the arm is up.
+            try:
+                if not block_until_arm_arrives(cmd, cmd_id, 5.0):
+                    print("[Spot] talk pose not reached after the halt — mouth stays off")
+                    return
+                with _arm_lock:  # a stop since the send wins
+                    if _aborted(gen) or _arm_pose != "talk":
+                        return
+                    tts.mouth.enable()
+                print("[Spot] Arm back in talk pose after the halt")
+            except Exception as e:
+                print(f"[Spot] ⚠️  mouth re-enable after the halt failed: {e}")
+
+        t = threading.Thread(target=_enable_when_up, name="talk-resume", daemon=True)
+        t.start()
+        return t
+    except Exception as e:
+        print(f"[Spot] ⚠️  talk-pose resume failed: {e}")
+        return False
 
 
 def _abort_motion(cmd_client, name):
@@ -1487,6 +1561,10 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     # Re-stop under _arm_lock so a choreography request already
                     # in flight can't start after this stop.
                     _stow_now(cmd_client, resend_stop=True)
+                else:
+                    # A navigate_to / visual-nav move sent while the join ran
+                    # lands after the first stop: stop again (as stop/freeze do).
+                    _send_stop(cmd_client)
             return _handle_disable_mouth(params, session)
 
         if name == "stop":
@@ -1495,7 +1573,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _close_mouth()
             _cancel_nav()
             try:
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                # RPC timeout: a stalled link must not wedge the safety thread (M2)
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Stop command sent")
                 return True
             except Exception as e:
@@ -1509,12 +1588,12 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _cancel_nav()
             try:
                 # First stop any current movement
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 # Then hold position with a stand — ONLY if already standing, so
                 # freeze never stands up a sitting robot.
                 if _is_standing(session):
                     cmd = RobotCommandBuilder.synchro_stand_command()
-                    cmd_client.robot_command(cmd)
+                    cmd_client.robot_command(cmd, timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Robot frozen - holding position")
                 return True
             except Exception as e:
@@ -1555,6 +1634,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Sit the robot down
             print("[Spot] Sitting down...")
             _send_stop(cmd_client)  # stop first, then stow, then sit
+            _set_talk_resume(False)
             _cancel_nav()
             _pose_before_walk = None
             if _arm_pose != "stowed":
@@ -1816,6 +1896,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Safe power off
             print("[Spot] Initiating safe power off...")
             _send_stop(cmd_client)  # stop first, then stow, then power off
+            _set_talk_resume(False)
             _close_mouth()
             _cancel_nav()
             try:
@@ -1838,7 +1919,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _close_mouth()
             _cancel_nav()
             try:
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Emergency stop executed")
                 return True
             except Exception as e:
