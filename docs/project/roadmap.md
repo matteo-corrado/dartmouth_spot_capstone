@@ -9,6 +9,26 @@ Success = Spot answers the person talking to it, ignores the room, makes it obvi
 
 ---
 
+## Progress as of 2026-10-28 (demo build, base `cd4528d`)
+
+| Workstream | Thursday scope | State |
+|---|---|---|
+| W1 Operator control | spotctl terminal commands | Done (`fc740e6`); web-panel buttons still After |
+| W2 Audio front-end | frame VAD, SNR gate, floor, metrics, chime fix | Done (`374a81c`, `f060df5`); ch0 vs ch1 babble A/B not concluded |
+| W3 Wake word | longer phrases, retune, gain fix | Done: 4 phrases, peak-safe gain (`a0593f8`, `36deb97`); per-phrase tuning and livekit models After |
+| W4 Conversation / lock | direction lock, signalling, stop-rule fix | Done (`d2be1f4`, `5ef1463`, `9c0c313`, ring `0a5d34c`); voiceprint After |
+| W5 Gaze | arm gaze toward speaker | Code only (`gaze_at_bearing`), **not wired**; world model After |
+| W6 Vision | VLM rotation, gripper camera | Not done |
+| W7 Mouth / choreography | arm stow, mouth smoothing, emotes | Stow + emotes done (`c46b2fd`, `acd9baa`, `689ba9b`); mouth smoothing **not wired** |
+| W8 Venue / knowledge | event pack, spoken info, decoding fixes | Done except filling `event_knowledge.md` (operator) and the venue map |
+| W9 Demo readiness | rollback tag, TTS fallback, rehearsal | Tag `pre-demo-2026-10-29`, fallback `e00fe25` done; rehearsal pending |
+| W10 Documentation | pipeline explainer, runbook | Done (`99a3cdb`) |
+| W11 Cleanup | dead code, test imports | Mostly open (see bugs E6, E7) |
+
+Next after the demo: wire gaze and mouth smoothing, voiceprint on top of the lock, per-phrase wake tuning on babble recordings, spoken navigation outcomes, vision overhaul, merge to the main branch.
+
+---
+
 ## Workstreams
 
 ### W1. Operator control (laptop)
