@@ -21,10 +21,10 @@ _SAFETY_KEYWORDS = "safety_keywords.txt"
 
 # Safety must over-recall: easier to trigger than the wake word. These are the
 # per-detector overrides; tuned by eval_safety_recall.py (P2).
-KEYWORDS_SCORE = 2.0
+KEYWORDS_SCORE = 1.5  # 2026-10-29 fine sweep (ch1): gain 3, thr 0.2, score 1.5 = 14/14 incl. all quiet, 2 false in 6.4 min
 KEYWORDS_THRESHOLD = 0.20
 NUM_TRAILING_BLANKS = 1
-INPUT_GAIN = 4.0  # 2026-10-28 sweep on operator safety clips (ch1): x4 = 12/14 hits, 0 false in 6.4 min; x8 = 10/14, 2 false (clips ch1)
+INPUT_GAIN = 3.0  # see KEYWORDS_SCORE note (x4 score 2.0 was 12/14, 0 false; live quiet misses were common)
 
 
 class SafetyKeywordDetector:
