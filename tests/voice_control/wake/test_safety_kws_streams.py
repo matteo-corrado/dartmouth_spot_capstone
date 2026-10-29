@@ -178,6 +178,15 @@ def test_threshold_read_from_tuning(monkeypatch):
     assert sk._threshold() == 0.25
 
 
+@pytest.mark.parametrize("val,want,warn", [(0.25, 0.25, False), (0.05, 0.05, False), (0.40, 0.40, False),
+                                           (0.01, 0.05, True), (0.9, 0.40, True), (-1.0, 0.05, True)])
+def test_threshold_clamped(monkeypatch, capsys, val, want, warn):
+    from src.voice_control import tuning
+    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(safety_kws_threshold=val))
+    assert sk._threshold() == want
+    assert ("out of range" in capsys.readouterr().out) is warn
+
+
 # --- real model + operator recordings (skipped when absent) -----------------
 
 _DEMO = pathlib.Path("/home/spotdog/spot/dartmouth_spot_capstone/tests/audio/demo")

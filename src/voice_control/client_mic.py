@@ -718,7 +718,10 @@ def audio_callback(indata, frames, time_info, status):
     # always works. (Spot saying "stop" itself may halt it: acceptable.)
     if _safety_active:
         if _put_drop_oldest(_safety_q, pcm16):
-            _note_safety_drop(now)
+            try:
+                _note_safety_drop(now)
+            except Exception:  # noqa: BLE001 - reporting must never stop capture
+                pass
     if _operator_muted:
         return  # operator mute (spotctl mute) — discard everything else
     if _speech_busy():

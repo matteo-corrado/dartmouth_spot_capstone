@@ -313,3 +313,16 @@ def test_safety_drop_counter_and_rate_limited_log(monkeypatch, capsys):
                      "[SafetyKWS] !!! queue overflow: dropped 4 frames (safety listener behind)"]
     assert cm._safety_drops["total"] == 6 and cm._safety_drops["pending"] == 1
     assert cm._status_snapshot()["safety_kws_dropped"] == 6
+
+
+def test_callback_survives_raising_drop_report(monkeypatch):
+    def boom(now):
+        raise RuntimeError("report")
+    monkeypatch.setattr(cm, "_safety_active", True)
+    monkeypatch.setattr(cm, "_operator_muted", True)
+    monkeypatch.setattr(cm, "_note_safety_drop", boom)
+    monkeypatch.setattr(cm, "_safety_q", queue.Queue(maxsize=1))
+    frame = np.zeros((480, 2), np.float32)
+    cm.audio_callback(frame, 480, None, None)
+    cm.audio_callback(frame, 480, None, None)  # overflow -> boom, swallowed
+    assert cm._safety_q.qsize() == 1

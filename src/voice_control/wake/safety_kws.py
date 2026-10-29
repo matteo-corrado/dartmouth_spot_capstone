@@ -44,14 +44,25 @@ NUM_STREAMS = 3
 STAGGER_FRAMES = 27  # 30 ms frames (0.81 s); 28 measured worse (9.0 vs 10.7 mean, 3 vs 2 fires)
 
 
+THRESHOLD_MIN, THRESHOLD_MAX = 0.05, 0.40
+
+
 def _threshold() -> float:
-    """Operator knob Tuning.safety_kws_threshold; KEYWORDS_THRESHOLD if tuning is unavailable."""
+    """Operator knob Tuning.safety_kws_threshold, clamped to [THRESHOLD_MIN,
+    THRESHOLD_MAX]; KEYWORDS_THRESHOLD if tuning is unavailable."""
     try:
         from src.voice_control.tuning import get_tuning
-        return float(get_tuning().safety_kws_threshold)
+        t = float(get_tuning().safety_kws_threshold)
     except Exception as e:  # noqa: BLE001 - a bad tuning file must not disable safety
         print(f"[SafetyKWS] tuning unavailable ({e}); threshold {KEYWORDS_THRESHOLD}")
         return KEYWORDS_THRESHOLD
+    if t != t:  # NaN
+        t = KEYWORDS_THRESHOLD
+    c = min(max(t, THRESHOLD_MIN), THRESHOLD_MAX)
+    if c != t:
+        print(f"[SafetyKWS] !!! safety_kws_threshold {t} out of range "
+              f"[{THRESHOLD_MIN}, {THRESHOLD_MAX}]; using {c}")
+    return c
 
 
 class SafetyKeywordDetector:
@@ -73,17 +84,19 @@ class SafetyKeywordDetector:
                 if not f.exists():
                     print(f"[SafetyKWS] missing {f} — run scripts/setup_safety_kws.py")
                     return
+            thr = _threshold()
             self._spotter = sherpa_onnx.KeywordSpotter(
                 encoder=str(files["encoder"]), decoder=str(files["decoder"]),
                 joiner=str(files["joiner"]), tokens=str(files["tokens"]),
                 keywords_file=str(files["keywords"]),
                 num_threads=1, provider="cpu",
                 keywords_score=KEYWORDS_SCORE,
-                keywords_threshold=_threshold(),
+                keywords_threshold=thr,
                 num_trailing_blanks=NUM_TRAILING_BLANKS,
             )
             self._available = True
-            print("[SafetyKWS] ready — stop/freeze/estop always-on")
+            print(f"[SafetyKWS] ready — stop/freeze/estop always-on "
+                  f"(threshold {thr}, {NUM_STREAMS} streams)")
         except ImportError:
             print("[SafetyKWS] sherpa-onnx not installed")
         except Exception as e:
