@@ -140,6 +140,12 @@ class Model:
         self._lock = threading.Lock()
 
     def detect(self, img: np.ndarray, conf: float = 0.35) -> list[RawDet]:
+        """Detect on ``img``: HxW grey or HxWx3 **RGB** uint8.
+
+        cv2-decoded images (e.g. the hand colour camera JPEG) are BGR; callers
+        must convert with ``cv2.cvtColor(img, cv2.COLOR_BGR2RGB)`` first.
+        Returned boxes, masks and keypoints are in ``img`` pixels.
+        """
         x, scale, pad = letterbox(img)
         with self._lock:
             outputs = self._session.run(None, {self._input: x})
@@ -161,6 +167,22 @@ def _providers(kind: str, model_dir: Path) -> list:
     return ["CPUExecutionProvider"]
 
 
+_E2E_ROWS = 300
+_E2E_WIDTHS = (6, 6 + N_MASK_COEFFS, 6 + N_KPT_VALUES)
+
+
+def _check_layout(name: str, session) -> None:
+    """Refuse a non-end2end export: decoding a raw head would give silent garbage."""
+    outs = session.get_outputs()
+    shape = list(outs[0].shape)
+    ok = (len(shape) == 3 and shape[1] == _E2E_ROWS and shape[2] in _E2E_WIDTHS
+          and (shape[2] != 6 + N_MASK_COEFFS or len(outs) >= 2))
+    if not ok:
+        raise ValueError(
+            f"{name}: output0 shape {shape} is not the end-to-end YOLO26 layout "
+            f"[1, {_E2E_ROWS}, 6|38|57]; re-export the model with end2end=True")
+
+
 def _open(name: str, model_dir: Path, kinds: tuple[str, ...] = ("trt", "cuda", "cpu")) -> Model:
     """Create an uncached Model, trying providers in ``kinds`` order."""
     path = Path(model_dir) / f"{name}.onnx"
@@ -178,6 +200,7 @@ def _open(name: str, model_dir: Path, kinds: tuple[str, ...] = ("trt", "cuda", "
         except Exception as e:  # provider init / engine build failure -> next provider
             err = e
             continue
+        _check_layout(name, session)
         active = session.get_providers()[0]   # ORT may silently drop a failing provider
         provider = next((k for k, v in _PROVIDER.items() if v == active), "cpu")
         return Model(name, session, provider)

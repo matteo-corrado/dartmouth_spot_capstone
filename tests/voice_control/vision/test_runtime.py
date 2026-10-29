@@ -1,5 +1,4 @@
 """Tests for the onnxruntime detector runtime (letterbox, decode, provider fallback)."""
-import time
 from pathlib import Path
 
 import numpy as np
@@ -99,19 +98,22 @@ def test_decode_pose_keypoints():
     assert dets[0].mask is None
 
 
-class _FakeInput:
-    name = "images"
+class _FakeIO:
+    def __init__(self, name, shape):
+        self.name = name
+        self.shape = shape
 
 
-def test_runtime_falls_back_to_cpu(tmp_path, monkeypatch):
-    (tmp_path / "yolo26l-seg.onnx").write_bytes(b"")
-    tried = []
+E2E_SEG = ([1, 300, 38], [1, 32, 160, 160])
 
+
+def _fake_session_cls(output_shapes, fail_gpu=False, tried=None):
     class FakeSession:
         def __init__(self, path, sess_options=None, providers=None):
             names = [p[0] if isinstance(p, tuple) else p for p in providers]
-            tried.append(names[0])
-            if "TensorrtExecutionProvider" in names or "CUDAExecutionProvider" in names:
+            if tried is not None:
+                tried.append(names[0])
+            if fail_gpu and ("TensorrtExecutionProvider" in names or "CUDAExecutionProvider" in names):
                 raise RuntimeError("no GPU for you")
             self._providers = names
 
@@ -119,7 +121,18 @@ def test_runtime_falls_back_to_cpu(tmp_path, monkeypatch):
             return self._providers
 
         def get_inputs(self):
-            return [_FakeInput()]
+            return [_FakeIO("images", [1, 3, 640, 640])]
+
+        def get_outputs(self):
+            return [_FakeIO(f"output{i}", s) for i, s in enumerate(output_shapes)]
+
+    return FakeSession
+
+
+def test_runtime_falls_back_to_cpu(tmp_path, monkeypatch):
+    (tmp_path / "yolo26l-seg.onnx").write_bytes(b"")
+    tried = []
+    FakeSession = _fake_session_cls(E2E_SEG, fail_gpu=True, tried=tried)
 
     monkeypatch.setattr(runtime.ort, "InferenceSession", FakeSession)
     m = runtime.load_model("yolo26l-seg", model_dir=tmp_path)
@@ -129,6 +142,26 @@ def test_runtime_falls_back_to_cpu(tmp_path, monkeypatch):
     assert runtime.gpu_available() is False
     assert runtime.load_model("yolo26l-seg", model_dir=tmp_path) is m   # cached
     assert len(tried) == 3
+
+
+@pytest.mark.parametrize("shapes", [
+    ([1, 116, 8400], [1, 32, 160, 160]),   # raw yolo26l-seg head (end2end=False)
+    ([1, 56, 8400],),                      # raw yolo26l-pose head
+    ([1, 300, 38],),                       # seg rows without the protos output
+])
+def test_raw_head_layout_raises(tmp_path, monkeypatch, shapes):
+    (tmp_path / "yolo26l-seg.onnx").write_bytes(b"")
+    monkeypatch.setattr(runtime.ort, "InferenceSession", _fake_session_cls(shapes))
+    with pytest.raises(ValueError, match="end2end=True"):
+        runtime.load_model("yolo26l-seg", model_dir=tmp_path)
+    assert "yolo26l-seg" not in runtime._MODELS
+
+
+@pytest.mark.parametrize("shapes", [E2E_SEG, ([1, 300, 57],), ([1, 300, 6],)])
+def test_end2end_layouts_accepted(tmp_path, monkeypatch, shapes):
+    (tmp_path / "m.onnx").write_bytes(b"")
+    monkeypatch.setattr(runtime.ort, "InferenceSession", _fake_session_cls(shapes))
+    assert runtime.load_model("m", model_dir=tmp_path).provider == "trt"
 
 
 def test_load_model_missing_file_raises(tmp_path):
@@ -157,20 +190,22 @@ def test_gpu_models_agree(name):
     cpu = runtime._open(name, runtime.MODEL_DIR, kinds=("cpu",))
     assert cpu.provider == "cpu"
 
-    g = gpu.detect(img, conf=0.5)
-    c = cpu.detect(img, conf=0.5)
-    n = 10
-    t = time.perf_counter()
-    for _ in range(n):
-        gpu.detect(img, conf=0.5)
-    print(f"\n{name} {gpu.provider} {(time.perf_counter() - t) / n * 1000:.1f} ms/image (incl. pre/post)")
+    # Detect at 0.35 but only compare confident (> 0.6) detections both ways, so a
+    # borderline fp16-vs-fp32 confidence near a threshold cannot flake the test.
+    g = gpu.detect(img, conf=0.35)
+    c = cpu.detect(img, conf=0.35)
 
-    assert g, "expected detections (image contains a person)"
-    assert sorted(d.cls for d in g) == sorted(d.cls for d in c)
-    for d in g:
-        best = min((x for x in c if x.cls == d.cls),
-                   key=lambda x: max(abs(a - b) for a, b in zip(x.box, d.box)))
-        assert max(abs(a - b) for a, b in zip(best.box, d.box)) <= 1.0, (d, best)
+    def box_diff(a, b):
+        return max(abs(x - y) for x, y in zip(a.box, b.box))
+
+    confident_g = [d for d in g if d.conf > 0.6]
+    assert confident_g, "expected detections (image contains a person)"
+    for src, other in ((confident_g, c), ([d for d in c if d.conf > 0.6], g)):
+        for d in src:
+            same = [x for x in other if x.cls == d.cls]
+            assert same, f"class {d.cls} missing on the other provider"
+            assert min(box_diff(d, x) for x in same) <= 1.0, d
+    for d in confident_g:
         if name != "yolo26l-pose":
             assert d.mask is not None and d.mask.shape == img.shape[:2]
         else:
