@@ -37,3 +37,7 @@ voiceprint_threshold: 0.35   # replay ch1: same median 0.53, other-voice 0.16 (n
 # mouth_attack_s: 0.03
 # mouth_release_s: 0.10
 # mouth_rest_open: 0.08
+# Arm (operator decisions 2026-10-28). First robot run: small gaze, then widen.
+auto_arm: true       # fold the arm + mouth on once standing (--no-arm also opts out)
+gaze_max_deg: 20     # shoulder-yaw gaze limit (code caps at 60; 0 = gaze off)
+gaze_sh0_sign: 1     # UNVERIFIED on the robot: flip to -1 if the arm turns away from the speaker

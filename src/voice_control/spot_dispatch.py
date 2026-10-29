@@ -125,6 +125,13 @@ def _talk_is_walk_pose() -> bool:
     return _poses.WALK_POSE == "joints"
 
 
+def _hold_gaze(secs: float = None):
+    """Block gaze for `secs` (default JOINT_MOVE_SECS) from now."""
+    global _arm_settle_until
+    secs = _poses.JOINT_MOVE_SECS if secs is None else secs
+    _arm_settle_until = max(_arm_settle_until, time.monotonic() + secs)
+
+
 def get_arm_pose() -> str:
     return _arm_pose
 
@@ -542,6 +549,7 @@ def close_spot_session():
     global _spot_session, _session_context, _closing, _safety_gen
     _closing = True
     _safety_gen += 1  # abort any locomotion still being set up
+    _cancel_auto_arm()
     
     if _spot_session is not None and _session_context is not None:
         _send_stop(_spot_session["cmd"])  # stop first, then stow, then sit
@@ -1092,6 +1100,8 @@ def do_add_persona(params: dict, brain) -> dict:
 GAZE_MIN_CHANGE_DEG = 15.0  # re-aim only when the target moved more than this
 GAZE_MIN_INTERVAL_S = 2.0   # ... and at most this often
 GAZE_BEHIND_DEG = 150.0     # a speaker this far behind is ambiguous: ignore
+GAZE_HARD_MAX_DEG = 60.0    # code cap on tuning gaze_max_deg (arm reach, safety review)
+GAZE_RPC_TIMEOUT_S = 0.5    # < SAFETY_LOCK_TIMEOUT_S: a stop's stow never loses the lock race
 
 
 def gaze_sh0_deg(body_deg, max_deg: float):
@@ -1130,11 +1140,12 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         import math
         from src.voice_control.tuning import get_tuning
         tun = get_tuning()
-        if tun.gaze_max_deg <= 0:
+        max_deg = min(float(tun.gaze_max_deg), GAZE_HARD_MAX_DEG)
+        if max_deg <= 0:
             return False
         if gen is None:
             gen = _safety_gen
-        target = 0.0 if body_deg is None else gaze_sh0_deg(body_deg, tun.gaze_max_deg)
+        target = 0.0 if body_deg is None else gaze_sh0_deg(body_deg, max_deg)
         if target is None:
             return False
         now = time.monotonic()
@@ -1153,7 +1164,7 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
             if (_aborted(gen) or _closing or _arm_pose != "talk" or is_navigating()
                     or time.monotonic() < _arm_settle_until):
                 return False
-            sess["cmd"].robot_command(joints_pose_command(sh0), timeout=RPC_TIMEOUT_S)
+            sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
             _gaze_deg, _gaze_t = target, now
         print(f"[Spot] gaze: shoulder yaw {target:+.0f} deg")
         return True
@@ -1635,6 +1646,7 @@ def _dispatch_locomotion(intent, brain=None, speak=None):
         return False
     cmd_client = session["cmd"]
     gen = _dispatch_gen
+    _hold_gaze()  # no gaze may land while this walk starts (incl. the join below)
     _cancel_nav()  # a new motion supersedes the old one (its restore is skipped)
     current = _arm_pose
     before, after = arm_policy_for(name, current)
@@ -1665,6 +1677,7 @@ def _dispatch_locomotion(intent, brain=None, speak=None):
     if _aborted(gen):
         return _abort_motion(cmd_client, name)
     _last_traj = None
+    _hold_gaze()
     ok = _dispatch_core(intent, brain, speak)
     if _aborted(gen):
         return _abort_motion(cmd_client, name)
@@ -1803,6 +1816,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             print("[Spot] Sitting down...")
             _send_stop(cmd_client)  # stop first, then stow, then sit
             _set_talk_resume(False)
+            _cancel_auto_arm()  # only an explicit stand folds the arm again
             _cancel_nav()
             _pose_before_walk = None
             if _arm_pose != "stowed":
@@ -2065,6 +2079,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             print("[Spot] Initiating safe power off...")
             _send_stop(cmd_client)  # stop first, then stow, then power off
             _set_talk_resume(False)
+            _cancel_auto_arm()  # only an explicit stand folds the arm again
             _close_mouth()
             _cancel_nav()
             try:

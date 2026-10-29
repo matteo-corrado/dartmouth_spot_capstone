@@ -25,7 +25,7 @@ def cmd(monkeypatch):
     monkeypatch.setattr(d, "_arm_settle_until", 0.0)
     monkeypatch.setattr(d, "is_navigating", lambda: False)
     monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)
-    monkeypatch.setattr(tuning, "_cached", tuning.Tuning())
+    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(gaze_max_deg=45.0))
     clock = {"t": 1000.0}
     monkeypatch.setattr(d.time, "monotonic", lambda: clock["t"])
     c.clock = clock
@@ -42,8 +42,8 @@ def test_pure_clamp_and_wrap():
     assert d.gaze_sh0_deg(10.0, 0.0) is None                      # gaze off
 
 
-def test_default_limit_is_45():
-    assert tuning.Tuning().gaze_max_deg == 45.0
+def test_default_limit_is_20():
+    assert tuning.Tuning().gaze_max_deg == 20.0
 
 
 def test_gaze_turns_sh0_slowly_in_joints_pose(cmd, monkeypatch):
@@ -70,7 +70,7 @@ def test_clamped_to_tuning_limit(cmd, monkeypatch):
 
 
 def test_sign_tunable(cmd, monkeypatch):
-    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(gaze_sh0_sign=-1))
+    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(gaze_max_deg=45.0, gaze_sh0_sign=-1))
     assert d.gaze_at_bearing(30.0) is True
     assert _sh0(cmd.sent[-1][1]) == pytest.approx(-30.0)
 
@@ -178,3 +178,66 @@ def test_never_raises(cmd, monkeypatch):
         raise RuntimeError("rpc down")
     monkeypatch.setattr(cmd, "robot_command", boom)
     assert d.gaze_at_bearing(30.0) is False
+
+
+# ---------------------------------------------------------------- safety review
+def test_hard_cap_60_even_if_tuning_says_more(cmd, monkeypatch):
+    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(gaze_max_deg=120.0))
+    assert d.gaze_at_bearing(100.0) is True
+    assert _sh0(cmd.sent[-1][1]) == pytest.approx(60.0)
+
+
+def test_gaze_rpc_timeout_shorter_than_safety_lock(cmd, monkeypatch):
+    seen = {}
+
+    def rc(c, end_time_secs=None, **kw):
+        seen.update(kw)
+        return 1
+    monkeypatch.setattr(cmd, "robot_command", rc)
+    assert d.gaze_at_bearing(30.0) is True
+    assert seen["timeout"] == pytest.approx(0.5) and seen["timeout"] < d.SAFETY_LOCK_TIMEOUT_S
+
+
+def test_walk_start_holds_gaze(cmd):
+    d._hold_gaze()
+    assert d.gaze_at_bearing(30.0) is False
+    cmd.clock["t"] += 2.6
+    assert d.gaze_at_bearing(30.0) is True
+
+
+class _AliveWorker:
+    def is_alive(self):
+        return True
+
+
+def test_client_gaze_uses_gen_from_request_time(cmd, monkeypatch):
+    """I1: a stop between the request and the worker pickup wins, even though
+    the arm pose may still read "talk" while the stop's join runs."""
+    import queue as _q
+    import src.voice_control.client_mic as cm
+    monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
+    q = _q.Queue(maxsize=1)
+    monkeypatch.setattr(cm, "_gaze_q", q)
+    monkeypatch.setattr(cm, "_gaze_worker", _AliveWorker())  # pick up by hand
+    cm._gaze_at_speaker(30.0)
+    body, gen = q.get_nowait()
+    assert body == 30.0 and gen == d.current_safety_gen()
+    monkeypatch.setattr(d, "_safety_gen", d._safety_gen + 1)  # stop before pickup
+    assert d.gaze_at_bearing(body, gen) is False
+    assert cmd.sent == []
+
+
+def test_client_gaze_skipped_without_gen(monkeypatch):
+    import queue as _q
+    import src.voice_control.client_mic as cm
+    q = _q.Queue(maxsize=1)
+    monkeypatch.setattr(cm, "_gaze_q", q)
+    monkeypatch.setattr(cm, "_safety_gen_now", lambda: None)
+    monkeypatch.setattr(cm, "_gaze_worker", _AliveWorker())
+    cm._gaze_at_speaker(30.0)
+    assert q.empty()
+
+
+def test_explicit_tuning_yaml_arm_keys():
+    t = tuning.load_tuning()
+    assert t.auto_arm is True and t.gaze_max_deg == 20.0 and t.gaze_sh0_sign == 1

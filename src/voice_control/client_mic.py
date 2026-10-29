@@ -2289,16 +2289,16 @@ def _auto_arm_at_turn(gen) -> None:
         print(f"[Spot] automatic arm fold skipped: {type(e).__name__}: {e}")
 
 
-_gaze_q = queue.Queue(maxsize=1)  # latest gaze request only (body deg or None)
+_gaze_q = queue.Queue(maxsize=1)  # latest gaze request only: (body deg or None, safety gen)
 _gaze_worker = None
 
 
 def _gaze_loop():
     from src.voice_control.spot_dispatch import gaze_at_bearing
     while True:
-        body = _gaze_q.get()
+        body, gen = _gaze_q.get()
         try:
-            gaze_at_bearing(body)
+            gaze_at_bearing(body, gen)  # gen taken at request time: a stop since wins
         except Exception as e:  # noqa: BLE001 - gaze is cosmetic
             print(f"[Spot] gaze skipped: {type(e).__name__}: {e}")
 
@@ -2319,7 +2319,10 @@ def _gaze_at_speaker(body_deg) -> None:
             _gaze_q.get_nowait()  # drop a stale request
         except queue.Empty:
             pass
-        _gaze_q.put_nowait(body_deg)
+        gen = _safety_gen_now()  # at request time, never at pickup
+        if gen is None:
+            return  # no robot / dry run: no gaze
+        _gaze_q.put_nowait((body_deg, gen))
     except Exception as e:  # noqa: BLE001
         print(f"[Spot] gaze request failed: {type(e).__name__}: {e}")
 

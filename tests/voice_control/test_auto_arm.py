@@ -222,3 +222,28 @@ def test_walk_after_auto_fold_keeps_mouth_on(env):
         t.join(timeout=5)
     assert env.cmd.kinds()[n:] == ["mobility"]
     assert env.mouth.enabled and env.mouth.log == ["on"]
+
+
+def test_sit_and_power_off_cancel_pending_fold(env):
+    for name in ("sit", "power_off"):
+        _owe()
+        d.dispatch_intent({"intent": name, "params": {}})
+        assert d._auto_arm_pending is False
+
+
+def test_close_session_cancels_pending_fold(env, monkeypatch):
+    import bosdyn.client.robot_command as rc
+    monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
+
+    class Ctx:
+        def __exit__(self, *a):
+            pass
+
+    class R(_Robot):
+        def power_off(self, **k):
+            pass
+    env.sess["robot"] = R()
+    monkeypatch.setattr(d, "_session_context", Ctx())
+    _owe()
+    d.close_spot_session()
+    assert d._auto_arm_pending is False
