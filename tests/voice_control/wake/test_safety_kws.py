@@ -14,7 +14,7 @@ def test_build_keyword_lines_covers_all_safety_words():
     assert len(lines) == len(SAFETY_WORDS)
     # Each line ends with its @custom-id so detection returns a clean label.
     ids = {ln.split("@")[-1].strip() for ln in lines}
-    assert ids == {"stop", "freeze", "estop"}
+    assert ids == {"stop", "freeze"}
 
 
 @pytest.mark.skipif(not BPE.exists(), reason="KWS model not set up")

@@ -100,13 +100,14 @@ SAFETY_PROMPTS = [
         ("freeze", "freeze", (("normal", 'Say "freeze" (normal voice)'),
                               ("quiet", 'Say "freeze" QUIETLY'),
                               ("sentence", 'Say "okay Spot, freeze"'))),
-        ("estop", "e stop", (("normal", 'Say "e-stop" (normal voice)'),
-                             ("quiet", 'Say "e-stop" QUIETLY'),
-                             ("sentence", 'Say "okay Spot, e-stop"'))),
     )
     for style, say in variants
-] + [Prompt(f"safety_{w.replace('-', '')}_far", "safety", f'Step back ~3 m, then say "{w}" (normal voice)', 0, 3.0, "",
-            w.replace("-", " ")) for w in ("stop", "freeze", "e-stop")]
+] + [Prompt(f"safety_{w}_far", "safety", f'Step back ~3 m, then say "{w}" (normal voice)', 0, 3.0, "", w)
+     for w in ("stop", "freeze")
+] + [Prompt(f"safety_{w}_quiet{i}", "safety", f'Say "{w}" QUIETLY (take {i})', 0, 3.0, "", w)
+     for w in ("stop", "freeze") for i in (2, 3)
+] + [Prompt(f"safety_{w}_far_quiet", "safety", f'Step back ~3 m, then say "{w}" QUIETLY', 0, 3.0, "", w)
+     for w in ("stop", "freeze")]
 
 
 # Short sets: only the clips a noise condition changes (--set). "full" = everything.

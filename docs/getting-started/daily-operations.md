@@ -138,7 +138,7 @@ Exit codes: 0 ok, 1 error reply, 2 cannot reach the server (pipeline not running
 
 `status` fields: `state` (`WAKE_WORD`/`LISTENING`/`THINKING`/`RESPONDING`), `locked_deg` (speaker direction, body frame: 0 ahead, +90 left, null when unlocked), `floor_dbfs`, `last_transcript`, `last_latency_s`, `muted`, `crowd`, `voiceprint`, `safety_kws_ok` (must be `true`).
 
-Voice "estop" is the same motion-stop as "stop". **It is not the E-Stop.**
+Voice "stop" and "freeze" are the always-on safety words (heard with no wake phrase). A transcribed "e-stop" still acts as a motion-stop, but it is not in the always-on listener. **None of these is the E-Stop.**
 
 ---
 

@@ -20,10 +20,11 @@ BPE_MODEL = MODEL_DIR / "bpe.model"
 OUT = MODEL_DIR / "safety_keywords.txt"
 
 # phrase -> custom id (id is what get_result returns; check_safety_command maps it)
+# "E STOP" dropped from the always-on listener (operator 2026-10-28: poor activation
+# word). A transcribed "e-stop" still maps to estop via intent.check_safety_command.
 SAFETY_WORDS = {
     "STOP": "stop",
     "FREEZE": "freeze",
-    "E STOP": "estop",
 }
 
 
