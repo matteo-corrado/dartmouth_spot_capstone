@@ -43,11 +43,26 @@ from src.voice_control.animation.mouth import MouthDriver
 
 def test_driver_dry_run_emits_all_frames_in_order():
     d = MouthDriver(cmd_client=None, fps=10, dry_run=True)
+    d.max_open = 1.0
     d.enable()
     fractions = [0.0, 0.5, 1.0, 0.5, 0.0]
     d.play(fractions, t0=time.monotonic())
     d.wait()
     assert [round(f, 3) for _, f in d.log] == fractions
+
+
+def test_driver_scales_opening_to_max_open():
+    d = MouthDriver(cmd_client=None, fps=10, dry_run=True)
+    d.max_open = 0.4
+    d.enable()
+    d.play([0.0, 1.0, 0.5], t0=time.monotonic())
+    d.wait()
+    assert [round(f, 3) for _, f in d.log] == [0.0, 0.4, 0.2]
+
+
+def test_default_max_open_comes_from_tuning():
+    from src.voice_control.tuning import get_tuning
+    assert MouthDriver(dry_run=True).max_open == get_tuning().mouth_max_open
 
 
 def test_driver_dry_run_paces_to_clock():

@@ -52,6 +52,15 @@ def envelope(samples: np.ndarray, rate: int, fps: int = MOUTH_FPS,
     return np.clip(frames * intensity, 0.0, 1.0).astype(np.float32)
 
 
+def _max_open() -> float:
+    """Tuning mouth_max_open clamped to [0.05, 1.0]; 1.0 if tuning is unavailable."""
+    try:
+        from src.voice_control.tuning import get_tuning
+        return float(max(0.05, min(1.0, get_tuning().mouth_max_open)))
+    except Exception:
+        return 1.0
+
+
 class MouthDriver:
     """Paces gripper_open_fraction commands to the arm in sync with playback.
 
@@ -70,6 +79,7 @@ class MouthDriver:
         self.dry_run = dry_run
         self.enabled = False
         self.intensity = 1.0
+        self.max_open = _max_open()  # cap on how far the claw opens (tuning mouth_max_open)
         self.log = []  # list[(monotonic_ts, fraction)] — dry_run only
         self._lock = threading.Lock()
         self._q = queue.Queue()
@@ -142,7 +152,8 @@ class MouthDriver:
             self._send(frac)
 
     def _send(self, frac: float):
-        frac = float(max(0.0, min(1.0, frac)))
+        # Envelope is peak-normalised (loudest frame = 1.0): scale into [0, max_open].
+        frac = float(max(0.0, min(1.0, frac))) * self.max_open
         if self.dry_run:
             self.log.append((_time.monotonic(), frac))
             return
