@@ -208,16 +208,41 @@ def _open(name: str, model_dir: Path, kinds: tuple[str, ...] = ("trt", "cuda", "
 
 
 _MODELS: dict[str, Model] = {}
+_FAILED: dict[tuple[str, str], Exception] = {}  # (name, model dir) -> load error
 _MODELS_LOCK = threading.Lock()
 
 
+class ModelUnavailable(RuntimeError):
+    """A cached earlier load failure: raised at once, no new session build."""
+
+
 def load_model(name: str, model_dir: Path = MODEL_DIR) -> Model:
-    """Load (once) and return ``name``; TensorRT fp16 -> CUDA -> CPU."""
+    """Load (once) and return ``name``; TensorRT fp16 -> CUDA -> CPU.
+
+    A failed load is cached too: later calls raise ``ModelUnavailable`` at once
+    instead of retrying the (possibly minutes-long) build under ``_MODELS_LOCK``
+    while a caller holds the dispatcher lock. ``reset_models()`` forgets both."""
+    key = (name, str(Path(model_dir).resolve()))
     with _MODELS_LOCK:
         model = _MODELS.get(name)
-        if model is None:
+        if model is not None:
+            return model
+        err = _FAILED.get(key)
+        if err is not None:
+            raise ModelUnavailable(f"{name} failed to load earlier: {err}") from err
+        try:
             model = _MODELS[name] = _open(name, Path(model_dir))
+        except Exception as e:
+            _FAILED[key] = e
+            raise
         return model
+
+
+def reset_models() -> None:
+    """Forget loaded models and cached load failures (tests, setup scripts)."""
+    with _MODELS_LOCK:
+        _MODELS.clear()
+        _FAILED.clear()
 
 
 def gpu_available() -> bool:

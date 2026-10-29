@@ -55,7 +55,11 @@ COMMANDS = [
     (r"\b(?:fast\s+(?:mode)?|walk\s+fast|go\s+fast|speed\s+up)\b", "set_speed", {"speed": "fast"}),
 
     # === VISUAL NAVIGATION ===
-    (r"\b(?:find|look for|search for|locate)\s+(?:the\s+|a\s+|my\s+)?(?P<desc>.+?)(?:\s*\.|$)", "go_to_object", {"description": "$desc"}),
+    # Camera answers (no motion; client_mic runs the vision package). "find X"
+    # answers whether Spot sees X; it never walks ("go to X" is the walk).
+    (r"\bwhat (?:do|can) you see\b",               "describe", {}),
+    (r"\blook around\b",                            "look_around", {}),
+    (r"\b(?:find|look for|search for|locate|where is|where's|where are|do you see|can you see)\s+(?:the\s+|a\s+|an\s+|my\s+|any\s+)?(?P<what>.+?)(?:\s*[?.!]|$)", "find", {"what": "$what"}),
     (r"\b(?:follow me|come with me|tag along)\b",  "follow_me", {}),
 
     # === NAVIGATION ===
@@ -276,8 +280,10 @@ SHORT_COMMAND_WORDS = frozenset({"dance", "stow", "wave", "bow", "nod", "spin",
                                  "sit", "stand", "stop", "freeze"})
 # Quiet short utterances may not start travel or power off: these need a
 # normal-volume utterance that passes the loudness gate (safety review I-2).
+# "find" too: the regex treats it as a camera answer, but the brain may still
+# read "find a chair" as a go-to, so a quiet one stays blocked as before.
 SHORT_PATH_BLOCKED_INTENTS = frozenset({"walk", "turn", "walk_to", "follow_me", "patrol",
-                                        "come_back", "go_to_object", "power_off"})
+                                        "come_back", "go_to_object", "power_off", "find"})
 # No "thank you"/"you": those are classic ASR hallucinations on noise.
 SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok", "sure"})
 

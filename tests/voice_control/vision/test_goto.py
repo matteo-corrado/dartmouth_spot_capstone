@@ -47,6 +47,7 @@ class FakeNavIO:
         self._aborted = False
         self.abort_after_moves = None
         self.spoken = []
+        self.method = None  # override distance_method (e.g. "ground")
 
     # -- NavIO --------------------------------------------------------------
     def bearing_distance(self):
@@ -61,7 +62,7 @@ class FakeNavIO:
         return Detection(label=self.label, conf=0.9, source="frontleft_fisheye_image",
                          box=(0, 0, 10, 10), mask=None, keypoints=None, bearing_deg=b,
                          distance_m=d if self.depth else None,
-                         distance_method="depth" if self.depth else None)
+                         distance_method=(self.method or "depth") if self.depth else None)
 
     def snapshot(self, sources, labels, model):
         self.snaps.append((list(sources), labels, model))
@@ -307,13 +308,25 @@ def test_goto_person_needs_fresh_distance_then_lost():
         io.depth = False  # depth vanishes after the first command
         return ok
     io.move_odom = move
+    poses = []
+    orig_move = move
+
+    def move2(x, y, yaw):
+        poses.append(tuple(io.pose[:2]))
+        return orig_move(x, y, yaw)
+    io.move_odom = move2
     r = _run(io, is_person=True, label="person", clock=clock)
     assert r.text == "I lost sight of it." and r.ok is False
     assert clock.t == pytest.approx(3.0)
+    walking = [(t, g) for (t, g), p in zip(times, poses) if g != pytest.approx(p)]
     # translations only while the last measured distance is <= 1 s old
-    assert times and all(t <= 1.0 for t, _ in times)
+    assert walking and all(t <= 1.0 for t, _ in walking)
     # the remembered range is never re-projected along a new bearing
-    assert all(g == times[0][1] for _, g in times)
+    assert all(g == walking[0][1] for _, g in walking)
+    # stale ticks replace the old walking goal with a turn-only goal at the robot (I3)
+    stale = [(t, g, p) for (t, g), p in zip(times, poses) if t > 1.0]
+    assert stale and all(g == pytest.approx(p) for _, g, p in stale)
+    assert io.halts == 1
 
 
 def test_goto_odom_goal_ignores_pose_change_during_snapshot():
@@ -572,3 +585,80 @@ def test_navio_timeouts_fit_inside_nav_join():
     import inspect
     assert navio.LOCK_TIMEOUT_S + 2 * navio.RPC_TIMEOUT_S < navio.NAV_JOIN_S
     assert "join(timeout=2.0)" in inspect.getsource(spot_dispatch._cancel_nav)
+
+
+# ---------------------------------------------------------------------------
+# Final fix: R23 in goto (I2), turn-only stale ticks + short trajectories (I3),
+# stop_event under the lock (M1)
+# ---------------------------------------------------------------------------
+
+def test_goto_ground_lock_matches_follow():
+    import importlib
+    gm = importlib.import_module("src.voice_control.vision.goto")
+    follow = importlib.import_module("src.voice_control.vision.follow")
+    assert gm.GROUND_MIN_M == follow.GROUND_MIN_M == 4.0
+
+
+def test_goto_person_ground_range_under_four_metres_is_no_distance():
+    io = FakeNavIO(target_xy=(3.0, 0.0), label="person")
+    io.method = "ground"
+    r = _run(io, is_person=True, label="person")
+    assert r.text == TEXTS["no_distance"] and r.ok is False
+    assert _translations(io) == []
+
+
+def test_goto_person_ground_range_beyond_four_metres_walks():
+    io = FakeNavIO(target_xy=(6.0, 0.0), label="person", step=0.5)
+    io.method = "ground"
+    r = _run(io, is_person=True, label="person")
+    # walks on the >= 4 m ground ranges; once inside 4 m those ranges no longer
+    # count, so the goal goes stale and it ends lost instead of arriving
+    assert _translations(io)
+    assert r.text == TEXTS["lost"] and r.ok is False
+
+
+def test_goto_object_ground_range_still_used():
+    io = FakeNavIO(target_xy=(3.0, 0.0))
+    io.method = "ground"
+    r = _run(io)
+    assert r.ok is True and _left(io) == pytest.approx(1.0, abs=0.31)
+
+
+def test_spotnavio_trajectory_lifetime_is_short(sd, monkeypatch):
+    from src.voice_control.vision import navio
+    from src.voice_control.vision.navio import SpotNavIO
+    import time
+    assert navio.TRAJ_END_S == 1.5
+    log = []
+    _patch_builders(monkeypatch, log)
+    io = SpotNavIO(_session(log), 7, None)
+    assert io.move_body(1.0, 0.0, 0.0) is True
+    k = next(e for e in log if e[0] == "send")[2]
+    assert k["end_time_secs"] - time.time() <= navio.TRAJ_END_S + 0.1
+
+
+def test_spotnavio_stop_event_checked_under_lock(sd, monkeypatch):
+    from src.voice_control.vision.navio import SpotNavIO
+    log = []
+    _patch_builders(monkeypatch, log)
+    ev = threading.Event()
+    io = SpotNavIO(_session(log), 7, None, stop_event=ev)
+    seen = []
+    real_acquire = sd._arm_lock
+
+    class SpyLock:
+        def acquire(self, timeout=-1):
+            ok = real_acquire.acquire(timeout=timeout)
+            ev.set()  # the nav cancel lands while the send holds the lock
+            seen.append("locked")
+            return ok
+
+        def release(self):
+            real_acquire.release()
+    monkeypatch.setattr(sd, "_arm_lock", SpyLock())
+    assert io.move_body(1.0, 0.0, 0.0) is False
+    assert seen == ["locked"]
+    assert "send" not in [e[0] for e in log]
+    # superseded (no stop): no halt either, the new locomotion owns the robot
+    assert io.velocity(0.2, 0.0, 0.0) is False
+    assert "send" not in [e[0] for e in log]

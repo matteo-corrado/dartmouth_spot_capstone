@@ -4,12 +4,12 @@ from __future__ import annotations
 import logging
 
 from .cameras import BODY_SOURCES, HAND_SOURCE, capture, distance_words, sector
-from .describe import FRONT_SOURCES, front_images, article
+from .describe import FRONT_SOURCES, article, front_images, gripper_faces_forward
 from .speech import safe_words
 from .types import ActionResult
 from .vlm import ask_vlm
 from .vocab import resolve_label
-from .world import snapshot
+from .world import detect_frames
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,16 @@ def _vlm_check(robot, phrase: str) -> ActionResult:
     return ActionResult(NO_LINE, False, {"detections": []})
 
 
+def _detect(robot, model: str, name: str):
+    """Body cameras plus the gripper camera, the latter only when it faces
+    forward (a stowed gripper looks at the body/floor: odd bearings)."""
+    frames = capture(robot, list(BODY_SOURCES) + [HAND_SOURCE], with_depth=True)
+    hand = frames.get(HAND_SOURCE)
+    if hand is not None and not gripper_faces_forward(hand):
+        frames.pop(HAND_SOURCE)
+    return detect_frames(frames, model=model, labels={name})
+
+
 def find(robot, phrase: str) -> ActionResult:
     phrase = _clean(phrase) or phrase
     hit = resolve_label(phrase)
@@ -49,8 +59,7 @@ def find(robot, phrase: str) -> ActionResult:
         kind, name = hit
         model = "yoloe-26l-seg" if kind == "yoloe" else "yolo26l-seg"
         try:
-            dets = snapshot(robot, list(BODY_SOURCES) + [HAND_SOURCE], model=model,
-                            labels={name}, with_depth=True)
+            dets = _detect(robot, model, name)
         except Exception as e:
             logger.warning("find: detector unavailable (%s: %s)", type(e).__name__, e)
             dets = []

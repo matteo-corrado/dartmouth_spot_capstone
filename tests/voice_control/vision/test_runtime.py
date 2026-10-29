@@ -13,9 +13,9 @@ HAND_IMG = REPO / "tests" / "fixtures" / "vision" / "private" / "hand_color_imag
 
 @pytest.fixture(autouse=True)
 def _clear_model_cache():
-    runtime._MODELS.clear()
+    runtime.reset_models()
     yield
-    runtime._MODELS.clear()
+    runtime.reset_models()
 
 
 def test_letterbox_grey_to_rgb():
@@ -210,3 +210,22 @@ def test_gpu_models_agree(name):
             assert d.mask is not None and d.mask.shape == img.shape[:2]
         else:
             assert d.keypoints.shape == (17, 3)
+
+
+def test_failed_load_is_cached_and_reset_clears_it(tmp_path, monkeypatch):
+    calls = []
+    real = runtime._open
+
+    def counting_open(name, model_dir, kinds=("trt", "cuda", "cpu")):
+        calls.append(name)
+        return real(name, model_dir, kinds)
+    monkeypatch.setattr(runtime, "_open", counting_open)
+    with pytest.raises(FileNotFoundError):
+        runtime.load_model("yolo26l-seg", model_dir=tmp_path)
+    with pytest.raises(runtime.ModelUnavailable):
+        runtime.load_model("yolo26l-seg", model_dir=tmp_path)   # no second build attempt
+    assert calls == ["yolo26l-seg"]
+    runtime.reset_models()
+    with pytest.raises(FileNotFoundError):
+        runtime.load_model("yolo26l-seg", model_dir=tmp_path)
+    assert calls == ["yolo26l-seg", "yolo26l-seg"]

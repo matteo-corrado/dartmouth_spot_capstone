@@ -31,6 +31,8 @@ TRACK_TOL_DEG = 10.0
 GAZE_LIMIT_DEG = 60.0      # gaze_at_bearing shoulder-yaw clamp; candidates beyond it are skipped
 MAX_CLOTHING_CANDIDATES = 3
 GAZE_SETTLE_S = 2.5        # gaze path is rate-limited (~2 s); let the arm arrive before capturing
+YES_NO_TIMEOUT_S = 5.0     # the yes/no VLM call runs under the dispatcher's lock: keep it short
+HAND_POLL_S = 0.15         # pause between raised-hand pose snapshots (not back-to-back)
 
 # COCO keypoint indices.
 L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST = 5, 6, 9, 10
@@ -153,6 +155,9 @@ def wait_for_raised_hand(robot, sources, timeout_s: float = 5.0, frames_needed: 
             return None
         if len(winners) == 1:
             return winners[0]["det"]
+        left = timeout_s - (clock() - start)
+        if left > 0:
+            sleep(min(HAND_POLL_S, left))
     return None
 
 
@@ -191,11 +196,15 @@ def _gripper_crop(robot) -> bytes | None:
 
 
 def wearing(robot, person: Detection, clothing: str, gaze: Callable[[float], bool], *,
-            sleep: Callable[[float], None] = time.sleep) -> bool | None:
-    """Aim the gripper camera at ``person`` and ask the VLM whether they wear ``clothing``."""
+            sleep: Callable[[float], None] = time.sleep,
+            abort: Callable[[], bool] = lambda: False) -> bool | None:
+    """Aim the gripper camera at ``person`` and ask the VLM whether they wear
+    ``clothing``. None (no crop, no VLM call) once ``abort()`` is true."""
     if not gaze(person.bearing_deg):
         return None
     sleep(GAZE_SETTLE_S)
+    if abort():
+        return None
     try:
         crop = _gripper_crop(robot)
     except Exception as e:
@@ -203,8 +212,10 @@ def wearing(robot, person: Detection, clothing: str, gaze: Callable[[float], boo
         return None
     if crop is None:
         return None
+    if abort():
+        return None
     answer = ask_vlm(WEARING_PROMPT.format(clothing=clothing), [crop],
-                     system=YES_NO_SYSTEM, max_tokens=8)
+                     system=YES_NO_SYSTEM, max_tokens=8, timeout=YES_NO_TIMEOUT_S)
     return _yes_no(answer)
 
 
@@ -239,8 +250,10 @@ def select_person(robot, phrase: str, speak: Callable[[str], None],
                   gaze: Callable[[float], bool], *,
                   clock: Callable[[], float] = time.monotonic,
                   sleep: Callable[[float], None] = time.sleep,
+                  abort: Callable[[], bool] = lambda: False,
                   ) -> tuple[Detection | None, str | None]:
-    """Pick the person ``phrase`` refers to: (target, None) or (None, message to speak)."""
+    """Pick the person ``phrase`` refers to: (target, None) or (None, message to speak).
+    ``abort()`` true (a stop arrived): (None, None), no further crop or VLM call."""
     clothing, side = parse_person_description(phrase)
     sb = speaker_bearing()
     everyone = _people(robot)
@@ -286,8 +299,12 @@ def select_person(robot, phrase: str, speak: Callable[[str], None],
 
     yes = []
     for c in cands:
-        if wearing(robot, c, clothing, gaze_once, sleep=sleep):
+        if abort():
+            return None, None
+        if wearing(robot, c, clothing, gaze_once, sleep=sleep, abort=abort):
             yes.append(c)
+        if abort():
+            return None, None
         if refused:
             break
     if refused:  # arm disabled or the gaze refused: fall back to a raised hand
