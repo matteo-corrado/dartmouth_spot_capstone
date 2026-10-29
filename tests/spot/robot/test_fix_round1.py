@@ -9,6 +9,7 @@ import src.spot.robot.arm as arm_mod
 import src.spot.robot.dispatcher as dispatcher
 import src.spot.robot.motion as motion
 import src.voice_control.spot_dispatch as d
+import src.spot.features.mouth.handlers as mouth_h
 import src.voice_control.spot_tts as tts_mod
 from src.spot.core.registry import ActionSpec
 from src.spot.features import REGISTRY
@@ -41,7 +42,7 @@ def test_rebinding_nav_reaches_every_path(monkeypatch):
     monkeypatch.setattr(CONNECTION, "_session", {"cmd": cmd, "state": FakeState(), "robot": object()})
     monkeypatch.setattr(ARM, "_pose", "stowed")
     monkeypatch.setattr(ARM, "close_mouth", lambda: None)
-    monkeypatch.setattr(d, "_auto_arm_pending", False)
+    monkeypatch.setattr(mouth_h, "_auto_arm_pending", False)
 
     dispatcher.dispatch_safety({"intent": "stop", "params": {}})   # stop branch cancels nav
     motion.abort_motion(cmd, "walk")                               # abort path cancels nav

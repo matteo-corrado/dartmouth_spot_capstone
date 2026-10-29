@@ -6,6 +6,7 @@ import pytest
 
 import src.session as session_mod
 import src.voice_control.spot_dispatch as d
+import src.spot.features.mouth.handlers as mouth_h
 from src.spot.robot import ARM, CONNECTION, NAV
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.state as state_mod
@@ -53,9 +54,9 @@ def env(monkeypatch):
     monkeypatch.setattr(ARM, "_mouth_resume", False)
     monkeypatch.setattr(ARM, "_talk_resume", False)
     monkeypatch.setattr(ARM, "_last_brain", None)
-    monkeypatch.setattr(d, "_auto_arm", False)
-    monkeypatch.setattr(d, "_auto_arm_pending", False)
-    monkeypatch.setattr(d, "_auto_arm_thread", None)
+    monkeypatch.setattr(mouth_h, "_auto_arm", False)
+    monkeypatch.setattr(mouth_h, "_auto_arm_pending", False)
+    monkeypatch.setattr(mouth_h, "_auto_arm_thread", None)
     state = SimpleNamespace(standing=True)
     monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: state.standing)
     monkeypatch.setattr(d.time, "sleep", lambda s: None)
@@ -65,7 +66,7 @@ def env(monkeypatch):
 
 def _owe():
     """Startup state with auto-arm on (without set_auto_arm's background fold)."""
-    d._auto_arm = d._auto_arm_pending = True
+    mouth_h._auto_arm = mouth_h._auto_arm_pending = True
 
 
 def _join_auto():
@@ -141,7 +142,7 @@ def test_auto_arm_wanted_flags():
 
 def test_stand_folds_arm_after_standing(env):
     _owe()
-    d._auto_arm_pending = False                  # e.g. a sit cleared the fold
+    mouth_h._auto_arm_pending = False            # e.g. a sit cleared the fold
     assert d.dispatch_intent({"intent": "stand", "params": {}}) is True
     _join_auto()
     assert env.cmd.kinds() == ["mobility", "arm_joints"]
