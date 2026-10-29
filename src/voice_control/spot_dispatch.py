@@ -103,6 +103,7 @@ _auto_arm_pending = False   # an auto fold is still owed (startup / after a stan
 _auto_arm_thread = None
 _gaze_deg = None            # sh0 (deg) last commanded in the talk pose; None = unknown
 _gaze_t = 0.0               # monotonic time of the last gaze command
+_arm_settle_until = 0.0     # monotonic: a pose move is still in flight (no gaze before)
 _closing = False            # set by close_spot_session: no new bring-up after that
 
 
@@ -129,9 +130,12 @@ def get_arm_pose() -> str:
 
 
 def _set_arm_pose(pose: str):
-    global _arm_pose, _gaze_deg
+    global _arm_pose, _gaze_deg, _arm_settle_until
     _arm_pose = pose
     _gaze_deg = 0.0 if pose == "talk" else None  # every talk send centres sh0
+    # A gaze must not supersede a pose move still in flight (its sender
+    # waits on that cmd id before turning the mouth on).
+    _arm_settle_until = time.monotonic() + _poses.JOINT_MOVE_SECS + 0.5
     st = getattr(_last_brain, "session_state", None)
     if st is not None:
         try:
@@ -1134,6 +1138,8 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         if target is None:
             return False
         now = time.monotonic()
+        if now < _arm_settle_until:
+            return False  # the arm is still folding / re-centring
         last = _gaze_deg
         if last is not None:
             if abs(target - last) <= GAZE_MIN_CHANGE_DEG and not (target == 0.0 and last != 0.0):
@@ -1144,7 +1150,8 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
             return False
         sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
         with _arm_lock:
-            if _aborted(gen) or _closing or _arm_pose != "talk" or is_navigating():
+            if (_aborted(gen) or _closing or _arm_pose != "talk" or is_navigating()
+                    or time.monotonic() < _arm_settle_until):
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=RPC_TIMEOUT_S)
             _gaze_deg, _gaze_t = target, now

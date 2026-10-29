@@ -22,6 +22,7 @@ def cmd(monkeypatch):
     monkeypatch.setattr(d, "_closing", False)
     monkeypatch.setattr(d, "_gaze_deg", 0.0)
     monkeypatch.setattr(d, "_gaze_t", 0.0)
+    monkeypatch.setattr(d, "_arm_settle_until", 0.0)
     monkeypatch.setattr(d, "is_navigating", lambda: False)
     monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)
     monkeypatch.setattr(tuning, "_cached", tuning.Tuning())
@@ -147,6 +148,15 @@ def test_stale_gen_refused_under_lock(cmd):
     stale = d.current_safety_gen() - 1
     assert d.gaze_at_bearing(30.0, gen=stale) is False
     assert cmd.sent == []
+
+
+def test_no_gaze_while_a_pose_move_is_in_flight(cmd):
+    """A fold / halt-resume waits on its own cmd id before enabling the mouth:
+    a gaze must not supersede it mid-rise."""
+    d._set_arm_pose("talk")                      # e.g. the auto fold just sent
+    assert d.gaze_at_bearing(30.0) is False
+    cmd.clock["t"] += 3.1                        # JOINT_MOVE_SECS + 0.5 later
+    assert d.gaze_at_bearing(30.0) is True
 
 
 def test_pose_send_resets_gaze_memory(cmd):
