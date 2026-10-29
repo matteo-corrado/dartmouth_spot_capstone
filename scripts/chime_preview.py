@@ -23,7 +23,7 @@ from src.spot.audio.chimes import (  # noqa: E402
     SAMPLE_RATE, TAIL_MS, AudioFeedback, _tone)
 from src.spot.audio.player import AudioPlayer  # noqa: E402
 
-SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as client_mic
+SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as src/spot/audio/capture.py / player
 
 LEAD_S = 0.25  # silence first so the USB speaker is awake (it drops the start of a fresh stream)
 GAP_S = 1.5

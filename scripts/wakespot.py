@@ -290,7 +290,7 @@ def _emergency_cut(proc: subprocess.Popen, keepalive) -> int:
 def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
     """Ask voice control to sit Spot and power off motors, then return.
 
-    Sends SIGTERM to the child (which client_mic.py converts to a
+    Sends SIGTERM to the child (which src/spot/app/main.py converts to a
     KeyboardInterrupt and runs cleanup_spot → blocking_sit → power_off),
     then waits up to GRACEFUL_TIMEOUT_SEC for the child to exit. If the
     user escalates to emergency mid-wait, OR the timeout expires, we
