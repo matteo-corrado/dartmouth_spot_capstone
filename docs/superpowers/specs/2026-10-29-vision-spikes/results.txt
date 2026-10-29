@@ -12,3 +12,5 @@ yolo26l-pose   trt  (Tens)    10.1 ms/img  load  22.8s  dets 38 classes [2, 3, 5
 yolo26l-pose   cuda (CUDA)    32.0 ms/img  load   0.2s  dets 38 classes [2, 3, 5, 6, 7, 8, 9, 11, 12, 13, 15, 17, 20, 22, 27, 28, 29, 31, 33, 34, 40, 43, 47, 50, 51, 58, 59, 75, 94] box diff vs trt 0.0px
 yolo26l        trt  (Tens)     9.8 ms/img  load  31.6s  dets 4 classes [6, 13, 55, 65]
 yolo26l        cuda (CUDA)    30.4 ms/img  load   0.2s  dets 4 classes [6, 13, 55, 65] box diff vs trt 0.0px
+yoloe-26l-seg  trt  (Tens)    14.0 ms/img  load  75.5s  dets 11 classes [0, 1, 8, 17, 51, 62]
+yoloe-26l-seg  cuda (CUDA)    39.7 ms/img  load   0.2s  dets 11 classes [0, 1, 8, 17, 51, 62] box diff vs trt 0.3px

@@ -41,7 +41,7 @@ The work is built as a **self-contained vision package** with **thin hooks** int
 |---|---|---|
 | Main detector: people + 80 COCO classes, with outlines | `yolo26l-seg` | 13.6 ms/image |
 | Raised hand, body orientation (on demand) | `yolo26l-pose` | 10.1 ms/image |
-| Open-vocabulary "find X" beyond COCO | `yoloe-26l-seg`, fixed noun list baked in at export | not yet measured; expect ~15 ms |
+| Open-vocabulary "find X" beyond COCO | `yoloe-26l-seg`, fixed noun list baked in at export (150 nouns, `export_yoloe.py`) | 14.0 ms/image; ONNX export + TensorRT verified |
 
 - Large size chosen by the operator; `l` costs ~4 ms more than `s` per image.
 - Instance segmentation is used for **distance**: depth is read only inside the object's outline, not its whole box.
