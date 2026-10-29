@@ -334,7 +334,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
     """connection.ensure: a step after the stand raises (auto-arm start). The
     session stays closable; main closes it BEFORE degrading to dry-run."""
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)
@@ -343,7 +343,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
 
     def boom(*a, **k):
         raise RuntimeError("auto-arm failed")
-    monkeypatch.setattr(sd, "start_auto_arm", boom)
+    monkeypatch.setattr(mouth_h, "start_auto_arm", boom)
     _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
     assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
     assert os.environ["SPOT_DRY_RUN"] == "1"
@@ -352,7 +352,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
 
 def test_ensure_keeps_live_session_closable(monkeypatch):
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     log = []
     _r = _patch_robot_close(monkeypatch, log)
     monkeypatch.setattr(_r.CONNECTION, "_closing", False)
@@ -360,7 +360,7 @@ def test_ensure_keeps_live_session_closable(monkeypatch):
     monkeypatch.setattr(_r.CONNECTION, "_context", None)
     fake = _FakeRobotSession(log)
     monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
-    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(mouth_h, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     with pytest.raises(RuntimeError):
         _r.CONNECTION.ensure()
     assert _r.CONNECTION._session is fake.session and _r.CONNECTION._context is fake
@@ -388,13 +388,13 @@ def test_failed_close_refuses_instead_of_dry_run(monkeypatch, capsys):
     """The half-up close raises partway (send_stop, once): the robot is still
     up, so main refuses (no dry-run degrade) and its shutdown retries the close."""
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)
     fake = _FakeRobotSession(log)
     monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
-    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(mouth_h, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     fails = [1]
 
     def send_stop(cmd):

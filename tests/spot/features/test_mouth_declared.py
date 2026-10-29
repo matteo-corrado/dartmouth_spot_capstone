@@ -39,7 +39,7 @@ def test_auto_arm_globals_read_live_through_spot_dispatch(monkeypatch):
 
 def test_core_callbacks_resolve_to_feature():
     import src.spot.robot as r
-    sd = r.legacy_features()
+    sd = r.mouth_handlers
     for name in ("_cancel_auto_arm", "_auto_arm_after_stand", "start_auto_arm",
                  "_handle_disable_mouth", "set_auto_arm", "auto_arm_if_ready",
                  "_handle_enable_mouth"):

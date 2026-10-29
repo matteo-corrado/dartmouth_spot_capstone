@@ -109,7 +109,7 @@ def test_close_still_stops_when_auto_arm_cancel_raises(monkeypatch):
         def power_off(self, **k):
             pass
     cmd = FakeCmd()
-    monkeypatch.setattr(d, "_cancel_auto_arm", boom)
+    monkeypatch.setattr(mouth_h, "_cancel_auto_arm", boom)
     monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     monkeypatch.setattr(ARM, "close_mouth", lambda: None)
