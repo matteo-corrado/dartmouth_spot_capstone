@@ -1,10 +1,13 @@
 """client_mic operator-control wiring (spotctl immediate commands)."""
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
 
 
 def test_motion_command_dispatches_and_aborts_chain(monkeypatch):
     sent = []
-    monkeypatch.setattr(cm, "execute_on_spot", lambda intent, brain=None: sent.append(intent) or True)
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda intent, brain=None: sent.append(intent) or True)
     cm._abort_chain.clear()
     assert cm._on_immediate("stop", None) == {"ok": True}
     assert sent[0]["intent"] == "stop"
@@ -14,7 +17,7 @@ def test_motion_command_dispatches_and_aborts_chain(monkeypatch):
 
 def test_stow_and_freeze_use_dispatcher(monkeypatch):
     sent = []
-    monkeypatch.setattr(cm, "execute_on_spot", lambda intent, brain=None: sent.append(intent["intent"]) or False)
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda intent, brain=None: sent.append(intent["intent"]) or False)
     assert cm._on_immediate("freeze", None) == {"ok": False}
     cm._on_immediate("stow", None)
     assert sent == ["freeze", "stow"]
@@ -23,9 +26,9 @@ def test_stow_and_freeze_use_dispatcher(monkeypatch):
 
 def test_spotctl_and_transcript_halts_hush_speech(monkeypatch):
     hushes = []
-    monkeypatch.setattr(cm, "_start_hush", lambda: hushes.append(1))
-    monkeypatch.setattr(cm, "execute_on_spot", lambda intent, brain=None: True)
-    monkeypatch.setattr(cm, "_dispatch_safety", lambda intent: True)
+    monkeypatch.setattr(_sl, "_start_hush", lambda: hushes.append(1))
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda intent, brain=None: True)
+    monkeypatch.setattr(_sl, "_dispatch_safety", lambda intent: True)
     cm._on_immediate("stop", None)
     cm._on_immediate("freeze", None)
     cm._on_immediate("stow", None)       # not a halt: speech keeps going
@@ -48,7 +51,7 @@ def test_probe_host_order(monkeypatch):
 
 
 def test_mute_unmute_and_status(monkeypatch):
-    monkeypatch.setattr(cm, "_operator_muted", False)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
     assert cm._on_immediate("mute", None)["muted"] is True
     st = cm._on_immediate("status", None)
     assert st["muted"] is True
@@ -61,7 +64,7 @@ def test_mute_unmute_and_status(monkeypatch):
 
 def test_mute_discards_callback_frames(monkeypatch):
     import numpy as np
-    monkeypatch.setattr(cm, "_operator_muted", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", True)
     while not cm.audio_queue.empty():
         cm.audio_queue.get_nowait()
     cm.audio_callback(np.zeros((480, 2), np.float32), 480, None, None)
@@ -78,7 +81,7 @@ def test_hush_resets_player_and_aborts_chain(monkeypatch):
         def force_reset(self):
             calls.append("reset")
 
-    monkeypatch.setattr(cm, "_audio_player", P())
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", P())
     monkeypatch.setenv("SPOT_DRY_RUN", "1")
     cm._abort_chain.clear()
     assert cm._on_immediate("hush", None) == {"ok": True}

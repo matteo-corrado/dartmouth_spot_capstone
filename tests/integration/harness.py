@@ -627,10 +627,18 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
 
         import src.voice_control.client_mic as cm
         import src.voice_control.control_server as control_server
+        import src.spot.app.main as _app
+        import src.spot.audio.capture as _cap
+        import src.spot.conversation.loop as _loop
+        import src.spot.conversation.utterance_log as _ul
+        import src.spot.mic.ring_control as _ring
+        import src.spot.operator.control as _ctl
+        import src.spot.safety.listener as _sl
+        import src.spot.stt.client as _stt
         # Live ASR and the control port: never reachable, even by code that
         # moves out from under the fakes below.
-        mp.setattr(cm, "grpc", SimpleNamespace(insecure_channel=lambda addr: None))
-        mp.setattr(cm, "ASRStub", _ForbiddenStub)
+        mp.setattr(_app, "grpc", SimpleNamespace(insecure_channel=lambda addr: None))
+        mp.setattr(_app, "ASRStub", _ForbiddenStub)
         mp.setattr(control_server.ControlServer, "start", _forbidden)
 
         # client_mic loads the project's dotenv file at import: pin the env after it.
@@ -647,15 +655,17 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             raise KeyError(f"no transcript for {missing} in {TRANSCRIPTS_PATH}")
         _H.calib = quiet_tile(load_pcm(_H.plan[0][1]), CALIB_S)
 
-        mp.setattr(cm, "sd", SimpleNamespace(
+        _fake_sd = SimpleNamespace(
             InputStream=FakeInputStream, query_devices=lambda *a, **k: [],
-            default=SimpleNamespace(device=[0, 0])))
-        mp.setattr(cm, "_open_mic_array", lambda: FakeMic())
-        mp.setattr(cm, "_make_ring_animator", lambda mic: None)
-        mp.setattr(cm, "AudioPlayer", FakePlayer)
-        mp.setattr(cm, "SpotTTS", FakeTTS)
-        mp.setattr(cm, "UtteranceLog", FakeUtteranceLog)
-        mp.setattr(cm, "_brain_ok", False)
+            default=SimpleNamespace(device=[0, 0]))
+        mp.setattr(_cap, "sd", _fake_sd)
+        mp.setattr(_app, "sd", _fake_sd)
+        mp.setattr(_cap, "_open_mic_array", lambda: FakeMic())
+        mp.setattr(_ring, "_make_ring_animator", lambda mic: None)
+        mp.setattr(_app, "AudioPlayer", FakePlayer)
+        mp.setattr(_app, "SpotTTS", FakeTTS)
+        mp.setattr(_ul, "UtteranceLog", FakeUtteranceLog)
+        mp.setattr(_loop.CONVERSATION, "_brain_ok", False)
 
         # Virtual monotonic clock for client_mic only: frame k of the main
         # stream is stamped vbase + k * 30 ms and every main-loop decision
@@ -664,34 +674,35 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         # is still fed at real time (the safety-KWS thread runs on its own
         # real clock); time.time()/sleep stay real.
         _H.vbase = _H.vnow = time.monotonic()
-        mp.setattr(cm, "time", _VirtualTime())
-        mp.setattr(cm, "audio_queue", LockstepQueue(cm.AUDIO_QUEUE_MAX))
+        for _m in (_cap, _ring, _sl, _loop, _ul, _app):  # every module that reads time
+            mp.setattr(_m, "time", _VirtualTime())
+        mp.setattr(_cap.CAPTURE, "audio_queue", LockstepQueue(cm.AUDIO_QUEUE_MAX))
         # Safety KWS: lock-stepped behind the main loop, and its 1.5 s
         # refractory window reads the same virtual clock (it defaults to the
         # real one). Run 2 of the un-lock-stepped harness missed/added a
         # safety hit after a refractory window that ended a few frames
         # earlier or later.
-        mp.setattr(cm, "_safety_q", SafetyLockstepQueue(cm.SAFETY_QUEUE_MAX))
+        mp.setattr(_sl.LISTENER, "_q", SafetyLockstepQueue(cm.SAFETY_QUEUE_MAX))
         real_safety_loop = cm.safety_kws_loop
 
         def safety_loop(*a, **k):
             k["clock"] = _VirtualTime().monotonic
             return real_safety_loop(*a, **k)
-        mp.setattr(cm, "safety_kws_loop", safety_loop)
+        mp.setattr(_sl, "safety_kws_loop", safety_loop)
 
         def fake_asr(stub, pcm_bytes, timeout=None):
             _H.hits["asr"] += 1
             _H.add({"kind": "asr", "n_bytes": len(pcm_bytes),
                     "sha1": hashlib.sha1(pcm_bytes).hexdigest()[:12]})
             return _H.transcripts.get(_H.clip, "") if _H.clip else ""
-        mp.setattr(cm, "send_to_asr", fake_asr)
+        mp.setattr(_stt, "send_to_asr", fake_asr)
 
         def fake_execute(intent, brain=None, speak=None):
             _H.add({"kind": "dispatch", "intent": intent.get("intent"),
                     "params": intent.get("params", {}), "via": _via()})
             return True
-        mp.setattr(cm, "execute_on_spot", fake_execute)
-        mp.setattr(cm, "get_spot_state", lambda: {})
+        mp.setattr(_loop, "execute_on_spot", fake_execute)
+        mp.setattr(_loop, "get_spot_state", lambda: {})
 
         # Dry-run's _dispatch_safety returns before execute_on_spot: record
         # here, then run the real one (it only prints in dry-run).
@@ -701,7 +712,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             _H.add({"kind": "dispatch", "intent": intent.get("intent"),
                     "params": intent.get("params", {}), "via": _via(), "safety": True})
             return real_dispatch_safety(intent)
-        mp.setattr(cm, "_dispatch_safety", dispatch_safety)
+        mp.setattr(_sl, "_dispatch_safety", dispatch_safety)
 
         real_enter_state = cm._enter_state
 
@@ -709,16 +720,16 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             _H.hits["enter_state"] += 1
             _H.add({"kind": "state", "to": new_state.name})
             return real_enter_state(new_state)
-        mp.setattr(cm, "_enter_state", enter_state)
+        mp.setattr(_loop, "_enter_state", enter_state)
 
         real_new_ep = cm._new_endpointer
 
         def new_endpointer():
             _H.ep = real_new_ep()  # observed (in_speech) by the feeder, never driven
             return _H.ep
-        mp.setattr(cm, "_new_endpointer", new_endpointer)
+        mp.setattr(_cap, "_new_endpointer", new_endpointer)
 
-        mp.setattr(cm, "_start_control_server", lambda q: None)
+        mp.setattr(_ctl, "_start_control_server", lambda q: None)
         real_drain = control_server.drain
 
         def drain(q, handler):
@@ -732,7 +743,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         mp.setattr(control_server, "drain", drain)
 
         t0 = time.monotonic()
-        cm.main()
+        _app.main()
         _H.meta["run_s"] = round(time.monotonic() - t0, 1)
 
     if _H.error is not None or not _H.done.is_set():

@@ -4,6 +4,9 @@ import numpy as np
 import pytest
 
 import src.voice_control.client_mic as cm
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 from src.voice_control.audio_frontend import UtteranceStats, passes_gate
 from src.voice_control.control_server import parse_command
 from src.voice_control.intent import short_utterance_ok
@@ -75,13 +78,13 @@ def test_short_utterance_ok(text, conv, ok):
 
 def _run_short(monkeypatch, transcript, in_conversation=True, safety_only=False):
     halts, llm = [], []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: transcript)
-    monkeypatch.setattr(cm, "_dispatch_safety", lambda intent: halts.append(intent["intent"]) or True)
-    monkeypatch.setattr(cm, "_start_hush", lambda: None)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: None)
-    monkeypatch.setattr(cm, "_auto_arm_at_turn", lambda gen: None)
-    monkeypatch.setattr(cm, "parse_intent", lambda t: llm.append(t) or None)
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: transcript)
+    monkeypatch.setattr(_sl, "_dispatch_safety", lambda intent: halts.append(intent["intent"]) or True)
+    monkeypatch.setattr(_sl, "_start_hush", lambda: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_loop, "_resume_talk_after_halt", lambda gen: None)
+    monkeypatch.setattr(_loop, "_auto_arm_at_turn", lambda gen: None)
+    monkeypatch.setattr(_loop, "parse_intent", lambda t: llm.append(t) or None)
     info = {}
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], info=info,
                          has_wake_detector=True, safety_only=safety_only,
@@ -125,8 +128,8 @@ def test_short_path_commands_only_in_wake_word_state(monkeypatch):
 # ---- safety rescue for lock/voice-rejected short utterances ---------------
 def test_rescue_executes_stop(monkeypatch):
     halts = []
-    monkeypatch.setattr(cm, "_dispatch_safety", lambda intent: halts.append(intent["intent"]) or True)
-    monkeypatch.setattr(cm, "_start_hush", lambda: None)
+    monkeypatch.setattr(_sl, "_dispatch_safety", lambda intent: halts.append(intent["intent"]) or True)
+    monkeypatch.setattr(_sl, "_start_hush", lambda: None)
     text, done = cm.rescue_safety(None, b"\0\0" * 1600, asr=lambda stub, pcm: "Stop.")
     assert done is True and text == "Stop." and halts == ["stop"]
     cm._abort_chain.clear()
@@ -163,7 +166,7 @@ def test_voiceprint_threshold_arg_reaches_the_queue():
 
 
 def test_status_shows_voiceprint_threshold(monkeypatch):
-    monkeypatch.setattr(cm, "_voiceprint_threshold", 0.42)
+    monkeypatch.setattr(_loop.CONVERSATION, "_voiceprint_threshold", 0.42)
     assert cm._status_snapshot()["voiceprint_threshold"] == 0.42
 
 

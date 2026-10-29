@@ -2,6 +2,9 @@
 from collections import namedtuple
 
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
+import src.spot.mic.ring_control as _ring
 from src.voice_control.tuning import load_tuning
 from src.voice_control.voice_state import VoiceState
 
@@ -30,12 +33,12 @@ def test_throttle():
 
 
 def _setup(monkeypatch, mic, ring_for):
-    monkeypatch.setattr(cm, "_mic", mic)
-    monkeypatch.setattr(cm, "_ring_for", ring_for)
-    monkeypatch.setattr(cm, "_ring_throttle", cm.RingThrottle(1000.0))
-    monkeypatch.setattr(cm, "_reject_until", 0.0)
-    monkeypatch.setattr(cm, "_state_leds", None)
-    monkeypatch.setattr(cm, "chime_for", lambda s: None)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic", mic)
+    monkeypatch.setattr(_ring, "_ring_for", ring_for)
+    monkeypatch.setattr(_ring.RING, "_ring_throttle", cm.RingThrottle(1000.0))
+    monkeypatch.setattr(_ring.RING, "_reject_until", 0.0)
+    monkeypatch.setattr(_loop.CONVERSATION, "_state_leds", None)
+    monkeypatch.setattr(_loop, "chime_for", lambda s: None)
 
 
 def test_enter_state_writes_ring_spec(monkeypatch):
@@ -56,12 +59,12 @@ def test_enter_state_writes_ring_spec(monkeypatch):
 def test_throttled_write_is_pending_then_flushed(monkeypatch):
     mic = FakeMic()
     _setup(monkeypatch, mic, lambda s, d, m, ring_offset_leds=0, reverse=False: Spec(3, 0x0040FF, None, 255))
-    monkeypatch.setattr(cm, "_ring_throttle", cm.RingThrottle(0.001))  # ~1000 s interval
+    monkeypatch.setattr(_ring.RING, "_ring_throttle", cm.RingThrottle(0.001))  # ~1000 s interval
     cm._enter_state(VoiceState.RESPONDING)
     cm._enter_state(VoiceState.THINKING)
     assert cm._ring_pending is True
     assert len(mic.calls) == 2  # only the first write happened
-    monkeypatch.setattr(cm, "_ring_throttle", cm.RingThrottle(1000.0))
+    monkeypatch.setattr(_ring.RING, "_ring_throttle", cm.RingThrottle(1000.0))
     cm._flush_ring()
     assert cm._ring_pending is False and len(mic.calls) == 4
 
@@ -97,7 +100,7 @@ def test_reject_flashes_red_then_restores(monkeypatch):
             started.append(self.fn)
 
     monkeypatch.setattr(cm.threading, "Timer", T)
-    monkeypatch.setattr(cm, "_ring_state", VoiceState.LISTENING)
+    monkeypatch.setattr(_ring.RING, "_ring_state", VoiceState.LISTENING)
     cm._signal_reject()
     assert mic.calls == [("effect", cm.LED_SOLID), ("color", cm.REJECT_COLOR)]
     cm._update_ring()  # mid-flash: deferred, not overwritten
