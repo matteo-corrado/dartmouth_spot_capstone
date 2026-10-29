@@ -53,3 +53,26 @@ def test_intent_rules_priority_stable():
     r.add(Feature("f1", intent_rules=(IntentRule(5, "a", b), IntentRule(1, "b", b))))
     r.add(Feature("f2", intent_rules=(IntentRule(5, "c", b), IntentRule(1, "d", b))))
     assert [x.pattern for x in r.intent_rules()] == ["b", "d", "a", "c"]
+
+
+def test_load_returns_failures_and_skips_loaded():
+    """Task 15: main calls load(ENABLED) again after the import-time load;
+    loaded features are skipped (no duplicate-action error) and the call's
+    failures come back with a traceback for the loud startup report (C6)."""
+    good = Feature("good", actions=(act("g"),))
+    calls = []
+
+    def imp(path):
+        calls.append(path)
+        if path.endswith("bad"):
+            raise ImportError("nope")
+        return SimpleNamespace(FEATURE=good)
+
+    r = Registry()
+    first = r.load(["good", "bad"], import_fn=imp)
+    assert [(n, str(e)) for n, e, _ in first] == [("bad", "nope")]
+    assert "ImportError: nope" in first[0][2]
+    second = r.load(["good", "bad"], import_fn=imp)  # good is not re-added
+    assert [n for n, _, _ in second] == ["bad"]
+    assert calls.count("src.spot.features.good") == 1
+    assert len(r.failures) == 2

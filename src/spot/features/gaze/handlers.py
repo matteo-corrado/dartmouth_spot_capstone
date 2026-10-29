@@ -91,14 +91,14 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
 
 
 def on_speaker_locked(body_deg, gen):
-    """`speaker_locked` subscriber (declared now, wired to the bus in Task 15;
-    client_mic's gaze worker still calls gaze_at_bearing directly).
+    """`speaker_locked` subscriber (declared, not subscribed: Task 15 kept the
+    conversation loop's gaze worker calling gaze_at_bearing directly).
 
     No defaults on purpose: a payload without the request-time gen raises
     (the bus logs it) instead of moving the arm with a late gen, and a None
     gen is skipped exactly as client_mic._gaze_at_speaker skips it. Runs the
-    RPC on the publisher's thread, so Task 15 must hand off to the gaze
-    worker (off the audio loop) as client_mic does today."""
+    RPC on the publisher's thread, so subscribing it needs a hand-off to the
+    gaze worker (off the audio loop) first."""
     if gen is None:
         return False
     return gaze_at_bearing(body_deg, gen)

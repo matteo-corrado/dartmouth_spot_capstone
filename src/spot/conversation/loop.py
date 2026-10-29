@@ -21,6 +21,7 @@ from contextlib import nullcontext
 import numpy as np
 
 import src.spot.audio.capture as _cap
+import src.spot.core.events as _ev
 import src.spot.conversation.filler as _filler
 import src.spot.conversation.gate as _gate
 import src.spot.conversation.utterance_log as _ul
@@ -174,6 +175,7 @@ def _enter_state(new_state):
     _ring.RING._ring_state = new_state
     CONVERSATION._status["state"] = new_state.name
     _ring.RING.update()
+    _ev.publish("voice_state_changed", state=new_state)
 
 
 def _heard(text: str) -> str:
@@ -366,7 +368,8 @@ class Conversation:
             print("[Lock] no direction readings — accepting all directions")
         self._status["locked_deg"] = _ul._body(ang)
         if ang is not None:
-            _gaze_at_speaker(_ul._body(ang))
+            _gaze_at_speaker(_ul._body(ang))  # gaze stays a direct call (C5; see features/gaze)
+            _ev.publish("speaker_locked", body_deg=_ul._body(ang), gen=_safety_gen_now())
         self.state = VoiceState.LISTENING
         self.listening_since = now_m
         _enter_state(VoiceState.LISTENING)
@@ -380,6 +383,7 @@ class Conversation:
         self._voice.clear()
         self._status["locked_deg"] = None
         _gaze_at_speaker(None)  # back to centre
+        _ev.publish("speaker_released")
         if _cap._mic_usable():
             _cap.CAPTURE._mic.set_fixed_beams(None)
         self.state = VoiceState.WAKE_WORD
@@ -529,6 +533,7 @@ class Conversation:
         if name == "listen":
             # Open the conversation with no direction lock (accept all).
             self._lock.release()
+            _ev.publish("speaker_released")
             self._voice.clear()  # no stale enrolment; the first utterance enrols
             self._status["locked_deg"] = None
             if _cap._mic_usable():
@@ -565,7 +570,7 @@ class Conversation:
                   f"model={'ready' if self._voice.embedder is not None else 'not loaded'})")
 
     def run(self, *, args, stub, brain, tts, vad, wake_detector, use_wake_word,
-            floor, utt_log, store_transcript, stream, shutdown):
+            floor, utt_log, store_transcript, stream, shutdown, ctl_q=None, ctl_srv=None):
         """The voice main loop (was the body of client_mic.main() after
         startup). Returns when the loop exits (KeyboardInterrupt), after
         stopping the control server, the stream and the runtime."""
@@ -618,8 +623,9 @@ class Conversation:
         # Operator control server (spotctl). Immediate commands run on its HTTP
         # threads via _on_immediate; queued ones are drained here between frames.
         from src.voice_control.control_server import drain as _drain_control
-        ctl_q = queue.Queue()
-        ctl_srv = _ctl._start_control_server(ctl_q)
+        if ctl_q is None:  # main starts it (step 8); standalone callers get one here
+            ctl_q = queue.Queue()
+            ctl_srv = _ctl._start_control_server(ctl_q)
 
         try:
             while True:

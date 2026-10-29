@@ -18,6 +18,7 @@ import re
 import threading
 import time
 
+import src.spot.core.events as _ev
 import src.spot.audio.capture as _cap
 import src.spot.conversation.loop as _loop
 import src.spot.stt.client as _stt
@@ -101,7 +102,8 @@ class SafetyListener:
 
     halt(intent) -> bool sends the halt (direct call, lock-free);
     hush() cuts current speech and always runs on its own daemon thread.
-    No event-bus reference: nothing on the stop path is published.
+    The bus is never on the stop path: safety_halt is published only after
+    the halt call has returned (a notice; publish never raises).
     """
 
     def __init__(self, halt, hush):
@@ -132,6 +134,7 @@ class SafetyListener:
         # and neither waits on the other.
         self.start_hush()
         self._halt(intent)
+        _ev.publish("safety_halt", intent=intent["intent"])  # notice only, after the halt returned
 
     def start_hush(self) -> None:
         """Cut current speech on a daemon thread (never blocks or breaks the caller).

@@ -12,6 +12,7 @@ import time
 
 from bosdyn.client.robot_command import RobotCommandBuilder
 
+import src.spot.core.events as _ev
 import src.spot.robot as _r
 from src.spot.robot import motion as _motion
 from src.spot.robot import state as _state
@@ -319,6 +320,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 cmd = RobotCommandBuilder.synchro_stand_command()
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Stand command sent")
+                _ev.publish("robot_stood")
                 _r.legacy_features()._auto_arm_after_stand()
                 return True
             except Exception as e:
@@ -336,6 +338,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                         # No self-right here: that is its own explicit intent.
                         cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
                         print("[Spot] ✓ Faults cleared, standing")
+                        _ev.publish("robot_stood")
                         _r.legacy_features()._auto_arm_after_stand()
                         return True
                     except Exception as e2:
@@ -361,6 +364,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 cmd = RobotCommandBuilder.synchro_sit_command()
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Sit command sent")
+                _ev.publish("robot_sat")
                 return True
             except Exception as e:
                 print(f"[Spot] ✗ Sit failed: {e}")

@@ -10,6 +10,16 @@ Everything else goes through the LLM brain which decides what to do AND what to 
 Moved from src/voice_control/client_mic.py (Task 10): CLI args, startup,
 the shutdown signal handler and the shutdown sequence. The voice loop itself
 is Conversation.run() (src/spot/conversation/loop.py).
+
+main() (Task 15) reads top to bottom as the pipeline: tuning, bus, robot
+owners, features, audio (capture, ring, wake, safety listener), services
+(stt, tts, brain, vision), robot bring-up, conversation, control server,
+Conversation.run(). Each step is one helper below; main holds only the order.
+
+Run it through the script shim (python src/voice_control/client_mic.py, as
+scripts/run_voice_control.py does). This module has no __main__ block: run
+as ``python -m src.spot.app.main`` it would be a second module object
+(a second _shutdown_requested), so that is not an entry point.
 """
 import os
 import sys
@@ -81,6 +91,7 @@ signal.signal(signal.SIGINT, _shutdown_signal_handler)
 signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 from src.spot.stt.asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk  # noqa: F401
 from src.spot.stt.asr_pb2_grpc import ASRStub
@@ -109,6 +120,15 @@ import src.spot.conversation.loop as _loop  # noqa: E402
 import src.spot.conversation.utterance_log as _ul  # noqa: E402
 import src.spot.mic.ring_control as _ring  # noqa: E402
 import src.spot.safety.listener as _sl  # noqa: E402
+import src.spot.core.events as _ev  # noqa: E402
+import src.spot.operator.control as _ctl  # noqa: E402
+from src.spot.core.events import EventBus  # noqa: E402
+from src.spot.features.ctx import Ctx  # noqa: E402
+from src.spot.stt.factory import make_stt  # noqa: E402
+from src.spot.tts.factory import make_tts  # noqa: E402
+from src.spot.wake.factory import make_wake  # noqa: E402
+from src.spot.brain.factory import make_brain  # noqa: E402
+from src.spot.perception.factory import make_vision  # noqa: E402
 
 
 def cleanup_spot():
@@ -168,14 +188,11 @@ def _probe_host() -> str:
     return host or "192.168.80.3"
 
 
+
 def _make_wake_detector():
     """Wake backend from SPOT_WAKE_BACKEND; the sherpa-onnx spotter gets the
-    peak-safe gain target from Tuning.kws_peak_target."""
-    if os.environ.get("SPOT_WAKE_BACKEND", "sherpa_onnx").lower() == "sherpa_onnx":
-        from src.voice_control.wake.sherpa_onnx import WakeWordDetector
-        return WakeWordDetector(peak_target=_tuning.kws_peak_target)
-    from src.voice_control.wake import make_wake_detector
-    return make_wake_detector()
+    peak-safe gain target from Tuning.kws_peak_target (src/spot/wake/factory)."""
+    return make_wake(_tuning)
 
 
 def auto_arm_wanted(args, tuning) -> bool:
@@ -208,11 +225,19 @@ def _shutdown_runtime() -> None:
 
 
 # ============================================================================
-# Main Voice Control Loop
+# Startup steps (called in order by main)
 # ============================================================================
-def main(argv: list[str] | None = None):
-    C = _loop.CONVERSATION
+# Features whose declared subscriptions main does NOT put on the bus.
+# gaze: on_speaker_locked sends the arm RPC on the caller's thread and the
+# bus calls it on the publisher's (the main/audio loop), so the conversation
+# loop keeps its direct _gaze_at_speaker call, which hands off to the one
+# gaze worker thread (safety condition C5, Task 15).
+_UNSUBSCRIBED_FEATURES = frozenset({"gaze"})
 
+
+def _parse_args(argv, tuning):
+    """CLI args and the process env they set; device auto-detect.
+    None when main should return now (--list-devices, no mic)."""
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
     parser.add_argument("--device", type=int, default=None, help="Mic input device index (auto-detected from XVF3800)")
@@ -247,7 +272,7 @@ def main(argv: list[str] | None = None):
         default=None,
         help="Latency JSONL file path (default: logs/latency-{timestamp}.jsonl). Only used when --latency=file or all.",
     )
-    parser.add_argument("--mic-channel", type=int, default=_tuning.mic_channel,
+    parser.add_argument("--mic-channel", type=int, default=tuning.mic_channel,
                         help="XVF3800 input channel (0=beamformed, 1=ASR); default Tuning.mic_channel")
     parser.add_argument("--no-transcript-log", action="store_true",
                         help="Privacy: conversation + utterance logs store transcript: null")
@@ -259,10 +284,8 @@ def main(argv: list[str] | None = None):
     _cap.MIC_CHANNEL = args.mic_channel
     if args.no_transcript_log:
         os.environ["SPOT_NO_TRANSCRIPT_LOG"] = "1"  # read by ConversationLog
-    store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "").strip().lower() not in (
+    args.store_transcript = os.environ.get("SPOT_NO_TRANSCRIPT_LOG", "").strip().lower() not in (
         "1", "true", "yes", "on")
-    utt_log = _ul.UtteranceLog(_ul.UTTERANCE_LOG_DIR, store_transcript=store_transcript)
-    C._store_transcript = store_transcript
 
     if args.dry_run:
         os.environ["SPOT_DRY_RUN"] = "1"
@@ -274,7 +297,7 @@ def main(argv: list[str] | None = None):
 
     # Latency telemetry — no-op when --latency=off
     init_recorder(mode=args.latency, file_path=args.latency_out,
-                  include_transcript=store_transcript)
+                  include_transcript=args.store_transcript)
 
     # Auto-detect devices by name if not explicitly specified
     if args.device is None:
@@ -282,7 +305,7 @@ def main(argv: list[str] | None = None):
         if args.device is None:
             print(f"ERROR: Could not find mic device matching '{_cap.MIC_DEVICE_NAME}'")
             print("Run with --list-devices to see available devices, then pass --device <index>")
-            return
+            return None
         print(f"[Auto-detected mic: device {args.device} ({_cap.MIC_DEVICE_NAME})]")
     if args.output_device is None:
         args.output_device = _cap._find_device_by_name(_cap.SPEAKER_DEVICE_NAME, "output")
@@ -293,11 +316,68 @@ def main(argv: list[str] | None = None):
 
     if args.list_devices:
         print(sd.query_devices())
-        return
+        return None
+    return args
 
-    # ========================================================================
-    # Startup
-    # ========================================================================
+
+def _make_bus():
+    """The process event bus; publishers reach it through src.spot.core.events.BUS."""
+    bus = EventBus()
+    _ev.BUS = bus
+    return bus
+
+
+def _robot_owners():
+    """The robot owner singletons (SAFETY_GEN, CONNECTION, ARM, NAV), created
+    at import of src.spot.robot (Task 9). Importing connects nothing."""
+    import src.spot.robot as _r
+    return _r
+
+
+def _print_feature_failure(name, exc, tb):
+    print(f"[Features] FAILED: {name} ({type(exc).__name__}: {exc})", flush=True)
+    print(tb, end="" if tb.endswith("\n") else "\n", flush=True)
+
+
+def _start_features(args, bus, robot, tuning) -> bool:
+    """REGISTRY.load(ENABLED), subscriptions on the bus, each feature's start(ctx).
+
+    Safety condition C6: a feature that fails to import or start is printed
+    loudly ([Features] FAILED + traceback). On the robot that is fatal (False:
+    main returns before any audio or robot bring-up); --dry-run only warns.
+    Starts run before set_auto_arm (step 7), so the mouth start (the fold
+    after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted (C3).
+    """
+    from src.spot.features import REGISTRY
+    from src.spot.features.enabled import ENABLED
+    failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
+    ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
+              nav=robot.NAV, bus=bus, tuning=tuning)
+    for feature in REGISTRY.features:
+        if feature.name not in _UNSUBSCRIBED_FEATURES:
+            for event, handler in feature.subscriptions:
+                bus.subscribe(event, handler)
+        if feature.start is not None:
+            try:
+                feature.start(ctx)
+            except Exception as exc:  # noqa: BLE001 - reported below, never silent
+                import traceback
+                failures.append((feature.name, exc, traceback.format_exc()))
+    for name, exc, tb in failures:
+        _print_feature_failure(name, exc, tb)
+    if failures and not args.dry_run:
+        print(f"[Features] refusing to start on the robot: {len(failures)} feature(s) failed "
+              f"({', '.join(n for n, _, _ in failures)}). Fix it, or use --dry-run.", flush=True)
+        return False
+    if failures:
+        print("[Features] WARNING: --dry-run continues without the failed feature(s)", flush=True)
+    return True
+
+
+def _start_audio(args, tuning):
+    """Audio capture (noise floor, shared player + chimes, VAD), the mic
+    array + LED ring, the wake detector and the always-on safety listener.
+    The input stream itself opens last (step 7). Returns the audio parts."""
     print("=" * 60)
     print("SPOT VOICE CONTROL — LLM Brain Mode")
     print("=" * 60)
@@ -314,45 +394,11 @@ def main(argv: list[str] | None = None):
 
     # Calibrate noise floor (seeds the adaptive noise tracker)
     noise_rms = _cap.CAPTURE.calibrate_floor(_cap.NOISE_CALIBRATION_SECONDS, args.device)
-    floor = FloorTracker(_tuning.floor_window_s, _tuning.floor_percentile,
-                         _tuning.floor_rise_db_per_s, frame_s=_cap.FRAME_S)
+    floor = FloorTracker(tuning.floor_window_s, tuning.floor_percentile,
+                         tuning.floor_rise_db_per_s, frame_s=_cap.FRAME_S)
     floor.seed(_cap.dbfs_from_rms(noise_rms))  # seed ONCE (seed clears the window)
-    print(f"[Noise floor: {floor.floor_db:.1f} dBFS (gate: speech >= {_tuning.min_speech_dbfs:.0f} dBFS, "
-          f"SNR(p90) >= {_tuning.min_snr_db:.1f} dB)]")
-
-    # Connect to ASR
-    asr_server = "localhost:50055"
-    print(f"\nConnecting to ASR server at {asr_server}...")
-    channel = grpc.insecure_channel(asr_server)
-    stub = ASRStub(channel)
-
-    # Initialize LLM Brain
-    brain = None
-    if not args.no_brain:
-        print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
-        brain = LLMBrain(model=DEFAULT_MODEL)
-        # After a reboot llama-server answers 503 while loading: wait for it
-        # instead of disabling the brain for the session.
-        print("[Brain] waiting up to 90s for llama-server...")
-        ready = brain.wait_available(timeout_s=90.0)
-        C._brain_ok = bool(ready)
-        if ready:
-            print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
-            # Warm the single brain model (gemma4:e4b handles both LLM and VLM after
-            # Phase 2 collapse). Cold-start ~15-20s blocks AudioPlayer + TTS init, but
-            # surfaces model-load errors before the mic opens.
-            rec = get_recorder()
-            ctx = rec.startup_phase("brain_warmup") if rec else nullcontext()
-            with ctx:
-                brain.warm_up()
-        else:
-            # Keep the brain object: process_utterance re-checks before each
-            # utterance and switches to the LLM as soon as it answers.
-            print("[Brain] llama-server not available yet — regex-only until it answers "
-                  "(re-checked every utterance)")
-            print("[Brain] Check: systemctl status llama-server (port 11435)")
-    else:
-        print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
+    print(f"[Noise floor: {floor.floor_db:.1f} dBFS (gate: speech >= {tuning.min_speech_dbfs:.0f} dBFS, "
+          f"SNR(p90) >= {tuning.min_snr_db:.1f} dB)]")
 
     # Initialize the shared audio player BEFORE TTS / beeps. Owns the single
     # persistent OutputStream that all playback (TTS and beeps) flows through.
@@ -360,54 +406,11 @@ def main(argv: list[str] | None = None):
     print("\nInitializing audio player...")
     _cap.CAPTURE._audio_player = AudioPlayer(output_device=args.output_device)
 
-    # Initialize TTS — submits playback through the shared player.
-    tts = None
-    if not args.no_tts:
-        print("\nInitializing TTS...")
-        tts = SpotTTS(player=_cap.CAPTURE._audio_player, volume=args.volume)
-        if tts.is_available():
-            print(f"[TTS] Ready (output device: {args.output_device}, "
-                  f"volume={args.volume}, mic will mute during playback)")
-        else:
-            print("[TTS] Not available (kokoro-onnx model missing). Continuing without speech output.")
-            tts = None
-        # Register the live TTS instance as the module singleton so the LLM
-        # set_volume action (in spot_dispatch._handle_set_volume) can find it.
-        if tts is not None:
-            import src.voice_control.spot_tts as _spot_tts_mod
-            _spot_tts_mod._tts_instance = tts
-    else:
-        print("\n[TTS] Disabled (--no-tts flag)")
-
     # Wire the audio feedback beeps to the shared player and apply volume.
     # ``beep.device`` is kept as a no-op attribute for backwards compat —
     # device selection is now owned by the player.
     beep.set_player(_cap.CAPTURE._audio_player)
     beep.set_volume(args.volume)
-
-    # Stage 2F P7: onboard RGB LED state indicator. Lazily binds to the Spot
-    # AV service on first state change; no-op in dry-run or if the robot has
-    # no AV system. Chimes are the fallback indicator either way.
-    if os.environ.get("SPOT_DRY_RUN") == "1":
-        C._state_leds = None
-    else:
-        from src.voice_control.spot_leds import StateLeds
-        import src.voice_control.spot_dispatch as _spot_dispatch
-
-        def _led_robot():
-            # Return the ALREADY-established Spot session's robot, or None.
-            # Never call ensure_spot_session() here: it would connect (and
-            # possibly stand) the robot synchronously on the mic-loop thread,
-            # freezing voice control for ~30s — and could fire on a noise burst.
-            # LEDs stay off until a real command brings the session up, then
-            # activate on the next state change.
-            try:
-                sess = getattr(_spot_dispatch, "_spot_session", None)
-                return sess["robot"] if sess else None
-            except Exception:
-                return None
-
-        C._state_leds = StateLeds(get_robot=_led_robot)
 
     # Initialize VAD (Silero via sherpa-onnx — replaces webrtcvad 2012-era model)
     vad_cfg = VadModelConfig(
@@ -422,6 +425,10 @@ def main(argv: list[str] | None = None):
         debug=False,
     )
     vad = VoiceActivityDetector(vad_cfg, buffer_size_in_seconds=10)
+
+    # XVF3800 control (DoA for the speaker lock, LED ring). Optional.
+    _cap.CAPTURE._mic = _cap._open_mic_array()
+    _ring.RING._anim = _ring._make_ring_animator(_cap.CAPTURE._mic)
 
     # Wake word detector (sherpa-onnx keyword spotter)
     wake_detector = None
@@ -443,8 +450,8 @@ def main(argv: list[str] | None = None):
     # Stage 2F C1: always-on safety KWS — stop/freeze/estop fire at frame level
     # in EVERY voice state (own thread, own queue fed before any mic gate),
     # with no wake required. Fail-closed on the robot: if it cannot load,
-    # startup refuses (below) unless --allow-no-safety-kws is passed. In
-    # dry-run it only warns; then safety needs a transcript (wake first).
+    # startup refuses (robot bring-up) unless --allow-no-safety-kws is passed.
+    # In dry-run it only warns; then safety needs a transcript (wake first).
     safety_detector = None
     try:
         from src.voice_control.wake.safety_kws import make_safety_detector
@@ -457,29 +464,85 @@ def main(argv: list[str] | None = None):
         print(f"[SafetyKWS] import failed: {e}")
         safety_detector = None
 
+    # The halt stays bound to listener._dispatch_safety (R25).
+    if safety_detector is not None:
+        _sl.LISTENER.start(safety_detector)
+        print("[SafetyKWS] safety thread running (every state, ignores mute/gate)")
+
+    return SimpleNamespace(floor=floor, vad=vad, wake_detector=wake_detector,
+                           use_wake_word=use_wake_word,
+                           have_safety_kws=safety_detector is not None)
+
+
+def _make_services(args, C):
+    """Speech-to-text, text-to-speech, the LLM brain and vision."""
+    # Connect to ASR (the model is the server's SPOT_ASR_BACKEND)
+    stt = make_stt(grpc.insecure_channel, ASRStub)
+
+    # Initialize TTS — submits playback through the shared player.
+    tts = None
+    if not args.no_tts:
+        tts = make_tts(_cap.CAPTURE._audio_player, args.volume,
+                       output_device=args.output_device, cls=SpotTTS)
+    else:
+        print("\n[TTS] Disabled (--no-tts flag)")
+
+    # Initialize LLM Brain
+    brain = None
+    if not args.no_brain:
+        print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
+        brain = make_brain(DEFAULT_MODEL, cls=LLMBrain)
+        # After a reboot llama-server answers 503 while loading: wait for it
+        # instead of disabling the brain for the session.
+        print("[Brain] waiting up to 90s for llama-server...")
+        ready = brain.wait_available(timeout_s=90.0)
+        C._brain_ok = bool(ready)
+        if ready:
+            print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
+            # Warm the single brain model (gemma4:e4b handles both LLM and VLM).
+            # Cold-start ~15-20s; surfaces model-load errors before the mic opens.
+            rec = get_recorder()
+            ctx = rec.startup_phase("brain_warmup") if rec else nullcontext()
+            with ctx:
+                brain.warm_up()
+        else:
+            # Keep the brain object: process_utterance re-checks before each
+            # utterance and switches to the LLM as soon as it answers.
+            print("[Brain] llama-server not available yet — regex-only until it answers "
+                  "(re-checked every utterance)")
+            print("[Brain] Check: systemctl status llama-server (port 11435)")
+    else:
+        print("\n[Brain] Disabled (--no-brain flag). Using regex-only mode.")
+
     # YOLO models (YOLOv8n, YOLO-World) lazy-load on first use.
     # Pre-loading them at startup starves the audio thread (CPU-bound
     # PyTorch init causes PortAudio init overflow and delays wake word).
+    vision = make_vision()
+    return SimpleNamespace(stt=stt, tts=tts, brain=brain, vision=vision)
 
-    # Probe Spot connectivity BEFORE starting the audio loop.
-    #
-    # Two paths:
-    #   --map present: eager full session init (stand_on_enter=True) so
-    #     the map uploads as part of the SAME bring-up. This DOES power
-    #     on the robot and requires e-stop to be running already. If it
-    #     fails (missing SDK, unreachable, lease conflict), we auto-
-    #     degrade to dry-run.
-    #   no --map: light TCP probe to SPOT_IP:443 only — does NOT power
-    #     on, does NOT acquire lease, does NOT require e-stop. The real
-    #     session bring-up happens lazily on first dispatch_intent.
-    #     If the probe fails, auto-degrade.
-    #
-    # Caller can opt out by passing --dry-run explicitly (skips everything).
+
+def _bring_up_robot(args, audio) -> bool:
+    """Safety-KWS startup gate and the robot probe / --map bring-up.
+    False when startup is refused (everything started so far is shut down).
+
+    Two paths:
+      --map present: eager full session init (stand_on_enter=True) so
+        the map uploads as part of the SAME bring-up. This DOES power
+        on the robot and requires e-stop to be running already. If it
+        fails (missing SDK, unreachable, lease conflict), we auto-
+        degrade to dry-run.
+      no --map: light TCP probe to SPOT_IP:443 only — does NOT power
+        on, does NOT acquire lease, does NOT require e-stop. The real
+        session bring-up happens lazily on first dispatch_intent.
+        If the probe fails, auto-degrade.
+
+    Caller can opt out by passing --dry-run explicitly (skips everything).
+    """
     # Fail closed BEFORE --map powers on / stands the robot.
-    if args.map and not _sl.safety_startup_ok(safety_detector is not None, args.dry_run,
+    if args.map and not _sl.safety_startup_ok(audio.have_safety_kws, args.dry_run,
                                               args.allow_no_safety_kws):
-        cleanup_spot()
-        return
+        _shutdown_runtime()
+        return False
     if not args.dry_run:
         if args.map:
             print(f"\n[Spot] Eager session init with map: {args.map}")
@@ -513,18 +576,43 @@ def main(argv: list[str] | None = None):
 
     # No-map path: the TCP probe above only connects (no power/stand); the
     # check runs after it so an unreachable robot (auto dry-run) still starts.
-    if not args.map and not _sl.safety_startup_ok(safety_detector is not None, args.dry_run,
+    if not args.map and not _sl.safety_startup_ok(audio.have_safety_kws, args.dry_run,
                                                   args.allow_no_safety_kws):
-        cleanup_spot()
-        return
+        _shutdown_runtime()
+        return False
+    return True
 
-    # XVF3800 control (DoA for the speaker lock, LED ring). Optional.
-    _cap.CAPTURE._mic = _cap._open_mic_array()
-    _ring.RING._anim = _ring._make_ring_animator(_cap.CAPTURE._mic)
 
-    if safety_detector is not None:
-        _sl.LISTENER.start(safety_detector)
-        print("[SafetyKWS] safety thread running (every state, ignores mute/gate)")
+def _start_conversation(args, C, audio, services):
+    """Conversation state (logs, LEDs, voiceprint), the input stream, the
+    LISTENING banner and the automatic arm fold. Returns (stream, utt_log);
+    stream is None when it could not be opened (runtime already shut down)."""
+    C._store_transcript = args.store_transcript
+    utt_log = _ul.UtteranceLog(_ul.UTTERANCE_LOG_DIR, store_transcript=args.store_transcript)
+
+    # Stage 2F P7: onboard RGB LED state indicator. Lazily binds to the Spot
+    # AV service on first state change; no-op in dry-run or if the robot has
+    # no AV system. Chimes are the fallback indicator either way.
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        C._state_leds = None
+    else:
+        from src.voice_control.spot_leds import StateLeds
+        import src.voice_control.spot_dispatch as _spot_dispatch
+
+        def _led_robot():
+            # Return the ALREADY-established Spot session's robot, or None.
+            # Never call ensure_spot_session() here: it would connect (and
+            # possibly stand) the robot synchronously on the mic-loop thread,
+            # freezing voice control for ~30s — and could fire on a noise burst.
+            # LEDs stay off until a real command brings the session up, then
+            # activate on the next state change.
+            try:
+                sess = getattr(_spot_dispatch, "_spot_session", None)
+                return sess["robot"] if sess else None
+            except Exception:
+                return None
+
+        C._state_leds = StateLeds(get_robot=_led_robot)
 
     # Voiceprint model warm-up off the main thread (torch import + ORT/CUDA
     # init take seconds); utterances fail open to direction-only until ready.
@@ -544,10 +632,11 @@ def main(argv: list[str] | None = None):
         print(f"Audio error: {e}")
         print("Run with --list-devices to see available devices")
         _shutdown_runtime()
-        return
+        return None, utt_log
 
+    brain, wake_detector = services.brain, audio.wake_detector
     mode = f"LLM Brain ({DEFAULT_MODEL})" if brain else "Regex-only (legacy)"
-    if not use_wake_word:
+    if not audio.use_wake_word:
         ww_status = "OFF"
     elif wake_detector:
         ww_status = "ON (sherpa-onnx keyword spotter)"
@@ -566,6 +655,7 @@ def main(argv: list[str] | None = None):
     # the gripper mouth turns on automatically once Spot is standing + powered
     # (session bring-up, a stand, or the next turn) -- never before. Opt out
     # with --no-arm or tuning auto_arm: false. Skipped in dry-run.
+    # Safety condition C3: this is THE auto-arm gate.
     _auto = auto_arm_wanted(args, _tuning)
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
@@ -575,11 +665,50 @@ def main(argv: list[str] | None = None):
         except Exception as e:
             print(f"[client_mic] auto arm setup failed: {e}")
 
-    C.run(args=args, stub=stub, brain=brain, tts=tts, vad=vad,
-          wake_detector=wake_detector, use_wake_word=use_wake_word, floor=floor,
-          utt_log=utt_log, store_transcript=store_transcript, stream=stream,
-          shutdown=_shutdown_runtime)
+    return stream, utt_log
 
 
-if __name__ == "__main__":
-    main()
+def _start_control_server():
+    """Operator control server (spotctl, localhost:8770). Immediate commands
+    run on its HTTP threads; queued ones are drained by Conversation.run."""
+    ctl_q = queue.Queue()
+    return ctl_q, _ctl._start_control_server(ctl_q)
+
+
+# ============================================================================
+# Main: the pipeline, top to bottom
+# ============================================================================
+def main(argv: list[str] | None = None):
+    C = _loop.CONVERSATION
+
+    # 1. Tuning (and the CLI, whose defaults read it)
+    tuning = get_tuning()
+    args = _parse_args(argv, tuning)
+    if args is None:
+        return
+    # 2. Event bus
+    bus = _make_bus()
+    # 3. Robot owners
+    robot = _robot_owners()
+    # 4. Features: REGISTRY.load(ENABLED), subscriptions, start(ctx)
+    if not _start_features(args, bus, robot, tuning):
+        return
+    # 5. Audio capture, ring, wake, safety listener
+    audio = _start_audio(args, tuning)
+    # 6. Services: stt, tts, brain, vision
+    services = _make_services(args, C)
+    # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
+    if not _bring_up_robot(args, audio):
+        return
+    # 7. Conversation (state, input stream, automatic arm fold)
+    stream, utt_log = _start_conversation(args, C, audio, services)
+    if stream is None:
+        return
+    # 8. Control server
+    ctl_q, ctl_srv = _start_control_server()
+    # 9. Run the conversation loop until shutdown
+    C.run(args=args, stub=services.stt.stub, brain=services.brain, tts=services.tts,
+          vad=audio.vad, wake_detector=audio.wake_detector,
+          use_wake_word=audio.use_wake_word, floor=audio.floor,
+          utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
+          shutdown=_shutdown_runtime, ctl_q=ctl_q, ctl_srv=ctl_srv)
