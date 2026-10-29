@@ -6,7 +6,7 @@ import pathlib
 from tests.voice_control.test_spoken_no_stop_words import BAD, _spoken_literals
 
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "spot"
-FILES = sorted(p for d in ("robot", "nav") for p in (SRC / d).rglob("*.py"))
+FILES = sorted(p for d in ("robot", "nav", "features") for p in (SRC / d).rglob("*.py"))
 
 
 def test_scanner_sees_the_moved_dispatcher_line():

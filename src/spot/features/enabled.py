@@ -5,4 +5,6 @@ ENABLED: list[str] = [
     "settings",
     "walk",
     "follow",
+    "navigation",
+    "visual_nav",
 ]

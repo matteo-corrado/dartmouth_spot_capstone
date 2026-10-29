@@ -6,6 +6,7 @@ import pytest
 from bosdyn.api import robot_state_pb2
 
 import src.voice_control.spot_dispatch as d
+import src.spot.features.navigation.handlers as nav_h
 from src.spot.robot import CONNECTION
 import src.voice_control.perception.obstacle_query as oq
 
@@ -61,28 +62,28 @@ def test_obstacles_none_spoken(sess, monkeypatch):
 def test_list_locations_no_robot_needed(monkeypatch):
     monkeypatch.setattr(CONNECTION, "_session", None)
     monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no session"))
-    monkeypatch.setattr(d, "_list_saved_locations",
+    monkeypatch.setattr(nav_h, "_list_saved_locations",
                         lambda: {"poster_table": "w1", "front_door": "w2", "waypoint_3": "w3"})
     ok, said = _run("list_locations")
     assert ok and said == ["I know 2 places: poster table and front door."]
 
 
 def test_list_locations_empty(monkeypatch):
-    monkeypatch.setattr(d, "_list_saved_locations", lambda: {})
+    monkeypatch.setattr(nav_h, "_list_saved_locations", lambda: {})
     ok, said = _run("list_locations")
     assert ok and said == ["I don't have any saved places yet."]
 
 
 def test_list_maps_no_map_loaded(monkeypatch):
     monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no session"))
-    monkeypatch.setattr(d, "list_available_maps", lambda root: [])
+    monkeypatch.setattr(nav_h, "list_available_maps", lambda root: [])
     ok, said = _run("list_maps")
     assert ok and said == ["I don't have any maps saved yet."]
 
 
 def test_list_maps_spoken(monkeypatch):
-    monkeypatch.setattr(d, "list_available_maps", lambda root: ["sudi_lab", "hallway"])
-    monkeypatch.setattr(d, "read_last_used", lambda root: "sudi_lab")
+    monkeypatch.setattr(nav_h, "list_available_maps", lambda root: ["sudi_lab", "hallway"])
+    monkeypatch.setattr(nav_h, "read_last_used", lambda root: "sudi_lab")
     ok, said = _run("list_maps")
     assert ok and said == ["I have 2 maps: sudi lab and hallway. The current one is sudi lab."]
 
