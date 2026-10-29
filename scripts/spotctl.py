@@ -71,7 +71,7 @@ def send(name: str, arg: str | None = None, host: str = DEFAULT_HOST,
     except urllib.error.URLError as e:  # connect failed (refused, no route, connect timeout)
         raise Unreachable(
             f"spotctl: cannot reach control server at {base} ({e.reason}). "
-            "Is the voice pipeline (client_mic.py) running?") from None
+            "Is the voice pipeline (src/spot/app/main.py, launched via client_mic.py) running?") from None
     except TimeoutError:  # connected, but no reply in time
         raise NoReply(f"spotctl: {name}: no reply within {timeout:g}s "
                       "— the command may still be executing") from None
