@@ -362,6 +362,15 @@ def test_registered_false_is_not_redispatched_to_legacy(monkeypatch):
     assert seen == [({"x": 1}, True, True, True, True)]
 
 
+@pytest.mark.parametrize("ret", [False, None, True])
+def test_registered_result_is_final(monkeypatch, ret):
+    spec = ActionSpec(name="t9_probe", handler=lambda p, c: ret, grammar_params=None, prompt_line=None)
+    monkeypatch.setattr(REGISTRY, "_actions", {"t9_probe": spec})
+    monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",
+                        lambda *a, **k: pytest.fail("a registered action must not fall through"))
+    assert dispatcher.dispatch_intent({"intent": "t9_probe", "params": {}}) is ret
+
+
 def test_unregistered_falls_through_to_legacy(monkeypatch):
     calls = []
     monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",

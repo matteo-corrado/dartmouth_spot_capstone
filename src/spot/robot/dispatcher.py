@@ -228,9 +228,7 @@ def _dispatch_feature(intent, brain=None, speak=None, session=None):
         from src.spot.features.ctx import Ctx
         ctx = Ctx(connection=CONNECTION, arm=ARM, safety=SAFETY_GEN, nav=NAV,
                   speak=speak, brain=brain, bus=None, tuning=get_tuning())
-        result = registry_dispatch(name, intent.get("params", {}), ctx)
-        if result is not None:
-            return result
+        return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
     return LEGACY_FEATURE_DISPATCH(intent, brain, speak, session=session)
 
 
