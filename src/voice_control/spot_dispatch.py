@@ -19,7 +19,8 @@ from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arr
 from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
 from bosdyn.client.math_helpers import SE2Pose
 from bosdyn.client.image import ImageClient
-from src.session import spot_session, send_arm_pose
+from src.session import spot_session, send_arm_pose, joints_pose_command
+import src.session as _poses
 from src.location_manager import (
     list_locations as _list_saved_locations,
     normalize_location_name as _normalize_location_name,
@@ -87,6 +88,7 @@ RPC_TIMEOUT_S = 2.0          # per-RPC timeout for commands sent under _arm_lock
 
 _arm_pose = "stowed"        # live arm pose: "stowed" | "talk" | "walk"
 _pose_before_walk = None    # pose to restore once the current locomotion ends
+_pose_during_walk = None    # live arm pose while that locomotion runs ("walk" | "talk")
 _arm_lock = threading.Lock()  # serialises "check cancelled + send arm cmd"
 _dispatch_lock = threading.RLock()  # serialises non-safety robot dispatches
 _session_lock = threading.Lock()    # guards ensure_spot_session bring-up
@@ -96,6 +98,11 @@ _safety_gen = 0             # bumped by every aborting intent (any thread)
 _dispatch_gen = None        # _safety_gen when the current locked dispatch began
 _mouth_resume = False       # re-enable the mouth when the arm returns to "talk"
 _talk_resume = False        # a safety halt stowed the talk pose: restore on the next turn
+_auto_arm = False           # operator decision 3: fold the arm + mouth on once standing
+_auto_arm_pending = False   # an auto fold is still owed (startup / after a stand)
+_auto_arm_thread = None
+_gaze_deg = None            # sh0 (deg) last commanded in the talk pose; None = unknown
+_gaze_t = 0.0               # monotonic time of the last gaze command
 _closing = False            # set by close_spot_session: no new bring-up after that
 
 
@@ -104,10 +111,17 @@ def arm_policy_for(intent_name: str, current_pose: str) -> tuple[str, str]:
     if intent_name in SAFETY_INTENTS or intent_name in SHUTDOWN_INTENTS:
         return ("stowed", "stowed")
     if intent_name in LOCOMOTION_INTENTS:
+        if current_pose == "talk" and _talk_is_walk_pose():
+            return ("talk", "talk")  # same folded pose: no re-pose, mouth stays on
         return ("walk", current_pose)
     if intent_name == "emote":
         return ("stowed", current_pose)
     return (current_pose, current_pose)
+
+
+def _talk_is_walk_pose() -> bool:
+    """True when the talk pose IS the walking pose (folded joints)."""
+    return _poses.WALK_POSE == "joints"
 
 
 def get_arm_pose() -> str:
@@ -115,8 +129,9 @@ def get_arm_pose() -> str:
 
 
 def _set_arm_pose(pose: str):
-    global _arm_pose
+    global _arm_pose, _gaze_deg
     _arm_pose = pose
+    _gaze_deg = 0.0 if pose == "talk" else None  # every talk send centres sh0
     st = getattr(_last_brain, "session_state", None)
     if st is not None:
         try:
@@ -169,12 +184,15 @@ def _mouth_restore():
 
 
 def _arm_send(cmd_client, pose: str, stop_event=None, timeout_s: float = 5.0,
-              require_pose=None) -> bool:
+              require_pose=None, gen=None) -> bool:
     """Send an arm pose. Under _arm_lock, skip if stop_event is set (or the
-    live pose is not require_pose), so a cancelled thread can never move the
-    arm after a stop's stow. Waits for arrival outside the lock."""
+    live pose is not require_pose, or a stop arrived since `gen`), so a
+    cancelled thread can never move the arm after a stop's stow. Waits for
+    arrival outside the lock."""
     with _arm_lock:
         if stop_event is not None and stop_event.is_set():
+            return False
+        if _aborted(gen):
             return False
         if require_pose is not None and _arm_pose != require_pose:
             return False
@@ -197,7 +215,7 @@ def _stow_now(cmd_client, resend_stop=False, then_stand=False, force=False):
     SAFETY_LOCK_TIMEOUT_S for _arm_lock and sends without it on timeout.
     resend_stop re-sends the motion stop under the lock (overrides a
     choreography request that raced the first stop)."""
-    global _pose_before_walk, _mouth_resume
+    global _pose_before_walk, _pose_during_walk, _mouth_resume
     got = _arm_lock.acquire(timeout=SAFETY_LOCK_TIMEOUT_S)
     if not got:
         print("[Spot] ⚠️  arm lock busy — stowing without it")
@@ -208,6 +226,7 @@ def _stow_now(cmd_client, resend_stop=False, then_stand=False, force=False):
                 cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command(),
                                          timeout=RPC_TIMEOUT_S)
         _pose_before_walk = None
+        _pose_during_walk = None
         _mouth_resume = False
         if _arm_pose == "stowed" and not force:
             return  # already stowed: never send arm commands to e.g. a sitting robot
@@ -224,18 +243,22 @@ def _stow_now(cmd_client, resend_stop=False, then_stand=False, force=False):
 def _restore_after_motion(stop_event=None):
     """Return the arm to its pre-walk pose (only after a natural finish, or
     when the motion never started)."""
-    global _pose_before_walk
+    global _pose_before_walk, _pose_during_walk
     target = _pose_before_walk
     if target is None or _spot_session is None:
         return
     if stop_event is not None and stop_event.is_set():
         return
     try:
-        if _arm_send(_spot_session["cmd"], target, stop_event, timeout_s=5.0,
-                     require_pose="walk"):
+        # Only from the pose the walk ran in: after a stop's stow it is
+        # "stowed", so no restore can follow a stop.
+        during = _pose_during_walk or "walk"
+        if _arm_pose != target and _arm_send(_spot_session["cmd"], target, stop_event,
+                                             timeout_s=5.0, require_pose=during):
             print(f"[Spot] Arm restored to '{target}'")
         if _arm_pose == target:
             _pose_before_walk = None
+            _pose_during_walk = None
             _mouth_restore()
     except Exception as e:
         print(f"[Spot] ⚠️  Arm restore failed: {e}")
@@ -499,6 +522,7 @@ def ensure_spot_session(map_path=None):
             )
             _spot_session = _session_context.__enter__()
             print("[Spot] Connected and standing ready for voice commands.")
+            start_auto_arm(_safety_gen, wait_s=AUTO_ARM_STAND_WAIT_S)  # waits for this dispatch
         except Exception as e:
             print(f"[Spot] Failed to establish session: {e}")
             # Clear the context so we can retry
@@ -864,12 +888,12 @@ def _close_mouth():
         print(f"[Spot] ⚠️  _close_mouth failed (gripper may be open): {e}")
 
 
-def _handle_enable_mouth(params):
+def _handle_enable_mouth(params, gen=None):
     """Deploy the arm and enable gripper mouth animation (Stage 2E.2).
 
     Lazily creates the MouthDriver on first enable using the live session's
     arm command client, so it works regardless of session bring-up timing."""
-    global _pose_before_walk, _mouth_resume
+    global _pose_before_walk, _mouth_resume, _auto_arm, _auto_arm_pending
     try:
         from src.voice_control.spot_tts import get_tts
         from src.voice_control.animation.mouth import MouthDriver
@@ -888,19 +912,28 @@ def _handle_enable_mouth(params):
         if not robot.is_powered_on():
             print("[Spot] enable_mouth: motors not powered (or e-stopped) — refusing arm deploy")
             return False
+        if not _standing_and_powered(session):
+            print("[Spot] enable_mouth: not standing — refusing arm deploy")
+            return False
         if is_navigating():
             print("[Spot] enable_mouth: moving — not deploying the arm while walking")
             return False
-        if not _arm_send(session["cmd"], "talk", timeout_s=5.0):
-            print("[Spot] enable_mouth: arm did not reach ready pose — not enabling")
+        if not _arm_send(session["cmd"], "talk", timeout_s=5.0, gen=gen):
+            print("[Spot] enable_mouth: arm did not reach the talk pose — not enabling")
             return False
         _pose_before_walk = None
         _mouth_resume = False
         _set_talk_resume(False)
+        _auto_arm = True  # keep folding back in after a sit/stand this session
+        _auto_arm_pending = False
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
-        tts.mouth.enable()
-        print("[Spot] ✓ Mouth enabled (arm deployed)")
+        with _arm_lock:  # a stop since the send wins: the claw stays shut
+            if _aborted(gen) or _arm_pose != "talk":
+                print("[Spot] enable_mouth: stopped while raising — mouth stays off")
+                return False
+            tts.mouth.enable()
+        print("[Spot] ✓ Mouth enabled (arm folded)")
         return True
     except Exception as e:
         print(f"[Spot] ✗ enable_mouth failed: {e}")
@@ -908,9 +941,12 @@ def _handle_enable_mouth(params):
 
 
 def _handle_disable_mouth(params, session=None):
-    """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
-    global _pose_before_walk, _mouth_resume
+    """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2).
+    Also opts out of the automatic fold for the rest of the session."""
+    global _pose_before_walk, _mouth_resume, _auto_arm, _auto_arm_pending
     _mouth_resume = False
+    _auto_arm = False
+    _auto_arm_pending = False
     _set_talk_resume(False)
     try:
         from src.voice_control.spot_tts import get_tts
@@ -1047,42 +1083,157 @@ def do_add_persona(params: dict, brain) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Gaze toward the locked speaker (Task 19)
+# Gaze toward the locked speaker (Task 19, operator decision 4)
 # ---------------------------------------------------------------------------
-GAZE_MAX_LINEAR_VEL = 0.3   # m/s
-GAZE_MAX_ANGULAR_VEL = 1.0  # rad/s
+GAZE_MIN_CHANGE_DEG = 15.0  # re-aim only when the target moved more than this
+GAZE_MIN_INTERVAL_S = 2.0   # ... and at most this often
+GAZE_BEHIND_DEG = 150.0     # a speaker this far behind is ambiguous: ignore
 
 
-def gaze_at_bearing(body_deg: float | None) -> bool:
-    """Point the gripper toward a body-frame bearing (0 = ahead, +90 = left).
+def gaze_sh0_deg(body_deg, max_deg: float):
+    """Shoulder-yaw target (deg) for a body-frame bearing (0 = ahead, +90 =
+    left), clamped to +/-max_deg. None for a non-finite bearing, one almost
+    straight behind, or max_deg <= 0 (gaze off). Pure."""
+    import math
+    try:
+        b = float(body_deg)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(b) or max_deg <= 0:
+        return None
+    b = ((b + 180.0) % 360.0) - 180.0
+    if abs(b) > GAZE_BEHIND_DEG:
+        return None
+    return max(-max_deg, min(max_deg, b))
 
-    Only when the arm is in the "talk" pose and Spot is not walking or running
-    a routine. None -> back to the talk pose. Bearings behind (>120 deg) are
-    ignored. Non-blocking; never brings up a session; never raises.
+
+def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
+    """Turn the folded arm (shoulder yaw sh0, slow joint move) toward a
+    body-frame bearing. None -> back to centre.
+
+    Only in the "talk" pose while standing still (not walking, dancing or
+    closing); clamped to +/-tuning.gaze_max_deg; rate-limited (target moved
+    > 15 deg and >= 2 s since the last gaze). Sent under _arm_lock after
+    re-checking the pose and the safety generation, so a stop always wins and
+    no gaze follows a stop's stow. Non-blocking; never brings up a session;
+    never raises.
     """
+    global _gaze_deg, _gaze_t
     sess = _spot_session
-    if sess is None or _arm_pose != "talk" or is_navigating():
+    if sess is None or _closing or _arm_pose != "talk" or is_navigating():
         return False
     try:
-        cmd_client = sess["cmd"]
-        if body_deg is None:
-            return _arm_send(cmd_client, "talk", timeout_s=0, require_pose="talk")
-        from src.voice_control.gaze import gaze_target
-        target = gaze_target(float(body_deg))
+        import math
+        from src.voice_control.tuning import get_tuning
+        tun = get_tuning()
+        if tun.gaze_max_deg <= 0:
+            return False
+        if gen is None:
+            gen = _safety_gen
+        target = 0.0 if body_deg is None else gaze_sh0_deg(body_deg, tun.gaze_max_deg)
         if target is None:
             return False
-        x, y, z = target
-        with _arm_lock:
-            if _arm_pose != "talk" or is_navigating():
+        now = time.monotonic()
+        last = _gaze_deg
+        if last is not None:
+            if abs(target - last) <= GAZE_MIN_CHANGE_DEG and not (target == 0.0 and last != 0.0):
                 return False
-            cmd_client.robot_command(RobotCommandBuilder.arm_gaze_command(
-                x, y, z, "body",
-                max_linear_vel=GAZE_MAX_LINEAR_VEL, max_angular_vel=GAZE_MAX_ANGULAR_VEL),
-                timeout=RPC_TIMEOUT_S)
+            if now - _gaze_t < GAZE_MIN_INTERVAL_S:
+                return False
+        if not _standing_and_powered(sess):
+            return False
+        sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
+        with _arm_lock:
+            if _aborted(gen) or _closing or _arm_pose != "talk" or is_navigating():
+                return False
+            sess["cmd"].robot_command(joints_pose_command(sh0), timeout=RPC_TIMEOUT_S)
+            _gaze_deg, _gaze_t = target, now
+        print(f"[Spot] gaze: shoulder yaw {target:+.0f} deg")
         return True
     except Exception as e:
         print(f"[Spot] gaze_at_bearing failed: {e}")
         return False
+
+
+# ---------------------------------------------------------------------------
+# Automatic fold + mouth once standing (operator decision 3)
+# ---------------------------------------------------------------------------
+AUTO_ARM_STAND_WAIT_S = 8.0  # how long a stand may take before we give up
+
+
+def set_auto_arm(on: bool):
+    """client_mic startup: fold the arm + enable the mouth once the robot is
+    standing and powered (False = opt-out, e.g. --no-arm / tuning auto_arm)."""
+    global _auto_arm, _auto_arm_pending
+    _auto_arm = bool(on)
+    _auto_arm_pending = bool(on)
+    if on and _spot_session is not None:  # e.g. --map brought it up at launch
+        start_auto_arm(_safety_gen, wait_s=AUTO_ARM_STAND_WAIT_S)
+
+
+def _cancel_auto_arm():
+    global _auto_arm_pending
+    _auto_arm_pending = False
+
+
+def auto_arm_if_ready(gen, wait_s: float = 0.0) -> bool:
+    """Fold the arm into the talk pose and enable the mouth if an automatic
+    fold is owed. Needs a live session, a standing + powered robot (polled
+    for up to wait_s), no motion, the arm stowed and no stop since `gen`.
+    Serialised with motion dispatches via _dispatch_lock. Never raises."""
+    global _auto_arm_pending
+    if not _auto_arm_pending or _closing or gen is None or _aborted(gen):
+        return False
+    sess = _spot_session
+    if sess is None:
+        return False
+    try:
+        deadline = time.monotonic() + wait_s
+        while not _standing_and_powered(sess):
+            if time.monotonic() >= deadline or _aborted(gen) or _closing:
+                return False
+            time.sleep(0.25)
+        with _dispatch_lock:
+            if not _auto_arm_pending or _closing or _aborted(gen):
+                return False
+            if _arm_pose != "stowed":
+                _auto_arm_pending = False  # already folded (e.g. enable_mouth)
+                return False
+            if is_navigating() or _talk_resume:
+                return False  # moving, or the halt resume owns the arm: retry later
+            print("[Spot] Standing: folding the arm and turning the mouth on")
+            ok = _handle_enable_mouth({}, gen=gen)
+            if ok:
+                _auto_arm_pending = False
+            return ok
+    except Exception as e:
+        print(f"[Spot] ⚠️  automatic arm fold failed: {e}")
+        return False
+
+
+def start_auto_arm(gen, wait_s: float = 0.0):
+    """auto_arm_if_ready on a daemon thread (one at a time). Returns the
+    thread, or None when nothing is owed."""
+    global _auto_arm_thread
+    if not _auto_arm_pending or _spot_session is None:
+        return None
+    t = _auto_arm_thread
+    if t is not None and t.is_alive():
+        return None
+    t = threading.Thread(target=auto_arm_if_ready, args=(gen, wait_s),
+                         name="auto-arm", daemon=True)
+    _auto_arm_thread = t
+    t.start()
+    return t
+
+
+def _auto_arm_after_stand():
+    """A stand succeeded: owe an automatic fold (if enabled) once it is up."""
+    global _auto_arm_pending
+    if not _auto_arm:
+        return
+    _auto_arm_pending = True
+    start_auto_arm(_safety_gen, wait_s=AUTO_ARM_STAND_WAIT_S)
 
 
 # ---------------------------------------------------------------------------
@@ -1385,6 +1536,7 @@ def _dispatch_safety(intent, brain=None, speak=None):
               then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
     if name == "estop":
         _set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
+        _cancel_auto_arm()       # ... and any pending automatic fold (until a stand)
     elif was_talk:
         _set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
@@ -1467,7 +1619,7 @@ def _abort_motion(cmd_client, name):
 
 def _dispatch_locomotion(intent, brain=None, speak=None):
     """Tuck, move, and (via the motion thread) restore after a natural finish."""
-    global _pose_before_walk, _last_traj
+    global _pose_before_walk, _pose_during_walk, _last_traj
     name = intent.get("intent")
     try:
         session = ensure_spot_session()
@@ -1480,9 +1632,16 @@ def _dispatch_locomotion(intent, brain=None, speak=None):
     current = _arm_pose
     before, after = arm_policy_for(name, current)
     if current != "stowed":
-        if current == "walk" and _pose_before_walk is not None:
-            after = _pose_before_walk
+        if _pose_before_walk is not None and current == (_pose_during_walk or "walk"):
+            after = _pose_before_walk  # superseded walk: keep its pending restore
         _pose_before_walk = after if after != "walk" else "stowed"
+        _pose_during_walk = before
+        if current == before == "talk" and _gaze_deg not in (None, 0.0):
+            # Folded pose kept for the walk; just re-centre a gaze yaw (no wait).
+            try:
+                _arm_send(cmd_client, "talk", timeout_s=0, require_pose="talk", gen=gen)
+            except Exception as e:
+                print(f"[Spot] gaze re-centre before walking failed: {e}")
         if current != before:
             _mouth_suspend()  # claw closed and still for the whole walk
             try:
@@ -1544,7 +1703,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
         cmd_client = session["cmd"]
         
         if name == "enable_mouth":
-            return _handle_enable_mouth(params)
+            return _handle_enable_mouth(params, gen=_dispatch_gen)
         if name == "disable_mouth":
             return _handle_disable_mouth(params)
         if name == "emote":
@@ -1607,6 +1766,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 cmd = RobotCommandBuilder.synchro_stand_command()
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Stand command sent")
+                _auto_arm_after_stand()
                 return True
             except Exception as e:
                 if "BehaviorFault" in str(e):
@@ -1623,6 +1783,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                         # No self-right here: that is its own explicit intent.
                         cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
                         print("[Spot] ✓ Faults cleared, standing")
+                        _auto_arm_after_stand()
                         return True
                     except Exception as e2:
                         print(f"[Spot] ✗ Recovery failed: {e2}")

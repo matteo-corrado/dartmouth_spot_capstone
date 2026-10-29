@@ -12,7 +12,23 @@ from src.voice_control.spot_dispatch import arm_policy_for
 
 
 # ---------------------------------------------------------------- pure policy
-def test_locomotion_tucks_then_restores():
+@pytest.fixture
+def stow_walk(monkeypatch):
+    """The pre-2026-10-28 walk pose (stow): talk != walk, so a walk tucks."""
+    monkeypatch.setattr(session_mod, "WALK_POSE", "stow")
+
+
+def test_walk_pose_is_joints():
+    assert session_mod.WALK_POSE == "joints"
+
+
+def test_locomotion_keeps_folded_talk_pose():
+    # operator decision 2026-10-28: talk == walk == folded joints pose
+    assert arm_policy_for("walk", "talk") == ("talk", "talk")
+    assert arm_policy_for("go_to", "talk") == ("talk", "talk")
+
+
+def test_locomotion_tucks_then_restores(stow_walk):
     assert arm_policy_for("walk", "talk") == ("walk", "talk")
     assert arm_policy_for("go_to", "talk") == ("walk", "talk")
 
@@ -31,10 +47,18 @@ def test_emote_stows_then_restores():
     assert arm_policy_for("emote", "talk") == ("stowed", "talk")
 
 
-def test_all_locomotion_intents_tuck():
-    for n in ("walk_to", "turn", "walk", "strafe", "go_to", "tour", "patrol",
-              "come_back", "go_to_object", "follow_me"):
+LOCO = ("walk_to", "turn", "walk", "strafe", "go_to", "tour", "patrol",
+        "come_back", "go_to_object", "follow_me")
+
+
+def test_all_locomotion_intents_tuck(stow_walk):
+    for n in LOCO:
         assert arm_policy_for(n, "talk")[0] == "walk"
+
+
+def test_all_locomotion_intents_keep_joints_pose():
+    for n in LOCO:
+        assert arm_policy_for(n, "talk") == ("talk", "talk")
 
 
 # ---------------------------------------------------------------- fakes
@@ -102,6 +126,10 @@ def fake(monkeypatch):
     monkeypatch.setattr(d, "_close_mouth", lambda: None)
     monkeypatch.setattr(d, "_arm_pose", "talk")
     monkeypatch.setattr(d, "_pose_before_walk", None)
+    monkeypatch.setattr(d, "_pose_during_walk", None)
+    monkeypatch.setattr(d, "_gaze_deg", 0.0)
+    monkeypatch.setattr(d, "_auto_arm", False)
+    monkeypatch.setattr(d, "_auto_arm_pending", False)
     monkeypatch.setattr(d, "_last_brain", None)
     yield cmd
     d._cancel_nav()
@@ -127,7 +155,7 @@ def test_freeze_estop_stop_first(fake, name):
     k = fake.kinds()
     assert k[0] == "stop"
     assert k[-2:] == ["gripper", "arm_stow"]
-    assert "arm_ready" not in k
+    assert "arm_joints" not in k
 
 
 def test_stow_after_stop_never_waits(fake, monkeypatch):
@@ -137,13 +165,37 @@ def test_stow_after_stop_never_waits(fake, monkeypatch):
     assert d.dispatch_intent({"intent": "stop", "params": {}}) is True
 
 
-def test_walk_tucks_moves_capped_then_restores(fake):
+def test_walk_from_joints_sends_no_arm_command(fake):
+    assert d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
+    _join_nav()
+    assert fake.kinds() == ["mobility"]   # folded pose kept: no tuck, no restore
+    mob = fake.sent[0][1].synchronized_command.mobility_command
+    from bosdyn.api.spot import robot_command_pb2 as spot_cmd
+    params = spot_cmd.MobilityParams()
+    mob.params.Unpack(params)
+    assert params.vel_limit.max_vel.linear.x == pytest.approx(0.5)
+    assert d.get_arm_pose() == "talk"
+    assert d._pose_before_walk is None
+
+
+def test_walk_recentres_a_gaze_yaw_without_waiting(fake, monkeypatch):
+    monkeypatch.setattr(d, "_gaze_deg", 30.0)
+    monkeypatch.setattr(d, "block_until_arm_arrives",
+                        lambda *a: pytest.fail("re-centre must not wait"))
+    d.dispatch_intent({"intent": "turn", "params": {"direction": "left"}})
+    k = fake.kinds()
+    assert k[0] == "arm_joints" and "gripper" not in k and "arm_stow" not in k
+    pt = fake.sent[0][1].synchronized_command.arm_command.arm_joint_move_command.trajectory.points[0]
+    assert pt.position.sh0.value == pytest.approx(0.0)
+
+
+def test_walk_tucks_moves_capped_then_restores(fake, stow_walk):
     assert d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
     _join_nav()
     k = fake.kinds()
-    # walk pose "stow" default: claw closed, stow, THEN the mobility command
+    # walk pose "stow": claw closed, stow, THEN the mobility command
     assert k[:3] == ["gripper", "arm_stow", "mobility"]
-    assert k[3:] == ["arm_ready"]          # restored after arrival
+    assert k[3:] == ["arm_joints"]          # restored (talk = joints) after arrival
     mob = fake.sent[2][1].synchronized_command.mobility_command
     from bosdyn.api.spot import robot_command_pb2 as spot_cmd
     params = spot_cmd.MobilityParams()
@@ -161,11 +213,11 @@ def test_stop_mid_walk_stows_and_never_restores(fake):
     k = fake.kinds()
     i = k.index("stop")
     assert k[i:] == ["stop", "stop", "gripper", "arm_stow"]
-    assert "arm_ready" not in k
+    assert "arm_joints" not in k
     assert d.get_arm_pose() == "stowed"
 
 
-def test_tuck_failure_refuses_to_move(fake, monkeypatch):
+def test_tuck_failure_refuses_to_move(fake, monkeypatch, stow_walk):
     monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
     said = []
     assert d.dispatch_intent({"intent": "walk", "params": {}}, speak=said.append) is False
@@ -196,7 +248,7 @@ def test_enable_mouth_refused_while_walking(fake, monkeypatch):
         def is_powered_on(self): return True
     d._spot_session["robot"] = R()
     assert d.dispatch_intent({"intent": "enable_mouth"}) is False
-    assert "arm_ready" not in fake.kinds()
+    assert "arm_joints" not in fake.kinds()
 
 
 def test_brain_session_state_mirrors_pose(fake):
@@ -233,7 +285,7 @@ def test_move_arm_to_poses(monkeypatch):
     assert c.kinds() == ["gripper", "arm_stow"]
     c = FakeCmd()
     session_mod.move_arm_to(c, "talk")
-    assert c.kinds() == ["arm_ready"]
+    assert c.kinds() == ["arm_joints"]
     c = FakeCmd()
     session_mod.move_arm_to(c, "walk")
     assert c.kinds()[-1] == {"stow": "arm_stow", "carry": "arm_carry",
@@ -300,7 +352,7 @@ def test_unknown_body_status_not_trusted():
     assert d._wait_trajectory_done(Unknown(), 1, time.time() + 0.3, ev) is False
 
 
-def test_stop_during_tuck_aborts_walk(fake, monkeypatch):
+def test_stop_during_tuck_aborts_walk(fake, monkeypatch, stow_walk):
     calls = {"n": 0}
 
     def arrive_after_stop(c, i, t):
@@ -311,7 +363,7 @@ def test_stop_during_tuck_aborts_walk(fake, monkeypatch):
     monkeypatch.setattr(d, "block_until_arm_arrives", arrive_after_stop)
     assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
     k = fake.kinds()
-    assert "mobility" not in k and "arm_ready" not in k
+    assert "mobility" not in k and "arm_joints" not in k
     assert k[-2:] == ["gripper", "arm_stow"]   # re-stowed
     assert d.get_arm_pose() == "stowed"
 
@@ -330,7 +382,51 @@ class _Mouth:
         self.log.append("on")
 
 
-def test_mouth_latched_off_while_walking_and_restored(fake, monkeypatch):
+def test_mouth_stays_on_while_walking_in_joints(fake, monkeypatch):
+    m = _Mouth()
+    import src.voice_control.spot_tts as tts_mod
+    monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
+    monkeypatch.setattr(d, "_mouth_resume", False)
+    fake.at_goal = False
+    d.dispatch_intent({"intent": "walk", "params": {}})
+    assert d.is_navigating() and m.log == [] and m.enabled   # mouth keeps talking
+    fake.at_goal = True
+    _join_nav()
+    assert m.log == [] and m.enabled and d.get_arm_pose() == "talk"
+    assert [k for k in fake.kinds() if k != "mobility"] == []
+
+
+def test_stop_mid_joints_walk_stows_mouth_off_and_arms_resume(fake, monkeypatch):
+    m = _Mouth()
+    import src.voice_control.spot_tts as tts_mod
+    monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
+    monkeypatch.setattr(d, "_close_mouth", m.disable)
+    monkeypatch.setattr(d, "_talk_resume", False)
+    fake.at_goal = False
+    d.dispatch_intent({"intent": "walk", "params": {}})
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    time.sleep(0.6)
+    k = fake.kinds()
+    assert k[k.index("stop"):] == ["stop", "stop", "gripper", "arm_stow"]
+    assert not m.enabled and d.get_arm_pose() == "stowed"
+    assert d._talk_resume is True       # the next turn brings the folded pose back
+
+
+def test_disable_mouth_mid_joints_walk_stows_after(fake, monkeypatch):
+    m = _Mouth()
+    import src.voice_control.spot_tts as tts_mod
+    monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
+    fake.at_goal = False
+    d.dispatch_intent({"intent": "walk", "params": {}})
+    d.dispatch_intent({"intent": "disable_mouth", "params": {}})
+    assert "arm_stow" not in fake.kinds()   # not while walking
+    fake.at_goal = True
+    _join_nav()
+    assert fake.kinds()[-2:] == ["gripper", "arm_stow"]
+    assert d.get_arm_pose() == "stowed"
+
+
+def test_mouth_latched_off_while_walking_and_restored(fake, monkeypatch, stow_walk):
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
