@@ -359,6 +359,7 @@ _operator_muted = False
 _crowd_mode = False        # after each reply drop back to WAKE_WORD
 _voiceprint_mode = _tuning.voiceprint_enabled  # spotctl voiceprint on|off toggles live
 _voiceprint_threshold = _tuning.voiceprint_threshold  # spotctl voiceprint threshold <x> sets live
+_voiceprint_update_threshold = _tuning.voiceprint_update_threshold  # running-enrolment bar
 # Set by an operator stop/freeze/sit/stand/stow/hush: the chained-action loop
 # in process_utterance checks it before each step and waits on it instead of
 # sleeping, so an operator stop also cancels the rest of a chain.
@@ -1897,13 +1898,14 @@ def main():
             try:
                 accepted, sim = _voice.decide(b"".join(f for _, f, _, _ in utt_frames),
                                               dir_ok, _voiceprint_mode,
-                                              _voiceprint_threshold)
+                                              _voiceprint_threshold,
+                                              _voiceprint_update_threshold)
             except Exception as e:  # noqa: BLE001 - fail open to direction-only
                 print(f"[Voice] decide failed ({e}); direction-only")
             print(f"[Voice] sim={'n/a' if sim is None else f'{sim:.2f}'} "
                   f"thr={_voiceprint_threshold:.2f} "
                   f"gate={'on' if _voiceprint_mode else 'off'} "
-                  f"enrolled={'yes' if _voice.enrolled else 'no'}")
+                  f"enrolled={f'yes(n={_voice.n_enrol})' if _voice.enrolled else 'no'}")
         record["voice_sim"] = None if sim is None else round(sim, 3)
         if not accepted:
             if dir_ok is False:

@@ -6,12 +6,21 @@ tests/audio/demo/<condition>/. Optional MicArray supplies the DoA log.
 
   spot-env/bin/python scripts/record_demo_clips.py --condition quiet
   spot-env/bin/python scripts/record_demo_clips.py --condition loud --phrases "Hey Spot|Listen up Spot"
+
+Beam-steering A/B (same room, back to back; analyse with tests/audio/beam_ab.py):
+  spot-env/bin/python scripts/record_demo_clips.py --condition ab_off --set overlap --interferer-deg 90
+  spot-env/bin/python scripts/record_demo_clips.py --condition ab_on  --set overlap --interferer-deg 90 --beam
+--beam points both XVF3800 fixed beams at each clip's speaker angle (oracle
+direction, the best case for live steering) and turns them off after the clip.
+Every clip with a MicArray also gets <clip>.beams.csv (all 4 beam azimuths +
+speech energies, 10 Hz).
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import math
 import os
 import re
 import sys
@@ -153,6 +162,39 @@ def write_wav(path: Path, audio: np.ndarray) -> None:
         w.writeframes(np.ascontiguousarray(audio, dtype=np.int16).tobytes())
 
 
+def body_to_mic_deg(body_deg, offset_deg, sign) -> float:
+    """Inverse of speaker_lock.mic_to_body_deg (sign is +-1)."""
+    return (sign * body_deg + offset_deg) % 360.0
+
+
+BEAM_COLS = ("az1", "az2", "az_free", "az_auto", "en1", "en2", "en_free", "en_auto")
+
+
+def write_beams_csv(path: Path, samples: list, t0: float) -> None:
+    """samples: (t, az_rad[4], energy[4]); azimuths written in mic-frame degrees."""
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["t_rel_s", *BEAM_COLS])
+        for t, az, en in samples:
+            w.writerow([f"{t - t0:.3f}", *(f"{math.degrees(a) % 360.0:.1f}" for a in az),
+                        *(f"{e:.4g}" for e in en)])
+
+
+def collect_beams(mic, t0: float, duration: float, hz=10.0, clock=time.monotonic,
+                  sleep=time.sleep) -> list:
+    """Poll all 4 beams' azimuth + speech energy for `duration` s (read errors skipped)."""
+    got: list = []
+    while clock() - t0 < duration:
+        t = clock()
+        try:
+            az, en = mic.read_beams()
+            got.append((t, az, en))
+        except Exception:  # noqa: BLE001 - a missed sample is fine
+            pass
+        sleep(1.0 / hz)
+    return got
+
+
 def write_doa_csv(path: Path, samples: list, t0: float) -> None:
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
@@ -219,10 +261,15 @@ def play_samples(samples: np.ndarray, rate: int, output_device) -> None:
         out.write(np.concatenate([lead, samples]).reshape(-1, 1))
 
 
-def record_clip(device: int, prompt: Prompt, mic, output_device=None):
-    """Returns (audio (N,2) int16, t0, doa_samples, chime_info | None)."""
+def record_clip(device: int, prompt: Prompt, mic, output_device=None, beam_mic_deg=None):
+    """Returns (audio (N,2) int16, t0, doa_samples, chime_info | None, beam_samples).
+
+    beam_mic_deg: point both fixed beams there (mic frame) for this clip, off after."""
     import threading
     import sounddevice as sd
+    if beam_mic_deg is not None:
+        mic.set_fixed_beams(math.radians(beam_mic_deg))
+        time.sleep(0.3)  # let the beamformer settle before GO
     for n in (3, 2, 1):
         print(f"    {n}...", end="", flush=True)
         time.sleep(0.5)
@@ -249,14 +296,26 @@ def record_clip(device: int, prompt: Prompt, mic, output_device=None):
 
         th = threading.Thread(target=_chime, daemon=True)
         th.start()
-    doa = collect_doa(mic, t0, prompt.duration_s) if mic is not None else []
-    sd.wait()
-    if th is not None:
-        th.join(timeout=2.0)
-    return audio, t0, doa, (info or None)
+    beams: list = []
+    bt = None
+    if mic is not None:
+        bt = threading.Thread(target=lambda: beams.extend(collect_beams(mic, t0, prompt.duration_s)),
+                              daemon=True)
+        bt.start()
+    try:
+        doa = collect_doa(mic, t0, prompt.duration_s) if mic is not None else []
+        sd.wait()
+        if th is not None:
+            th.join(timeout=2.0)
+        if bt is not None:
+            bt.join(timeout=2.0)
+    finally:
+        if beam_mic_deg is not None:
+            mic.set_fixed_beams(None)
+    return audio, t0, doa, (info or None), beams
 
 
-def save_manifest_entry(path: Path, prompt: Prompt) -> None:
+def save_manifest_entry(path: Path, prompt: Prompt, extra: dict | None = None) -> None:
     try:
         entries = json.loads(path.read_text()) if path.exists() else []
     except Exception:
@@ -264,14 +323,17 @@ def save_manifest_entry(path: Path, prompt: Prompt) -> None:
         entries = []
     entries = [e for e in entries if e.get("clip") != prompt.clip]
     entries.append({"clip": prompt.clip, "kind": prompt.kind, "phrase": prompt.phrase,
-                    "expected_text": prompt.expected_text, "angle_deg": prompt.angle_deg})
+                    "expected_text": prompt.expected_text, "angle_deg": prompt.angle_deg,
+                    **(extra or {})})
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(entries, indent=2))
     os.replace(tmp, path)
 
 
-def run_session(prompts: list[Prompt], out_dir: Path, record_fn, input_fn=input) -> int:
-    """record_fn(prompt) -> (audio, t0, doa_samples, chime_info|None). Returns clips written."""
+def run_session(prompts: list[Prompt], out_dir: Path, record_fn, input_fn=input,
+                manifest_extra: dict | None = None) -> int:
+    """record_fn(prompt) -> (audio, t0, doa_samples, chime_info|None[, beam_samples]).
+    Returns clips written. manifest_extra is merged into every manifest entry."""
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest = out_dir / "manifest.json"
     written = 0
@@ -299,15 +361,18 @@ def run_session(prompts: list[Prompt], out_dir: Path, record_fn, input_fn=input)
                     print("  skipped")
                     break
                 try:
-                    audio, t0, doa, chime = record_fn(p)
-                    for stale in (f"{p.clip}.doa.csv", f"{p.clip}.chime.json"):
+                    audio, t0, doa, chime, *rest = record_fn(p)
+                    beams = rest[0] if rest else None
+                    for stale in (f"{p.clip}.doa.csv", f"{p.clip}.chime.json", f"{p.clip}.beams.csv"):
                         (out_dir / stale).unlink(missing_ok=True)
                     write_wav(wav, audio)
                     if doa:
                         write_doa_csv(out_dir / f"{p.clip}.doa.csv", doa, t0)
+                    if beams:
+                        write_beams_csv(out_dir / f"{p.clip}.beams.csv", beams, t0)
                     if chime:
                         (out_dir / f"{p.clip}.chime.json").write_text(json.dumps(chime))
-                    save_manifest_entry(manifest, p)
+                    save_manifest_entry(manifest, p, manifest_extra)
                 except Exception as e:
                     print(f"  RECORD FAILED: {e!r}  (try again, or s to skip)")
                     continue
@@ -332,6 +397,11 @@ def main() -> None:
     ap.add_argument("--set", choices=("full", *SETS), default="full",
                     help="babble: front wakes + 2 quick replies + background; "
                          "overlap: front wakes + overlap clips; full: everything")
+    ap.add_argument("--beam", action="store_true",
+                    help="aim both fixed beams at each clip's speaker angle (beam-steering A/B)")
+    ap.add_argument("--interferer-deg", type=float, default=None,
+                    help="body-frame angle of the second talker / podcast (0 front, 90 left), "
+                         "saved in the manifest for tests/audio/beam_ab.py")
     args = ap.parse_args()
 
     phrases = load_phrases(args.phrases, args.phrases_file)
@@ -346,9 +416,22 @@ def main() -> None:
             mic.start_poller()
     print(f"Condition: {args.condition}   phrases: {phrases}")
     print(f"DoA log: {'on' if mic is not None else 'off (no MicArray)'}   output: {out_dir}")
+    beam_of = lambda p: None  # noqa: E731
+    if args.beam:
+        if mic is None:
+            raise SystemExit("--beam needs the XVF3800 control link (MicArray); aborting.")
+        from src.voice_control.tuning import load_tuning
+        t = load_tuning()
+        beam_of = lambda p: body_to_mic_deg(p.angle_deg, t.mic_yaw_offset_deg, t.mic_yaw_sign)  # noqa: E731
+        print(f"Beam steering ON: fixed beams aimed at each clip's speaker angle "
+              f"(front = {body_to_mic_deg(0, t.mic_yaw_offset_deg, t.mic_yaw_sign):.0f} deg mic). "
+              "Keep the second talker in the SAME spot for both A/B runs.")
     input("Spot powered on, mic in its Thursday position. Press Enter to begin.")
     try:
-        n = run_session(prompts, out_dir, lambda p: record_clip(device, p, mic, args.output_device))
+        n = run_session(prompts, out_dir,
+                        lambda p: record_clip(device, p, mic, args.output_device, beam_of(p)),
+                        manifest_extra={"beam_steered": bool(args.beam),
+                                        "interferer_body_deg": args.interferer_deg})
     finally:
         if mic is not None:
             mic.close()

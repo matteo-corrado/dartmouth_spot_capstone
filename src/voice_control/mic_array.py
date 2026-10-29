@@ -37,6 +37,8 @@ PRODUCT_ID = 0x001A
 VERSION = (48, 0)                         # 3 x u8
 DOA_VALUE = (20, 18)                      # 2 x u16: [deg 0-359, speech flag]
 AUDIO_MGR_SELECTED_AZIMUTHS = (35, 11)    # 2 x f32 rad: [processed (NaN=no speech), auto-select]
+AEC_AZIMUTH_VALUES = (33, 75)             # 4 x f32 rad: [beam 1, beam 2, free-running, auto-select]
+AEC_SPENERGY_VALUES = (33, 80)            # 4 x f32: speech energy per beam (same order), > 0 = speech
 AEC_FIXEDBEAMSONOFF = (33, 37)            # 1 x i32
 AEC_FIXEDBEAMSAZIMUTH_VALUES = (33, 81)   # 2 x f32 rad
 AEC_FIXEDBEAMSGATING = (33, 83)           # 1 x u8 (not written by this module)
@@ -253,6 +255,12 @@ class MicArray:
     def read_selected_azimuth(self):
         az = self._read(AUDIO_MGR_SELECTED_AZIMUTHS, "f", 2)[0]
         return None if math.isnan(az) else az
+
+    def read_beams(self):
+        """(azimuths_rad[4], speech_energy[4]) for beam 1, beam 2, free-running, auto-select."""
+        az = self._read(AEC_AZIMUTH_VALUES, "f", 4)
+        en = self._read(AEC_SPENERGY_VALUES, "f", 4)
+        return list(az), list(en)
 
     # -- writes --------------------------------------------------------
     def set_led_effect(self, effect):

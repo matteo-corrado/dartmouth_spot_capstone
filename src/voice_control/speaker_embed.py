@@ -88,7 +88,9 @@ class VoiceprintGate:
     Lifecycle: set_wake(pcm) at the wake (after clear()), on_accepted(pcm)
     for the first accepted utterance -> enrolment = L2-normalised mean of the
     two embeddings; decide()/score() for later utterances; clear() on lock
-    release / takeover. Nothing is ever written to disk.
+    release / takeover. With decide(update_threshold=...), each later accepted
+    utterance scoring >= that threshold is folded into the mean too (running
+    enrolment). Nothing is ever written to disk.
 
     `embedder` (anything with .embed(pcm16) -> vector) may be None until the
     background warm-up assigns it, or forever if the model is missing; every
@@ -103,6 +105,8 @@ class VoiceprintGate:
         self.wake_emb = None
         self.enrol = None
         self.last_sim = None
+        self._sum = None   # sum of the unit embeddings behind `enrol`
+        self.n_enrol = 0   # how many embeddings `enrol` averages
 
     @property
     def enrolled(self) -> bool:
@@ -136,6 +140,8 @@ class VoiceprintGate:
         for `spotctl status`."""
         self.wake_emb = None
         self.enrol = None
+        self._sum = None
+        self.n_enrol = 0
 
     def set_wake(self, pcm16):
         """Wake fired: start a fresh enrolment from the wake audio."""
@@ -153,10 +159,17 @@ class VoiceprintGate:
         parts = [v for v in (self.wake_emb, emb) if v is not None]
         if not parts:
             return
-        m = np.mean(parts, axis=0)
-        n = float(np.linalg.norm(m))
+        self._set_sum(np.sum(parts, axis=0), len(parts))
+
+    def _set_sum(self, total, count):
+        n = float(np.linalg.norm(total))
         if n > 0:
-            self.enrol = (m / n).astype(np.float32)
+            self._sum, self.n_enrol = total, count
+            self.enrol = (total / n).astype(np.float32)
+
+    def _update(self, emb):
+        """Fold one more confirmed embedding into the running enrolment."""
+        self._set_sum(self._sum + emb, self.n_enrol + 1)
 
     def score(self, pcm16):
         """(sim, emb) for an utterance: emb is its embedding (None on failure);
@@ -170,7 +183,8 @@ class VoiceprintGate:
         self.last_sim = sim
         return sim, emb
 
-    def decide(self, pcm16, dir_ok, enabled: bool, threshold: float):
+    def decide(self, pcm16, dir_ok, enabled: bool, threshold: float,
+               update_threshold: float | None = None):
         """Accept verdict for one utterance during a conversation.
 
         dir_ok: speaker-lock verdict, None when direction is unavailable.
@@ -178,6 +192,10 @@ class VoiceprintGate:
         returned so the operator can watch it). Enabled: accept_combined once
         enrolled; the first utterance after the wake is direction-only.
         An accepted utterance completes the enrolment if it isn't yet.
+        Once enrolled, an accepted utterance with sim >= max(threshold,
+        update_threshold) is added to the enrolment (None = never). Gated on
+        sim, not just acceptance, so a right-direction stranger accepted with
+        the gate off can't pull the voiceprint toward themselves.
         Returns (accepted, sim).
         """
         sim, emb = self.score(pcm16)
@@ -188,6 +206,9 @@ class VoiceprintGate:
             accepted = dir_ok is not False
         if accepted and not was_enrolled:
             self._complete(emb)
+        elif (accepted and update_threshold is not None and emb is not None
+              and sim is not None and sim >= max(threshold, update_threshold)):
+            self._update(emb)
         return accepted, sim
 
 

@@ -6,6 +6,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 _p = Path(__file__).resolve().parents[2] / "scripts" / "record_demo_clips.py"
 _spec = importlib.util.spec_from_file_location("record_demo_clips", _p)
@@ -158,7 +159,8 @@ def test_quick_reply_records_chime_sidecar(tmp_path, monkeypatch):
     monkeypatch.setattr(rdc, "CHIME_LEAD_S", 0.05)
     monkeypatch.setattr(rdc.time, "sleep", lambda s: None)
     p = [x for x in build_prompts(["Hey Spot"]) if x.kind == "quick_reply"][0]
-    rdc_audio, t0, doa, chime = rdc.record_clip(0, p, None, output_device=7)
+    rdc_audio, t0, doa, chime, beams = rdc.record_clip(0, p, None, output_device=7)
+    assert beams == []  # no MicArray -> no beam log
     assert played["dev"] == 7 and played["n"] > 0
     assert 0 <= chime["chime_start_s"] < chime["chime_end_s"] <= p.duration_s
     assert chime["source"] in ("audio_feedback.listen_cue", "audio_feedback.ready", "generated_tone")
@@ -166,3 +168,44 @@ def test_quick_reply_records_chime_sidecar(tmp_path, monkeypatch):
     rdc.run_session([p], tmp_path, lambda q: (rdc_audio, t0, doa, chime), input_fn=_seq(["", ""]))
     side = json.loads((tmp_path / f"{p.clip}.chime.json").read_text())
     assert side["chime_start_s"] < side["chime_end_s"]
+
+
+def test_body_to_mic_inverts_mic_to_body():
+    from src.voice_control.speaker_lock import mic_to_body_deg
+    for body in (0, 90, 180, 270, 33.5):
+        for off, sign in ((179.0, -1), (0.0, 1), (45.0, 1)):
+            mic = rdc.body_to_mic_deg(body, off, sign)
+            assert mic_to_body_deg(mic, off, sign) == pytest.approx(body % 360.0)
+
+
+def test_run_session_writes_beams_csv_and_manifest_extra(tmp_path):
+    import math
+    ps = build_prompts(["Hey Spot"])[:1]
+    beams = [(10.5, [0.0, 0.0, math.pi / 2, 0.0], [0.1, 0.1, 0.0, 0.1])]
+
+    def rec(p):
+        return np.full((1600, 2), 1000, dtype=np.int16), 10.0, [], None, beams
+
+    n = rdc.run_session(ps, tmp_path, rec, input_fn=_seq(["", ""]),
+                        manifest_extra={"beam_steered": True, "interferer_body_deg": 90.0})
+    assert n == 1
+    rows = list(csv.reader(open(tmp_path / f"{ps[0].clip}.beams.csv")))
+    assert rows[0] == ["t_rel_s", *rdc.BEAM_COLS]
+    assert rows[1][:4] == ["0.500", "0.0", "0.0", "90.0"]
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m[0]["beam_steered"] is True and m[0]["interferer_body_deg"] == 90.0
+
+
+def test_collect_beams_skips_read_errors():
+    t = iter([0.0, 0.0, 0.1, 0.1, 0.2, 0.2, 0.3])
+    reads = iter([RuntimeError("usb"), ([1.0] * 4, [0.0] * 4)])
+
+    class M:
+        def read_beams(self):
+            r = next(reads)
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+    got = rdc.collect_beams(M(), 0.0, 0.25, clock=lambda: next(t), sleep=lambda s: None)
+    assert len(got) == 1 and got[0][1] == [1.0] * 4

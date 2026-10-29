@@ -69,6 +69,54 @@ def test_takeover_wake_restarts_enrolment():
     assert not ok and sim == pytest.approx(0.0, abs=1e-5)
 
 
+def test_running_enrolment_folds_in_confident_accepts():
+    g = _gate()
+    g.set_wake(A)
+    g.decide(A2, None, True, 0.25, update_threshold=0.35)       # completes enrolment (wake + first)
+    assert g.n_enrol == 2
+    g.decide(A, None, True, 0.25, update_threshold=0.35)        # sim ~1 >= 0.35 -> folded in
+    assert g.n_enrol == 3
+    want = 2 * _vec(1, 0) + _vec(0.9, 0.1) / np.linalg.norm(_vec(0.9, 0.1))
+    assert se.cosine(g.enrol, want) == pytest.approx(1.0, abs=1e-5)
+    assert np.linalg.norm(g.enrol) == pytest.approx(1.0, abs=1e-5)
+    g.clear()
+    assert g.n_enrol == 0
+
+
+def test_running_enrolment_never_learns_a_low_score_voice():
+    g = _gate()
+    g.set_wake(A)
+    g.decide(A, True, True, 0.25, update_threshold=0.35)
+    before = g.enrol.copy()
+    ok, _ = g.decide(B, True, False, 0.25, update_threshold=0.35)   # gate OFF: accepted by direction
+    assert ok and np.array_equal(g.enrol, before) and g.n_enrol == 2
+    ok, _ = g.decide(B, True, True, 0.25, update_threshold=0.35)    # gate ON: rejected
+    assert not ok and np.array_equal(g.enrol, before)
+    ok, _ = g.decide(A, False, True, 0.25, update_threshold=0.35)   # direction veto: no update
+    assert not ok and np.array_equal(g.enrol, before)
+
+
+def test_update_bar_is_never_below_accept_threshold():
+    g = _gate()
+    g.set_wake(A)
+    g.decide(A, None, True, 0.5)
+    sim = se.cosine(g.enrol, _vec(0.9, 0.1))                      # ~0.99, so use a bar above it
+    g.decide(A2, None, False, sim + 0.005, update_threshold=0.0)
+    assert g.n_enrol == 2
+
+
+def test_takeover_resets_running_enrolment():
+    g = _gate()
+    g.set_wake(A)
+    g.decide(A, None, True, 0.25, update_threshold=0.35)
+    g.decide(A2, None, True, 0.25, update_threshold=0.35)
+    assert g.n_enrol == 3
+    g.set_wake(B)
+    assert g.n_enrol == 0
+    g.decide(B, None, True, 0.25, update_threshold=0.35)
+    assert g.n_enrol == 2 and se.cosine(g.enrol, _vec(0, 1)) == pytest.approx(1.0, abs=1e-5)
+
+
 def test_accept_with_voiceprint_on():
     g = _gate()
     g.set_wake(A)
