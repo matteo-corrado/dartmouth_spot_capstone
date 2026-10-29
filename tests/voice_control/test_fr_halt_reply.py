@@ -186,3 +186,19 @@ def test_safety_path_rpcs_all_have_timeouts(robot, monkeypatch, name):
     stops = [t for (k, _), t in zip(cmd.sent, cmd.timeouts) if k in ("stop", "mobility")]
     assert len(stops) >= 2 and all(t == d.RPC_TIMEOUT_S for t in stops)
 
+
+# ------------------------------------------- M3: stow during nav re-stops
+@pytest.mark.parametrize("mode", ["graphnav", "visual_nav"])
+def test_stow_during_nav_sends_second_stop_after_join(robot, monkeypatch, mode):
+    import threading
+    cmd, _ = robot
+    ev = threading.Event()
+    t = threading.Thread(target=ev.wait, args=(5,), daemon=True)
+    t.start()
+    monkeypatch.setattr(d, "_nav_thread", t)
+    monkeypatch.setattr(d, "_nav_stop_event", ev)
+    monkeypatch.setattr(d, "_nav_mode", mode)
+    d.dispatch_intent({"intent": "stow", "params": {}})
+    k = cmd.kinds()
+    assert k[:2] == ["stop", "stop"]  # first stop, nav join, then the re-stop
+    assert not t.is_alive()

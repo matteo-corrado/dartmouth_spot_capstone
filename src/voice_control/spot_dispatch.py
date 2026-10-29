@@ -1536,6 +1536,10 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     # Re-stop under _arm_lock so a choreography request already
                     # in flight can't start after this stop.
                     _stow_now(cmd_client, resend_stop=True)
+                else:
+                    # A navigate_to / visual-nav move sent while the join ran
+                    # lands after the first stop: stop again (as stop/freeze do).
+                    _send_stop(cmd_client)
             return _handle_disable_mouth(params, session)
 
         if name == "stop":
