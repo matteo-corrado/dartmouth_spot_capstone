@@ -2074,6 +2074,14 @@ def _drain_audio_queue(keep_tail: bool = True):
 
 THINKING_FILLER_LINE = "Hmm, let me think."
 _PERSONA_INTENTS = ("set_persona", "add_persona")
+# Actions still allowed in a turn whose utterance overlapped a safety halt
+# (final-review I1): nothing that moves the body or the arm. Mirrors
+# spot_dispatch._UNLOCKED_INTENTS (not imported: bosdyn) plus the camera.
+_MOTION_FREE_INTENTS = frozenset({
+    "describe", "stop", "freeze", "estop",
+    "set_persona", "add_persona", "set_volume", "set_backend",
+    "battery_status", "status", "check_obstacles", "list_locations", "list_maps",
+})
 _PERSONA_ACTION_RE = re.compile(r'"action"\s*:\s*"(?:set_persona|add_persona)"')
 _RESPONSE_KEY_RE = re.compile(r'"response"\s*:\s*"')
 
@@ -2152,6 +2160,18 @@ def _heard(text: str) -> str:
     return f"<heard {len((text or '').split())} words>"
 
 
+def _resume_talk_after_halt() -> None:
+    """Bring the arm/mouth back to "talk" if a safety halt stowed them
+    (final-review I1). Best-effort; never raises; no-op without a robot."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        return
+    try:
+        from src.voice_control.spot_dispatch import resume_talk_after_halt
+        resume_talk_after_halt()
+    except Exception as e:
+        print(f"[Spot] talk-pose resume skipped: {type(e).__name__}: {e}")
+
+
 def _say(tts, text, voice=None) -> None:
     """tts.speak unless an operator hush/stop aborted this turn."""
     if tts is not None and text and not _abort_chain.is_set():
@@ -2220,10 +2240,12 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         return None
 
     # New turn: forget earlier operator stops. A stop arriving from here on
-    # (during ASR, LLM or the chain itself) aborts this turn's action chain.
+    # (during ASR, LLM or the chain itself) aborts this turn and hushes it.
     _abort_chain.clear()
-    if utt_t0 is not None and _last_safety_at >= utt_t0:
-        _abort_chain.set()  # a halt landed during this utterance: keep it
+    # A halt that landed while the user was still speaking (KWS false fire on
+    # "next stop", a bystander, ...) already stopped the robot. It blocks this
+    # turn's motion only; the spoken reply still plays (final-review I1).
+    motion_blocked = utt_t0 is not None and _last_safety_at >= utt_t0
     t_utterance_start = time.time()
 
     # Combine audio
@@ -2335,6 +2357,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     info["reached_llm"] = True
     if on_thinking is not None:
         on_thinking()
+    if not motion_blocked and not _abort_chain.is_set():
+        _resume_talk_after_halt()
 
     rec = get_recorder()
     trace = rec.begin_utterance() if rec else None
@@ -2464,6 +2488,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                         break
                     cmd = intent["intent"]
                     params = intent.get("params", {})
+                    if motion_blocked and cmd not in _MOTION_FREE_INTENTS:
+                        print(f"[Dispatch] skipped {cmd}: safety halt during this utterance")
+                        continue
 
                     if len(actions) > 1:
                         print(f"[Chain] Executing {i+1}/{len(actions)}: {cmd}")
@@ -2579,7 +2606,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             params = intent.get('params', {})
             print(f"Command: {cmd}" + (f" {params}" if params else ""))
 
-            if _abort_chain.is_set():
+            if motion_blocked or _abort_chain.is_set():
                 print("[Dispatch] skipped — safety halt during this utterance")
             elif execute_on_spot(intent):
                 print(">>> SUCCESS")

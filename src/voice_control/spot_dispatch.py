@@ -95,6 +95,7 @@ _last_traj = None           # (cmd_id, deadline) of the last trajectory sent
 _safety_gen = 0             # bumped by every aborting intent (any thread)
 _dispatch_gen = None        # _safety_gen when the current locked dispatch began
 _mouth_resume = False       # re-enable the mouth when the arm returns to "talk"
+_talk_resume = False        # a safety halt stowed the talk pose: restore on the next turn
 _closing = False            # set by close_spot_session: no new bring-up after that
 
 
@@ -895,6 +896,7 @@ def _handle_enable_mouth(params):
             return False
         _pose_before_walk = None
         _mouth_resume = False
+        _set_talk_resume(False)
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
         tts.mouth.enable()
@@ -909,6 +911,7 @@ def _handle_disable_mouth(params, session=None):
     """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2)."""
     global _pose_before_walk, _mouth_resume
     _mouth_resume = False
+    _set_talk_resume(False)
     try:
         from src.voice_control.spot_tts import get_tts
         tts = get_tts()
@@ -1376,10 +1379,56 @@ def _dispatch_safety(intent, brain=None, speak=None):
     cmd_client = sess["cmd"]
     was_emote = _nav_mode == "emote"
     _send_stop(cmd_client)  # FIRST, before any thread join
+    was_talk = _in_talk_mode()  # read-only; before the stop branch latches the mouth
     ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
     _stow_now(cmd_client, resend_stop=was_emote,
               then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
+    if was_talk and name != "estop":
+        _set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
+
+
+def _in_talk_mode() -> bool:
+    """True if the arm is in (or will return to) the "talk" pose with the mouth on."""
+    return _arm_pose == "talk" or _pose_before_walk == "talk" or _mouth_resume
+
+
+def _set_talk_resume(on: bool):
+    global _talk_resume
+    _talk_resume = bool(on)
+
+
+def resume_talk_after_halt() -> bool:
+    """Final-review I1: a stop/freeze stowed the arm and latched the mouth off.
+    Called by client_mic at the start of the next turn that may move; puts the
+    arm back in "talk" (no arrival wait) and re-enables the mouth. Needs a
+    standing, powered, idle robot; otherwise the flag stays for a later turn."""
+    if not _talk_resume or _closing:
+        return False
+    gen = _safety_gen  # a stop from here on wins (checked under _arm_lock)
+    sess = _spot_session
+    if sess is None or is_navigating() or _arm_pose != "stowed":
+        return False
+    try:
+        if not _standing_and_powered(sess):
+            return False
+        from src.voice_control.spot_tts import get_tts
+        tts = get_tts()
+        if tts is None or tts.mouth is None:
+            _set_talk_resume(False)
+            return False
+        with _arm_lock:
+            if _aborted(gen) or _arm_pose != "stowed":
+                return False
+            send_arm_pose(sess["cmd"], "talk", rpc_timeout=RPC_TIMEOUT_S)
+            _set_arm_pose("talk")
+            _set_talk_resume(False)
+            tts.mouth.enable()  # under the lock: a stop's stow comes after this
+        print("[Spot] Arm back in talk pose after the halt")
+        return True
+    except Exception as e:
+        print(f"[Spot] ⚠️  talk-pose resume failed: {e}")
+        return False
 
 
 def _abort_motion(cmd_client, name):
@@ -1555,6 +1604,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Sit the robot down
             print("[Spot] Sitting down...")
             _send_stop(cmd_client)  # stop first, then stow, then sit
+            _set_talk_resume(False)
             _cancel_nav()
             _pose_before_walk = None
             if _arm_pose != "stowed":
@@ -1816,6 +1866,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Safe power off
             print("[Spot] Initiating safe power off...")
             _send_stop(cmd_client)  # stop first, then stow, then power off
+            _set_talk_resume(False)
             _close_mouth()
             _cancel_nav()
             try:
