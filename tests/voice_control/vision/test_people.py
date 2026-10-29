@@ -316,7 +316,7 @@ def _wearing_by_bearing(monkeypatch, answers):
     """answers: bearing -> True/False/None; records the bearings asked, calls gaze like the real one."""
     asked = []
 
-    def fake(robot, person, clothing, gaze, sleep=None):
+    def fake(robot, person, clothing, gaze, sleep=None, abort=None):
         if not gaze(person.bearing_deg):
             return None
         asked.append(person.bearing_deg)
@@ -469,3 +469,53 @@ def test_spoken_templates_have_no_stop_words():
     assert len(lines) >= 5
     for line in lines:
         assert not BAD.search(line), line
+
+
+# ---------------------------------------------------------------- final fix: I4(a), M5
+
+def test_wearing_abort_after_settle_skips_crop_and_vlm(gripper, clk, monkeypatch):
+    monkeypatch.setattr(people, "capture", lambda *a, **k: pytest.fail("no crop after a stop"))
+    stopped = {"v": False}
+
+    def sleep(s):
+        clk.sleep(s)
+        stopped["v"] = True  # the stop lands during the gaze settle
+    assert people.wearing(None, _p(20), "red shirt", Spy(True), sleep=sleep,
+                          abort=lambda: stopped["v"]) is None
+    assert gripper["prompts"] == []
+
+
+def test_wearing_vlm_timeout_is_short(gripper, clk, monkeypatch):
+    seen = {}
+
+    def fake_vlm(prompt, images, **k):
+        seen.update(k)
+        return "Yes."
+    monkeypatch.setattr(people, "ask_vlm", fake_vlm)
+    assert people.wearing(None, _p(20), "red shirt", Spy(True), sleep=clk.sleep) is True
+    assert seen["timeout"] == pytest.approx(people.YES_NO_TIMEOUT_S) and seen["timeout"] <= 5.0
+
+
+def test_select_clothing_abort_stops_asking(monkeypatch, clk):
+    _bearing(monkeypatch, 0.0)
+    _snap_seq(monkeypatch, [[_p(b) for b in (10, -20, 30)]])
+    asked = _wearing_by_bearing(monkeypatch, {10: False, -20: True, 30: True})
+    def abort():
+        return len(asked) >= 1  # a stop arrives after the first candidate
+    speak = Spy(None)
+    assert people.select_person(None, "person in red shirt", speak, Spy(True), clock=clk,
+                                sleep=clk.sleep, abort=abort) == (None, None)
+    assert asked == [10] and speak.calls == []
+
+
+def test_wait_for_raised_hand_pauses_between_snapshots(monkeypatch, clk):
+    calls = _snap_seq(monkeypatch, [[_p(0)]] * 100, clk=clk, step=0.0)
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        clk.sleep(s)
+    assert people.wait_for_raised_hand(None, [FL], timeout_s=1.0, clock=clk, sleep=sleep) is None
+    assert slept and all(0 < s <= people.HAND_POLL_S + 1e-9 for s in slept)
+    assert slept[0] == pytest.approx(people.HAND_POLL_S)
+    assert len(calls) <= int(1.0 / people.HAND_POLL_S) + 1
