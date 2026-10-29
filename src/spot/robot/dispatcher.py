@@ -224,11 +224,22 @@ def _dispatch_feature(intent, brain=None, speak=None, session=None):
     from src.spot.features import REGISTRY
     name = intent["intent"]
     if REGISTRY.action(name) is not None:  # never true until Wave 4 registers features
-        from src.spot.core.tuning import get_tuning
-        from src.spot.features.ctx import Ctx
-        ctx = Ctx(connection=_r.CONNECTION, arm=_r.ARM, safety=_r.SAFETY_GEN, nav=_r.NAV,
-                  speak=speak, brain=brain, bus=None, tuning=get_tuning())
-        return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
+        # Same catch-all as every legacy branch: a raising handler (or Ctx /
+        # tuning build) returns False and never escapes dispatch_intent, so the
+        # locomotion caller still runs its arm restore.
+        try:
+            from src.spot.core.tuning import get_tuning
+            from src.spot.features.ctx import Ctx
+            ctx = Ctx(connection=_r.CONNECTION, arm=_r.ARM, safety=_r.SAFETY_GEN, nav=_r.NAV,
+                      speak=speak, brain=brain, bus=None, tuning=get_tuning())
+            return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
+        except Exception as e:
+            print(f"[Spot] Error executing intent '{name}': {e}")
+            if name in INFO_INTENTS:
+                _say(speak, "I can't reach my sensors right now.")
+            import traceback
+            traceback.print_exc()
+            return False
     return LEGACY_FEATURE_DISPATCH(intent, brain, speak, session=session)
 
 
