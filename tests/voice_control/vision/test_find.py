@@ -2,8 +2,11 @@ from unittest import mock
 
 import numpy as np
 
-from src.voice_control.vision import describe as D
-from src.voice_control.vision import find as F
+import importlib
+
+# importlib: the package re-exports describe/find functions under the module names.
+D = importlib.import_module("src.voice_control.vision.describe")
+F = importlib.import_module("src.voice_control.vision.find")
 from src.voice_control.vision.types import Detection
 
 from .test_describe import _capture

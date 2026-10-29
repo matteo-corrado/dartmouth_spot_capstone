@@ -51,6 +51,11 @@ _ACTION_HINT_RE = re.compile(
 )
 
 
+# Camera answers: the reply is spoken by the robot after it looks, so Gemma's
+# own "response" for these is a guess (client_mic speaks a stock ack instead).
+_VISION_ANSWER_ACTIONS = ("describe", "find", "look_around")
+
+
 def _sampling_hint(transcript: str) -> str:
     return "action" if _ACTION_HINT_RE.search(transcript) else "freeform"
 
@@ -109,9 +114,11 @@ AVAILABLE ACTIONS:
 - list_locations: List saved locations. No params.
 - load_map: Switch to a different GraphNav map. Params: {"map": "<name>"} (optional — omit to reload the last-used map). The available maps are listed in the robot state under "available_maps". Loading a map disrupts any in-progress navigation and the robot will need to re-localize (best with a fiducial visible).
 - list_maps: List the GraphNav maps available on disk. No params.
-- go_to_object: Walk toward any visible object Spot can recognise. Params: {"description": "<what to find>"}. Spot uses YOLO/VLM to identify the target in its surroundings — anything you can describe in a few words. Works for ordinary objects (chairs, tables, posters, backpacks, people), architectural features (doors, exits, doorways, windows), and pick-up targets ("the cup on the floor"). Only for things you can SEE in the camera right now — use go_to for saved map locations.
+- go_to_object: Walk toward any visible object Spot can recognise. Params: {"description": "<what to find>"}. Spot uses YOLO/VLM to identify the target in its surroundings — anything you can describe in a few words. Works for ordinary objects (chairs, tables, posters, backpacks, people), architectural features (doors, exits, doorways, windows), and pick-up targets ("the cup on the floor"). Only for things you can SEE in the camera right now — use go_to for saved map locations. For people: "me" for the speaker ("come to me"), "person in <clothing>" ("person in red shirt"), "person on my left"/"on my right"/"in front"/"behind me", or both ("person in red shirt on my left").
 - follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
-- describe: Take a photo and describe what you see. Params: {"camera": "front"|"left"|"right"|"back", "query": "<specific object to look for, if any>"}. Default camera "front". Omit query for general "what do you see" questions.
+- describe: Look with your cameras and describe what you see on one side. Params: {"side": "front"|"left"|"right"|"back"}. Default "front". Use for "what do you see" (front), "what's behind you" (back), "what's on your left" (left).
+- find: Check whether you can see a specific object or person and say where it is. No movement. Params: {"what": "<object or person>"}. Use for "do you see X", "can you see X", "is there a X", "where is the X".
+- look_around: Look in every direction and describe everything around you (takes several seconds). No params. Use for "look around", "what's around you".
 - check_obstacles: Query Spot's built-in obstacle map for nearby obstacles. No params. Use for "is there anything in front of you", "is this room cluttered", "what direction is clearest", "can you move forward safely". Returns distances and bearings without using cameras or YOLO — it's a direct read of Spot's footstep-planning grid.
 - battery_status: Check battery level. No params.
 - status: Full robot status report. No params.
@@ -135,7 +142,9 @@ RULES:
 - For battery_status, status, check_obstacles, list_locations and list_maps, reply ONLY "Let me check." — the robot speaks the real result itself once the data arrives. Never guess battery levels, obstacles, or location lists.
 - Location names must be lowercase with underscores.
 - IMPORTANT: Check "saved_locations" in the robot state. If the user says "go to X" and X matches a saved location name, ALWAYS use go_to (map navigation). Only use go_to_object for objects NOT in saved_locations (e.g. "go to the red chair" when "red_chair" is not a saved location).
-- IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?" are OBSERVATION questions — use describe (look with camera), NOT go_to_object. Only use go_to_object when the user explicitly says "go to X", "walk to X", "find X", or "approach X".
+- IMPORTANT: "Do you see X?", "Can you see X?", "Is there a X?", "Where is the X?" are OBSERVATION questions — use find (look without moving), NOT go_to_object or describe. Use describe only for general "what do you see" questions. Only use go_to_object when the user explicitly says "go to X", "walk to X", "come to X", "bring yourself to X" or "approach X".
+- When you asked who they mean and the user answers "I'm the one in the red shirt" / "the one on the left", that answer is a new go_to_object request for that person.
+- For describe, find and look_around, reply ONLY with a short "Let me look." — you cannot see until the robot looks, so never guess what is there.
 - IMPORTANT: When the user says "add", "create", "make" a [name] voice or persona → ALWAYS use add_persona, NEVER set_persona. The verb is the trigger, regardless of whether [name] looks like it could be a known persona. Use set_persona ONLY for verbs like "be", "switch to", "act like", "turn into" combined with a name already in the known personas list.
 - THINKING: You SHOULD include "thinking": "<brief reasoning under 30 words>" BEFORE "actions" whenever the request requires interpretation. You MUST include thinking when: (a) actions list has 2+ items, (b) the action is add_persona, (c) selecting between similar persona names, (d) the user's target for go_to / go_to_object / find is ambiguous, (e) interpreting figurative or sarcastic language. The thinking field is logged for the operator — the user does not hear it. Omit it for trivial replies (greetings, yes/no, acknowledgements).
 
@@ -150,7 +159,25 @@ User: "Go to the conference and come back"
 {"actions": [{"action": "go_to", "params": {"location": "conference"}}, {"action": "come_back", "params": {}}], "response": "Going to conference and coming right back!"}
 
 User: "Do you see the blue chair?"
-{"actions": [{"action": "describe", "params": {"camera": "front", "query": "blue chair"}}], "response": "Let me check for the blue chair..."}
+{"actions": [{"action": "find", "params": {"what": "blue chair"}}], "response": "Let me look."}
+
+User: "Where is the backpack?"
+{"actions": [{"action": "find", "params": {"what": "backpack"}}], "response": "Let me look."}
+
+User: "What's behind you?"
+{"actions": [{"action": "describe", "params": {"side": "back"}}], "response": "Let me look."}
+
+User: "Look around"
+{"actions": [{"action": "look_around", "params": {}}], "response": "Let me look."}
+
+User: "Come to me"
+{"actions": [{"action": "go_to_object", "params": {"description": "me"}}], "response": "Coming to you."}
+
+User: "I'm the one in the red shirt"
+{"actions": [{"action": "go_to_object", "params": {"description": "person in red shirt"}}], "response": "Coming to you."}
+
+User: "The one on the left"
+{"actions": [{"action": "go_to_object", "params": {"description": "person on my left"}}], "response": "Coming to you."}
 
 User: "Go to the red chair"
 {"actions": [{"action": "go_to_object", "params": {"description": "red chair"}}], "response": "Looking for the red chair!"}
@@ -158,8 +185,8 @@ User: "Go to the red chair"
 User: "Walk to the door"
 {"actions": [{"action": "go_to_object", "params": {"description": "door"}}], "response": "Looking for a door."}
 
-User: "Find me a chair"
-{"actions": [{"action": "go_to_object", "params": {"description": "chair"}}], "response": "On it — finding a chair."}
+User: "Take me to a chair"
+{"actions": [{"action": "go_to_object", "params": {"description": "chair"}}], "response": "On it — heading to a chair."}
 
 User: "Go to the poster on the wall"
 {"actions": [{"action": "go_to_object", "params": {"description": "poster"}}], "response": "Heading to the poster."}
@@ -551,7 +578,7 @@ class LLMBrain:
         # fake description sticks for MAX_HISTORY turns and biases later
         # replies. Dispatcher handles the spoken side independently.
         self.history.append({"role": "user", "content": transcript})
-        if any(a["intent"] == "describe" for a in actions):
+        if any(a["intent"] in _VISION_ANSWER_ACTIONS for a in actions):
             parsed["response"] = "Taking a look..."
             sanitized = json.dumps(parsed)
             self.history.append({"role": "assistant", "content": sanitized})
