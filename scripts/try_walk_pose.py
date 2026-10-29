@@ -27,7 +27,7 @@ from bosdyn.client.estop import EstopClient
 from bosdyn.client.robot_command import (
     RobotCommandBuilder, block_until_arm_arrives, blocking_stand)
 
-from src.session import spot_session, move_arm_to, walk_pose_command
+from src.spot.robot.session import spot_session, move_arm_to, walk_pose_command
 
 LABELS = {"stow": "(a) arm_stow_command", "carry": "(b) arm_carry_command",
           "joints": "(c) custom joint pose"}

@@ -97,7 +97,7 @@ def setup(phrases_file=None, score=KWS_SCORE, threshold=KWS_THRESHOLD):
     kw_path = MODEL_DIR / "keywords.txt"
     if phrases_file:
         sys.path.insert(0, str(PROJECT_ROOT))
-        from src.voice_control.wake.phrases import load_wake_phrases
+        from src.spot.wake.phrases import load_wake_phrases
         phrases = load_wake_phrases(phrases_file)
         kw_lines = build_keyword_lines(phrases, _bpe_tokenizer(), score, threshold)
         kw_path.write_text("\n".join(kw_lines) + "\n")
@@ -124,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description="Setup sherpa-onnx KWS model")
     parser.add_argument("--check", action="store_true", help="Check existing install")
     sys.path.insert(0, str(PROJECT_ROOT))
-    from src.voice_control.tuning import get_tuning
+    from src.spot.core.tuning import get_tuning
     _t = get_tuning()
     parser.add_argument("--score", type=float, default=_t.kws_score,
                         help="Keyword boost score written per keyword line (default: tuning kws_score)")
@@ -149,7 +149,7 @@ def main():
     print(f"Target: {MODEL_DIR}\n")
 
     if setup(args.phrases_file, args.score, args.threshold):
-        print("\nDone! Test with: python src/voice_control/wake/sherpa_onnx.py --test-mic")
+        print("\nDone! Test with: python -m src.spot.wake.sherpa_onnx --test-mic")
     else:
         sys.exit(1)
 

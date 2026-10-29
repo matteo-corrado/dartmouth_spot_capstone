@@ -18,9 +18,9 @@ from bosdyn.util import now_sec
 
 def main():
     # Delayed imports: keep heavy voice-pipeline modules out of script parse.
-    from src.voice_control.voice_state import VoiceState
-    from src.voice_control.spot_leds import _build_pulse_behavior, _behavior_name
-    from src.voice_control.state_feedback import led_color_for, LED_PERIOD_S
+    from src.spot.core.voice_state import VoiceState
+    from src.spot.mic.spot_leds import _build_pulse_behavior, _behavior_name
+    from src.spot.mic.state_feedback import led_color_for, LED_PERIOD_S
 
     p = argparse.ArgumentParser()
     bosdyn.client.util.add_base_arguments(p)

@@ -10,9 +10,9 @@ Usage:
 
 The orchestrator:
   1. Acquires a /tmp/wakespot.pid lockfile (refuses if another wakespot is alive).
-  2. Resolves the requested map (if any) via src.map_loader.resolve_map_path
+  2. Resolves the requested map (if any) via src.spot.nav.map_loader.resolve_map_path
      and records it in maps/.last_used.
-  3. Claims the E-Stop via src.estop.estop_session — its EstopKeepAlive runs
+  3. Claims the E-Stop via src.spot.safety.estop.estop_session — its EstopKeepAlive runs
      its own heartbeat thread, so we just hold the context manager open.
   4. Spawns scripts/run_voice_control.py in its own process group, forwarding
      pass-through flags plus --map <resolved_path>.
@@ -88,8 +88,8 @@ def _on_sigquit(signum, frame):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src import map_loader
-from src.estop import estop_session
+from src.spot.nav import map_loader
+from src.spot.safety.estop import estop_session
 
 
 # ---------------------------------------------------------------------------

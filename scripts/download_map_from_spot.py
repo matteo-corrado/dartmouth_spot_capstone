@@ -11,9 +11,9 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(project_root))
 
-from src.session import spot_session
-from src.map_loader import write_last_used
-from src.location_manager import save_locations
+from src.spot.robot.session import spot_session
+from src.spot.nav.map_loader import write_last_used
+from src.spot.nav.location_manager import save_locations
 from bosdyn.client.graph_nav import GraphNavClient
 
 

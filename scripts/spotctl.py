@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """spotctl — operator control CLI for the running voice pipeline.
 
-Talks to the localhost control server (src/voice_control/control_server.py),
+Talks to the localhost control server (src/spot/operator/control_server.py),
 default http://127.0.0.1:8770. Run on the Jetson, e.g. ``ssh jetson spotctl hush``.
 Stdlib only.
 

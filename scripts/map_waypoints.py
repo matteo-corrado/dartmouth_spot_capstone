@@ -5,9 +5,9 @@ import pathlib
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from src.session import spot_session
-from src.graph_nav_utils import list_waypoints, get_localization_state
-from src.location_manager import save_location, list_locations
+from src.spot.robot.session import spot_session
+from src.spot.nav.graph_nav_utils import list_waypoints, get_localization_state
+from src.spot.nav.location_manager import save_location, list_locations
 
 
 def format_waypoint_id(wp_id: str, max_length: int = 50) -> str:

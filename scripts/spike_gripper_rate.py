@@ -21,7 +21,7 @@ import time
 
 from bosdyn.client.robot_command import RobotCommandBuilder
 
-from src.session import spot_session, deploy_arm_safe, stow_arm
+from src.spot.robot.session import spot_session, deploy_arm_safe, stow_arm
 
 
 def run_rate(cmd_client, hz: float, secs: float) -> dict:

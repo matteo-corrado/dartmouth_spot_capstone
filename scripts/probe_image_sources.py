@@ -32,7 +32,7 @@ from bosdyn.client.point_cloud import PointCloudClient
 from bosdyn.client.ray_cast import RayCastClient
 from bosdyn.client.world_object import WorldObjectClient
 
-from src.session import quick_robot
+from src.spot.robot.session import quick_robot
 
 
 def fmt_intrinsics(src):

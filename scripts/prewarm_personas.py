@@ -11,7 +11,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.voice_control.chatbot.voice_discovery import find_and_claim  # noqa: E402
+from src.spot.brain.voice_discovery import find_and_claim  # noqa: E402
 
 STOCK = [
     ("cowboy",         "deep gravelly American male cowboy"),

@@ -19,9 +19,9 @@ import numpy as np
 import sounddevice as sd
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from src.voice_control.audio_feedback import (  # noqa: E402
+from src.spot.audio.chimes import (  # noqa: E402
     SAMPLE_RATE, TAIL_MS, AudioFeedback, _tone)
-from src.voice_control.audio_player import AudioPlayer  # noqa: E402
+from src.spot.audio.player import AudioPlayer  # noqa: E402
 
 SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as client_mic
 
