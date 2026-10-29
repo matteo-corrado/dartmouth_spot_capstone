@@ -64,8 +64,8 @@ Arm/gaze/emote/halt files run 4x: 124 passed every time.
 
 1. **sh0 sign:** speak from Spot's left; the folded arm should turn left. If it turns the
    wrong way: `gaze_sh0_sign: -1` in `config/tuning.yaml`.
-2. **Gaze clearance:** check ±45° shoulder yaw in the folded pose clears the body/payload
-   and the claw can still open there. If unsure, start with `gaze_max_deg: 20`.
+2. **Gaze clearance:** shipped at `gaze_max_deg: 20` (default and tuning.yaml). Check ±20° clears
+   the body/payload and the claw still opens there, then widen (code cap 60).
 3. **Fold timing:** after `spotctl stand` the arm should fold within ~3 s of standing and
    the mouth should move on the next reply. With `--map` it folds right after launch bring-up.
 4. **Mouth while walking:** claw animation during a walk (gripper-only commands must not
@@ -77,7 +77,22 @@ Arm/gaze/emote/halt files run 4x: 124 passed every time.
 - Gaze's "standing" check accepts STANDING or STEPPING (shared `_standing_and_powered`). A
   tablet/joystick walk is not `is_navigating()`, so gaze could fire during one. Low risk at the demo.
 
-- `docs/architecture/pipeline-explainer.md` (lines ~76, 83, 280, 284) still says `--enable-arm`
-  and "ready pose"; I left it alone so I don't collide with the docs agent. It needs a pass.
+- pipeline-explainer.md updated in the safety-review round (below).
 - If gaze sends within 2 s of the lock release, the re-centre is skipped. The next walk
   re-centres anyway.
+
+## Safety-review fixes (round 2)
+
+- **I1:** client_mic `_gaze_at_speaker` takes the safety gen at request time and queues
+  `(body_deg, gen)`; the worker calls `gaze_at_bearing(body, gen)`. If there is no gen
+  (dry run / no robot), no gaze is queued. Test: a stop between request and pickup → no arm command.
+- **M1:** `_hold_gaze()` blocks gaze for JOINT_MOVE_SECS at the start of `_dispatch_locomotion`
+  (before `_cancel_nav`) and again just before `_dispatch_core`.
+- **M2:** the gaze RPC timeout is 0.5 s (< SAFETY_LOCK_TIMEOUT_S 1.0 s).
+- **M3:** `_cancel_auto_arm()` in sit, power_off and close_spot_session.
+- **M6:** gaze is hard-capped at 60° in code. `config/tuning.yaml` now has explicit `auto_arm: true`,
+  `gaze_max_deg: 20`, `gaze_sh0_sign: 1` (marked unverified). The code default for
+  `gaze_max_deg` is now also 20, so `test_shipped_yaml_is_all_defaults` still holds.
+- pipeline-explainer.md: startup, flags, gaze, arm policy, mouth and tunables are updated.
+
+Full suite after round 2: **563 passed, 3 skipped**. Arm/gaze/emote/halt/tuning files run 3x: 137 passed each time.

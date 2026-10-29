@@ -68,7 +68,7 @@ Recommended for a poster demo: `scripts/wakespot --no-map --no-transcript-log --
 - **Dances** close the claw, stow the arm, dance, then fold back and turn the mouth on again.
 - **stop / freeze** stow the arm and turn the mouth off; the next turn that is allowed to move folds it back. **E-stop, sit, power off and shutdown** stow it and do not bring it back on their own; after an e-stop the arm folds again only after an explicit stand.
 - **"Disable mouth"** (or `spotctl stow`) stows the arm and turns the automatic fold off for the rest of the run; "enable mouth" turns it back on.
-- **Gaze:** while Spot stands still in the folded pose, the shoulder turns slowly toward the locked speaker, at most `gaze_max_deg` (default 45°) either side, only when the speaker's direction moved more than 15° and at most every 2 s. It re-centres when the lock is released. A stop always wins: no gaze follows a stop. Set `gaze_max_deg: 0` in `config/tuning.yaml` to turn gaze off; if Spot turns the wrong way, set `gaze_sh0_sign: -1`.
+- **Gaze:** while Spot stands still in the folded pose, the shoulder turns slowly toward the locked speaker, at most `gaze_max_deg` (default 20° for the first robot run, capped at 60° in code) either side, only when the speaker's direction moved more than 15° and at most every 2 s. It re-centres when the lock is released. A stop always wins: no gaze follows a stop. Set `gaze_max_deg: 0` in `config/tuning.yaml` to turn gaze off; if Spot turns the wrong way, set `gaze_sh0_sign: -1`.
 
 ### What you should see (about 60 to 90 s from cold)
 
