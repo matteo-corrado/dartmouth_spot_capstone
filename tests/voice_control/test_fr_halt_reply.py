@@ -130,7 +130,9 @@ def test_stop_from_talk_still_stops_first_then_resume_restores(robot):
     assert cmd.kinds()[0] == "stop"                # halt first, unchanged
     assert d.get_arm_pose() == "stowed" and m.log == ["off"]
     assert d._talk_resume is True
-    assert d.resume_talk_after_halt() is True
+    t = d.resume_talk_after_halt()
+    assert t
+    t.join(2)                                       # mouth only after the arm arrives
     assert d.get_arm_pose() == "talk" and m.log == ["off", "on"]
     assert cmd.kinds()[-1] == "arm_ready"
     assert d.resume_talk_after_halt() is False     # one-shot
@@ -158,6 +160,40 @@ def test_resume_loses_to_a_racing_stop(robot, monkeypatch):
     monkeypatch.setattr(d, "_aborted", lambda gen: True)  # a stop bumped the generation
     assert d.resume_talk_after_halt() is False
     assert d.get_arm_pose() == "stowed" and m.log == ["off"]
+
+
+def test_resume_keeps_mouth_off_if_arm_never_arrives(robot, monkeypatch):
+    cmd, m = robot
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
+    d.resume_talk_after_halt().join(2)
+    assert m.log == ["off"] and not m.enabled
+
+
+def test_stop_during_arm_raise_keeps_mouth_off(robot, monkeypatch):
+    cmd, m = robot
+    d.dispatch_intent({"intent": "stop", "params": {}})
+
+    def arrives_after_a_stop(c, i, t):
+        d.dispatch_intent({"intent": "stop", "params": {}})  # stop lands mid-raise
+        return True
+    monkeypatch.setattr(d, "block_until_arm_arrives", arrives_after_a_stop)
+    d.resume_talk_after_halt().join(2)
+    assert m.log == ["off", "off"] and d.get_arm_pose() == "stowed"
+
+
+def test_hush_skips_stream_rebuild_when_nothing_plays(monkeypatch):
+    calls = []
+
+    class P:
+        def is_busy(self):
+            return False
+
+        def force_reset(self):
+            calls.append("reset")
+    monkeypatch.setattr(cm, "_audio_player", P())
+    cm._hush_player()
+    assert calls == []
 
 
 def test_resume_waits_while_moving(robot, monkeypatch):

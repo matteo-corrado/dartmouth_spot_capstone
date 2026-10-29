@@ -545,6 +545,8 @@ def _mark_safety() -> None:
 def _hush_player() -> None:
     if _audio_player is not None:
         try:
+            if not _audio_player.is_busy():
+                return  # nothing playing (e.g. a hit while the user talks): no stream rebuild
             _audio_player.force_reset()  # hush: stop talking now
         except Exception as e:
             print(f"[SAFETY-KWS] hush failed: {e}")

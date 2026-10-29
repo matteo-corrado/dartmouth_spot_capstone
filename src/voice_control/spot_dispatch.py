@@ -1398,11 +1398,12 @@ def _set_talk_resume(on: bool):
     _talk_resume = bool(on)
 
 
-def resume_talk_after_halt() -> bool:
+def resume_talk_after_halt():
     """Final-review I1: a stop/freeze stowed the arm and latched the mouth off.
-    Called by client_mic at the start of the next turn that may move; puts the
-    arm back in "talk" (no arrival wait) and re-enables the mouth. Needs a
-    standing, powered, idle robot; otherwise the flag stays for a later turn."""
+    Called by client_mic at the start of the next turn that may move; sends the
+    arm back to "talk" without waiting, and a daemon thread re-enables the
+    mouth once it arrives. Needs a standing, powered, idle robot; otherwise the
+    flag stays for a later turn. Returns the thread (truthy) or False."""
     if not _talk_resume or _closing:
         return False
     gen = _safety_gen  # a stop from here on wins (checked under _arm_lock)
@@ -1417,15 +1418,31 @@ def resume_talk_after_halt() -> bool:
         if tts is None or tts.mouth is None:
             _set_talk_resume(False)
             return False
+        cmd = sess["cmd"]
         with _arm_lock:
             if _aborted(gen) or _arm_pose != "stowed":
                 return False
-            send_arm_pose(sess["cmd"], "talk", rpc_timeout=RPC_TIMEOUT_S)
+            cmd_id = send_arm_pose(cmd, "talk", rpc_timeout=RPC_TIMEOUT_S)
             _set_arm_pose("talk")
             _set_talk_resume(False)
-            tts.mouth.enable()  # under the lock: a stop's stow comes after this
-        print("[Spot] Arm back in talk pose after the halt")
-        return True
+
+        def _enable_when_up():
+            # Like enable_mouth: the claw only animates once the arm is up.
+            try:
+                if not block_until_arm_arrives(cmd, cmd_id, 5.0):
+                    print("[Spot] talk pose not reached after the halt — mouth stays off")
+                    return
+                with _arm_lock:  # a stop since the send wins
+                    if _aborted(gen) or _arm_pose != "talk":
+                        return
+                    tts.mouth.enable()
+                print("[Spot] Arm back in talk pose after the halt")
+            except Exception as e:
+                print(f"[Spot] ⚠️  mouth re-enable after the halt failed: {e}")
+
+        t = threading.Thread(target=_enable_when_up, name="talk-resume", daemon=True)
+        t.start()
+        return t
     except Exception as e:
         print(f"[Spot] ⚠️  talk-pose resume failed: {e}")
         return False

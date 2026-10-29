@@ -95,6 +95,9 @@ def test_on_safety_kw_hushes_aborts_and_dispatches(monkeypatch):
     sent, resets = [], []
 
     class P:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             resets.append(1)
 
@@ -118,6 +121,9 @@ def test_halt_dispatched_before_slow_hush(monkeypatch):
     release = threading.Event()
 
     class SlowPlayer:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             order.append("hush-start")
             release.wait(2)
@@ -141,6 +147,9 @@ def test_hush_starts_without_waiting_for_slow_dispatch(monkeypatch):
     seen_during_dispatch = []
 
     class P:
+        def is_busy(self):
+            return True  # Spot is talking
+
         def force_reset(self):
             hushed.set()
 
