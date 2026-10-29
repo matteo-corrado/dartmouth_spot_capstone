@@ -298,3 +298,18 @@ def test_halt_survives_hush_thread_start_failure(monkeypatch):
 
     monkeypatch.setattr(cm.threading, "Thread", Boom)
     cm._start_hush()  # must not raise
+
+
+def test_safety_drop_counter_and_rate_limited_log(monkeypatch, capsys):
+    monkeypatch.setattr(cm, "_safety_drops", {"total": 0, "pending": 0, "last_log": float("-inf")})
+    q = queue.Queue(maxsize=1)
+    assert cm._put_drop_oldest(q, 1) is False
+    for k, now in enumerate((100.0, 100.1, 101.0, 104.9, 105.0, 105.2)):
+        assert cm._put_drop_oldest(q, k) is True
+        cm._note_safety_drop(now)
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if "queue overflow" in ln]
+    # first drop logs at once; next log only >= 5 s later, carrying the 4 drops since
+    assert lines == ["[SafetyKWS] !!! queue overflow: dropped 1 frames (safety listener behind)",
+                     "[SafetyKWS] !!! queue overflow: dropped 4 frames (safety listener behind)"]
+    assert cm._safety_drops["total"] == 6 and cm._safety_drops["pending"] == 1
+    assert cm._status_snapshot()["safety_kws_dropped"] == 6

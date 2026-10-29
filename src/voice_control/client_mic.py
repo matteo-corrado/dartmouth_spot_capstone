@@ -627,11 +627,12 @@ def _stop_safety_thread() -> None:
         t.join(timeout=0.5)
 
 
-def _put_drop_oldest(q, item) -> None:
+def _put_drop_oldest(q, item) -> bool:
     """Non-blocking put; on overflow discard the OLDEST item (safety audio
-    must stay current)."""
+    must stay current). Returns True if a frame was dropped."""
     try:
         q.put_nowait(item)
+        return False
     except queue.Full:
         try:
             q.get_nowait()
@@ -641,6 +642,21 @@ def _put_drop_oldest(q, item) -> None:
             q.put_nowait(item)
         except queue.Full:
             pass
+        return True
+
+
+SAFETY_DROP_LOG_S = 5.0
+_safety_drops = {"total": 0, "pending": 0, "last_log": float("-inf")}
+
+
+def _note_safety_drop(now: float) -> None:
+    """Count a dropped safety frame; print at most once per SAFETY_DROP_LOG_S."""
+    d = _safety_drops
+    d["total"] += 1
+    d["pending"] += 1
+    if now - d["last_log"] >= SAFETY_DROP_LOG_S:
+        print(f"[SafetyKWS] !!! queue overflow: dropped {d['pending']} frames (safety listener behind)")
+        d["pending"], d["last_log"] = 0, now
 
 
 def _chime_busy() -> bool:
@@ -701,7 +717,8 @@ def audio_callback(indata, frames, time_info, status):
     # state — gated, Spot speaking, operator-muted — so a spoken stop/freeze
     # always works. (Spot saying "stop" itself may halt it: acceptable.)
     if _safety_active:
-        _put_drop_oldest(_safety_q, pcm16)
+        if _put_drop_oldest(_safety_q, pcm16):
+            _note_safety_drop(now)
     if _operator_muted:
         return  # operator mute (spotctl mute) — discard everything else
     if _speech_busy():
@@ -1260,7 +1277,7 @@ def _status_snapshot() -> dict:
              voiceprint_enrolled=_voice.enrolled,
              voiceprint_last_sim=(None if _voice.last_sim is None else round(_voice.last_sim, 3)),
              voiceprint_ready=_voice.embedder is not None,
-             mic_ok=_mic_usable(),
+             mic_ok=_mic_usable(), safety_kws_dropped=_safety_drops["total"],
              safety_kws_ok=bool(_safety_active and _safety_health.get("ok")
                                 and _safety_thread is not None and _safety_thread.is_alive()))
     return s
