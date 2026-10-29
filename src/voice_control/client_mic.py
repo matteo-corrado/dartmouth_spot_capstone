@@ -1611,7 +1611,11 @@ def main():
 
     # Voiceprint model warm-up off the main thread (torch import + ORT/CUDA
     # init take seconds); utterances fail open to direction-only until ready.
-    warm_up_async(_voice)
+    # Wait for it BEFORE the mic stream opens: the torch import holds the GIL
+    # for ~2.5 s, which starves the PortAudio callback ("input overflow").
+    _wt = warm_up_async(_voice)
+    if _wt is not None:
+        _wt.join(timeout=15.0)
     print(f"[Voice] voiceprint gating {'ON' if _voiceprint_mode else 'OFF'} "
           f"(threshold {_tuning.voiceprint_threshold:.2f}; spotctl voiceprint on|off)")
 
