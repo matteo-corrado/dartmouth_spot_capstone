@@ -7,6 +7,8 @@ from src.voice_control.wake.phrases import (
 )
 
 OPERATOR = ["HEY SPOT", "LISTEN UP SPOT", "EXCUSE ME SPOT", "HEY THERE SPOT"]
+# Demo list after the 2026-10-28 replay (docs/project/demo-tuning-results.md)
+DEMO = ["HEY SPOT", "EXCUSE ME SPOT"]
 
 
 def test_strip_exact():
@@ -58,7 +60,7 @@ def test_load_wake_phrases(tmp_path):
 
 def test_repo_phrase_file_has_operator_phrases():
     from src.voice_control.wake.phrases import WAKE_PHRASES
-    assert WAKE_PHRASES == OPERATOR
+    assert WAKE_PHRASES == DEMO
 
 
 def test_build_keyword_lines_with_stub_tokenizer():
