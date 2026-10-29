@@ -22,6 +22,7 @@ class CameraFrame:
     jpeg: bytes
     t: float
     raw: np.ndarray | None = None  # raw-orientation image, used by the stitch
+    ground_z: float | None = None  # body-frame floor height; None = use the default
 
 
 @dataclass
