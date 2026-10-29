@@ -570,6 +570,8 @@ def _bring_up_robot(args, audio) -> bool:
                 print("[Spot] Map loaded; session standing.")
             except ModuleNotFoundError as e:
                 print(f"[Spot] SDK not installed ({e}); auto-enabling dry-run.")
+                if not _close_session_if_up():  # same guard as below
+                    return False
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
             except Exception as e:
@@ -704,12 +706,16 @@ class _ShutdownOnce:
     def __call__(self) -> None:
         if self.done:
             return
-        self.done = True
+        # done only once it returned: a Ctrl-C inside it (e.g. during
+        # LISTENER.stop's join) leaves it retryable, so main's except path
+        # still sits + powers off the robot. Every step is idempotent.
         _shutdown_runtime()
+        self.done = True
 
 
 def _close_quietly(ctl_srv, stream) -> None:
-    """What run()'s finally closes, for an exit before run() started."""
+    """What run()'s finally closes, for an exit before run()'s try (or
+    again after it: both stops are idempotent)."""
     if ctl_srv is not None:
         try:
             ctl_srv.stop()
@@ -746,7 +752,6 @@ def main(argv: list[str] | None = None):
     # shuts the runtime down exactly once (run() does it on its own exit).
     shutdown = _ShutdownOnce()
     stream = ctl_srv = None
-    in_run = False
     try:
         # 5. Audio capture, ring, wake, safety listener
         audio = _start_audio(args, tuning)
@@ -764,14 +769,14 @@ def main(argv: list[str] | None = None):
         # 8. Control server
         ctl_q, ctl_srv = _start_control_server()
         # 9. Run the conversation loop until shutdown
-        in_run = True
         C.run(args=args, stub=services.stt.stub, brain=services.brain, tts=services.tts,
               vad=audio.vad, wake_detector=audio.wake_detector,
               use_wake_word=audio.use_wake_word, floor=audio.floor,
               utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
               shutdown=shutdown, ctl_q=ctl_q, ctl_srv=ctl_srv)
     except BaseException:
-        if not in_run:  # run()'s finally closes these itself
-            _close_quietly(ctl_srv, stream)
+        # Unconditional: run()'s own try starts after some setup, so a raise
+        # in between would leak these. Both stops are idempotent.
+        _close_quietly(ctl_srv, stream)
         shutdown()
         raise

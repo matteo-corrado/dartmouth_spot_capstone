@@ -412,3 +412,74 @@ def test_failed_close_refuses_instead_of_dry_run(monkeypatch, capsys):
     assert calls == [1] and "run" not in seen
     assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]  # closed by the shutdown retry
     assert _r.CONNECTION._session is None
+
+
+# ---- Wave 5 safety-gate warnings (main.py shutdown / bring-up / pre-try) ----
+
+def test_ctrl_c_inside_first_shutdown_is_retried_and_powers_off(monkeypatch):
+    """A Ctrl-C lands inside the first (pre-run) shutdown, in LISTENER.stop:
+    the guard is not spent, so main's except path retries and the --map robot
+    is sat and powered off."""
+    import src.spot.robot.connection as _conn
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
+
+    def no_stream(dev):
+        raise OSError("no input device")
+    monkeypatch.setattr(_cap.CAPTURE, "open", no_stream)  # step 7 refuses -> shutdown()
+    hits = [1]
+
+    def stop():
+        if hits:
+            hits.pop()
+            raise KeyboardInterrupt  # first Ctrl-C, during the join
+    monkeypatch.setattr(_sl.LISTENER, "stop", stop)
+    calls = _count_shutdown(monkeypatch, real=True)
+    with pytest.raises(KeyboardInterrupt):
+        _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert calls == [1, 1]  # interrupted once, retried once
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert _r.CONNECTION._session is None and "run" not in seen
+
+
+def test_sdk_missing_after_stand_closes_robot_before_dry_run(monkeypatch):
+    """ensure() stood the robot, then a ModuleNotFoundError: main closes the
+    half-up session before degrading to dry-run (like any other failure)."""
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+
+    def ensure(map_path=None):
+        _r.CONNECTION._context = fake
+        _r.CONNECTION._session = fake.__enter__()
+        raise ModuleNotFoundError("No module named 'bosdyn.x'")
+    monkeypatch.setattr(_r.CONNECTION, "ensure", ensure)
+    _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert os.environ["SPOT_DRY_RUN"] == "1"
+    assert seen[-1] == "run"
+
+
+def test_raise_before_run_try_closes_control_server_and_stream(monkeypatch):
+    """C.run raises before its own try: main still stops the control server
+    and the input stream, and shuts the runtime down once."""
+    seen, closed = [], []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_cap.CAPTURE, "open", lambda dev: SimpleNamespace(
+        start=lambda: None, stop=lambda: closed.append("stream.stop"),
+        close=lambda: closed.append("stream.close")))
+    monkeypatch.setattr(_ctl, "_start_control_server", lambda q: SimpleNamespace(
+        stop=lambda: closed.append("ctl.stop")))
+
+    def run(**k):
+        raise RuntimeError("before run()'s try")
+    monkeypatch.setattr(_loop.CONVERSATION, "run", run)
+    calls = _count_shutdown(monkeypatch)
+    with pytest.raises(RuntimeError):
+        _app.main(ARGS)
+    assert closed == ["ctl.stop", "stream.stop", "stream.close"]
+    assert calls == [1]
