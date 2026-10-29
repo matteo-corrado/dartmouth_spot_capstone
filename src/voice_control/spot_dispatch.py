@@ -136,7 +136,11 @@ _FORWARDS = {
 }
 
 
+_FEATURE_FORWARDS = {}  # old global name -> feature module path (live reads, Wave 4)
 def __getattr__(name):
+    if name in _FEATURE_FORWARDS:
+        import importlib
+        return getattr(importlib.import_module(_FEATURE_FORWARDS[name]), name)
     try:
         owner, attr = _FORWARDS[name]
     except KeyError:
@@ -144,11 +148,25 @@ def __getattr__(name):
     return getattr(getattr(_r, owner), attr)  # owner looked up at call time
 
 
-# Feature state that stays here until Wave 4 (mouth auto-arm, gaze timing).
+# Feature state that stays here until Wave 4 (mouth auto-arm).
 _auto_arm = False           # operator decision 3: fold the arm + mouth on once standing
 _auto_arm_pending = False   # an auto fold is still owed (startup / after a stand)
 _auto_arm_thread = None
-_gaze_t = 0.0               # monotonic time of the last gaze command
+
+# --- dance (moved to src/spot/features/dance) ---
+from src.spot.features.dance.handlers import _clearance_refusal  # noqa: E402,F401
+from src.spot.features.dance.handlers import _emote_routine  # noqa: E402,F401
+from src.spot.features.dance.handlers import _handle_emote  # noqa: E402,F401
+from src.spot.features.dance.handlers import NO_ROOM_LINE, NO_GRID_LINE  # noqa: E402,F401
+from src.spot.features.dance.handlers import EMOTE_TIMEOUT_S, EMOTE_STALE_GRACE_S  # noqa: E402,F401
+_FEATURE_FORWARDS.update({"_last_routine": "src.spot.features.dance.handlers"})
+
+# --- gaze (moved to src/spot/features/gaze) ---
+from src.spot.features.gaze.handlers import gaze_sh0_deg, gaze_at_bearing  # noqa: E402,F401
+from src.spot.features.gaze.handlers import (  # noqa: E402,F401
+    GAZE_MIN_CHANGE_DEG, GAZE_MIN_INTERVAL_S, GAZE_BEHIND_DEG, GAZE_HARD_MAX_DEG, GAZE_RPC_TIMEOUT_S,
+)
+_FEATURE_FORWARDS.update({"_gaze_t": "src.spot.features.gaze.handlers"})
 
 
 
@@ -420,86 +438,6 @@ def do_add_persona(params: dict, brain) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Gaze toward the locked speaker (Task 19, operator decision 4)
-# ---------------------------------------------------------------------------
-GAZE_MIN_CHANGE_DEG = 15.0  # re-aim only when the target moved more than this
-GAZE_MIN_INTERVAL_S = 2.0   # ... and at most this often
-GAZE_BEHIND_DEG = 150.0     # a speaker this far behind is ambiguous: ignore
-GAZE_HARD_MAX_DEG = 60.0    # code cap on tuning gaze_max_deg (arm reach, safety review)
-GAZE_RPC_TIMEOUT_S = 0.5    # < SAFETY_LOCK_TIMEOUT_S: a stop's stow never loses the lock race
-
-
-def gaze_sh0_deg(body_deg, max_deg: float):
-    """Shoulder-yaw target (deg) for a body-frame bearing (0 = ahead, +90 =
-    left), clamped to +/-max_deg. None for a non-finite bearing, one almost
-    straight behind, or max_deg <= 0 (gaze off). Pure."""
-    import math
-    try:
-        b = float(body_deg)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(b) or max_deg <= 0:
-        return None
-    b = ((b + 180.0) % 360.0) - 180.0
-    if abs(b) > GAZE_BEHIND_DEG:
-        return None
-    return max(-max_deg, min(max_deg, b))
-
-
-def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
-    """Turn the folded arm (shoulder yaw sh0, slow joint move) toward a
-    body-frame bearing. None -> back to centre.
-
-    Only in the "talk" pose while standing still (not walking, dancing or
-    closing); clamped to +/-tuning.gaze_max_deg; rate-limited (target moved
-    > 15 deg and >= 2 s since the last gaze). Sent under _arm_lock after
-    re-checking the pose and the safety generation, so a stop always wins and
-    no gaze follows a stop's stow. Non-blocking; never brings up a session;
-    never raises.
-    """
-    global _gaze_t
-    sess = _r.CONNECTION._session
-    if sess is None or _r.CONNECTION._closing or _r.ARM._pose != "talk" or _r.NAV.is_navigating():
-        return False
-    try:
-        import math
-        from src.voice_control.tuning import get_tuning
-        tun = get_tuning()
-        max_deg = min(float(tun.gaze_max_deg), GAZE_HARD_MAX_DEG)
-        if max_deg <= 0:
-            return False
-        if gen is None:
-            gen = _r.SAFETY_GEN.current()
-        target = 0.0 if body_deg is None else gaze_sh0_deg(body_deg, max_deg)
-        if target is None:
-            return False
-        now = time.monotonic()
-        if now < _r.ARM._settle_until:
-            return False  # the arm is still folding / re-centring
-        last = _r.ARM._gaze_deg
-        if last is not None:
-            if abs(target - last) <= GAZE_MIN_CHANGE_DEG and not (target == 0.0 and last != 0.0):
-                return False
-            if now - _gaze_t < GAZE_MIN_INTERVAL_S:
-                return False
-        if not _state.standing_and_powered(sess):
-            return False
-        sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
-        with _r.ARM._lock:
-            if (_r.SAFETY_GEN.aborted(gen) or _r.CONNECTION._closing or _r.ARM._pose != "talk" or _r.NAV.is_navigating()
-                    or time.monotonic() < _r.ARM._settle_until):
-                return False
-            sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
-            _r.ARM._gaze_deg, _gaze_t = target, now
-        bearing = "centre" if body_deg is None else f"{((float(body_deg) + 180) % 360) - 180:+.0f} deg (body, +left)"
-        print(f"[Spot] gaze: speaker {bearing} -> shoulder yaw {target:+.0f} deg (limit {max_deg:.0f})")
-        return True
-    except Exception as e:
-        print(f"[Spot] gaze_at_bearing failed: {e}")
-        return False
-
-
-# ---------------------------------------------------------------------------
 # Automatic fold + mouth once standing (operator decision 3)
 # ---------------------------------------------------------------------------
 AUTO_ARM_STAND_WAIT_S = 8.0  # how long a stand may take before we give up
@@ -578,150 +516,6 @@ def _auto_arm_after_stand():
         return
     _auto_arm_pending = True
     start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
-
-
-# ---------------------------------------------------------------------------
-# Emotes / dances (Task 15)
-# ---------------------------------------------------------------------------
-_last_routine = None  # last routine run, so "dance again" never repeats it
-EMOTE_TIMEOUT_S = 60.0
-EMOTE_STALE_GRACE_S = 4.0
-# ChoreographyStatusResponse statuses that mean "still going"
-_CHOREO_RUNNING = {1, 3, 4, 5}  # DANCING, PREPPING, WAITING_FOR_START_TIME, VALIDATING
-_CHOREO_COMPLETED = 2           # STATUS_COMPLETED_SEQUENCE
-NO_ROOM_LINE = "I need a little more room to dance."
-NO_GRID_LINE = "I can't check my surroundings right now, so I'll skip the dance."
-
-
-def _clearance_refusal(robot):
-    """None if the floor around Spot is clear, else the line to speak.
-    Fails closed: no usable local grid -> refuse."""
-    from src.voice_control.tuning import get_tuning
-    from src.voice_control.perception.obstacle_query import clearance_scan
-    clearance = get_tuning().dance_clearance_m
-    try:
-        usable, hit = clearance_scan(robot, max_radius_m=clearance)
-    except Exception as e:
-        print(f"[Spot] emote: obstacle check failed: {e}")
-        return NO_GRID_LINE
-    if not usable:
-        print("[Spot] emote: no usable local grid")
-        return NO_GRID_LINE
-    if hit is not None and hit.distance_m < clearance:
-        print(f"[Spot] emote: obstacle at {hit.distance_m:.2f} m < {clearance} m")
-        return NO_ROOM_LINE
-    return None
-
-
-
-def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None):
-    """Background thread: stow arm (mouth latched off), re-check clearance,
-    run the routine, restore the arm only after it completed. Every robot
-    command is gated on stop_event under _arm_lock, so a stop/freeze/estop
-    (which sets the event before its own stop) is never followed by a routine
-    start or an arm restore from here."""
-    global _last_routine
-    from bosdyn.choreography.client.choreography import ChoreographyClient
-    cmd = session["cmd"]
-    outcome = "aborted"  # "done" | "timeout" | "abnormal" | "aborted"
-    started = False
-    try:
-        _r.ARM.mouth_suspend()  # the claw never moves during a routine
-        if prev_pose != "stowed":
-            if not _r.ARM.send(cmd, "stowed", stop_event, timeout_s=5.0):
-                print("[Spot] emote: arm did not stow — not dancing")
-                outcome = "done"  # restore the previous pose explicitly
-                return
-        refusal = _clearance_refusal(session["robot"])  # re-check right before
-        if refusal is not None:
-            _say(speak, refusal)
-            outcome = "done"  # nothing ran; put the arm back
-            return
-        choreo = session["robot"].ensure_client(ChoreographyClient.default_service_name)
-        with _r.ARM._lock:
-            if stop_event.is_set() or _r.SAFETY_GEN.aborted(gen):
-                return
-            started = True
-            choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
-                                        choreography_starting_slice=0, timeout=RPC_TIMEOUT_S)
-        _last_routine = routine  # only a routine that actually started counts as "last"
-        print(f"[Spot] ✓ Routine '{routine}' started")
-        t0 = time.time()
-        deadline = t0 + EMOTE_TIMEOUT_S
-        seen_running = False
-        outcome = "timeout"
-        stop_event.wait(1.0)
-        while not stop_event.is_set() and time.time() < deadline:
-            try:
-                status, _ = choreo.get_choreography_status()
-                st = status.status
-                if st in _CHOREO_RUNNING:
-                    seen_running = True
-                elif seen_running:
-                    outcome = "done" if st == _CHOREO_COMPLETED else "abnormal"
-                    break
-                elif time.time() > t0 + EMOTE_STALE_GRACE_S:
-                    outcome = "abnormal"  # never saw it run: don't trust the status
-                    break
-            except Exception as e:
-                print(f"[Spot] emote status poll failed: {e}")
-            stop_event.wait(0.5)
-        if stop_event.is_set():
-            outcome = "aborted"
-        print(f"[Spot] Routine '{routine}' ended: {outcome}")
-    except Exception as e:
-        print(f"[Spot] ✗ emote '{routine}' failed: {e}")
-        outcome = "abnormal" if started else "done"
-    finally:
-        if stop_event.is_set():
-            return  # the stop owns the robot and the arm
-        try:
-            if outcome in ("timeout", "abnormal") and started:
-                _motion.send_stop(cmd)
-            if outcome in ("done", "timeout") and prev_pose != "stowed":
-                # also covers a failed stow: put the arm back in a known pose
-                _r.ARM.send(cmd, prev_pose, stop_event, timeout_s=5.0)
-            _r.ARM.mouth_restore()
-        except Exception as e:
-            print(f"[Spot] ⚠️  Arm restore after emote failed: {e}")
-
-
-def _handle_emote(params, session, speak=None):
-    """emote {"name": str}: refuse while moving, sitting or crowded, then run
-    the routine on a background thread registered as the nav thread (so stop
-    cancels it)."""
-    from src.voice_control.emotes import resolve_routine
-    if _r.NAV._mode == "emote" and _r.NAV.is_navigating():
-        _say(speak, "One dance at a time!")
-        return False
-    if _r.NAV.is_navigating() or _r.ARM._pose == "walk":
-        _say(speak, "I can't dance while I'm on the move.")
-        return False
-    try:
-        name = (params or {}).get("name")
-        if isinstance(name, str):
-            name = name.strip().lower().replace(" ", "_")  # "Happy Wiggle" -> happy_wiggle
-        routine = resolve_routine(name or None, _last_routine)
-    except ValueError:
-        _say(speak, "I don't know that one yet.")
-        return False
-    if not _state.standing_and_powered(session):
-        _say(speak, "Ask me to stand up first.")
-        return False
-    refusal = _clearance_refusal(session["robot"])
-    if refusal is not None:
-        _say(speak, refusal)
-        return False
-    gen = _r.SAFETY_GEN.dispatch_current()
-    if _r.SAFETY_GEN.aborted(gen):
-        return False
-    _r.NAV.cancel()
-    prev = _r.ARM._pose
-    if not _r.NAV.spawn(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
-                      mode="emote", gen=gen):
-        return False
-    print(f"[Spot] emote: running '{routine}'")
-    return True
 
 
 # Spoken lines never contain stop/halt/freeze/e-stop: the always-on safety
@@ -814,8 +608,6 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             return _handle_enable_mouth(params, gen=_r.SAFETY_GEN.dispatch_current())
         if name == "disable_mouth":
             return _handle_disable_mouth(params)
-        if name == "emote":
-            return _handle_emote(params, session, speak)
         if name == "walk_to":
             # Walk to relative position
             relative = params.get("relative", [0.0, 0.0, 0.0])

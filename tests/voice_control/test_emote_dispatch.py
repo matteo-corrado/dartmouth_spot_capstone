@@ -8,6 +8,7 @@ import pytest
 from bosdyn.api import robot_state_pb2
 
 import src.voice_control.spot_dispatch as d
+import src.spot.features.dance.handlers as dance_h
 from src.spot.robot import ARM, CONNECTION, NAV
 import src.spot.robot.arm as arm_mod
 import src.voice_control.perception.obstacle_query as oq
@@ -67,7 +68,7 @@ def env(monkeypatch):
     monkeypatch.setattr(ARM, "close_mouth", lambda: None)
     monkeypatch.setattr(ARM, "_pose", "talk")
     monkeypatch.setattr(ARM, "_pose_before_walk", None)
-    monkeypatch.setattr(d, "_last_routine", None)
+    monkeypatch.setattr(dance_h, "_last_routine", None)
     monkeypatch.setattr(ARM, "_mouth_resume", False)
     monkeypatch.setattr(oq, "clearance_scan", CLEAR)
     yield SimpleNamespace(cmd=cmd, choreo=choreo, sess=sess)

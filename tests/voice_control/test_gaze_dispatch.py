@@ -5,6 +5,7 @@ import math
 import pytest
 
 import src.voice_control.spot_dispatch as d
+import src.spot.features.gaze.handlers as gaze_h
 from src.spot.robot import ARM, CONNECTION, NAV, SAFETY_GEN
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.state as state_mod
@@ -25,7 +26,7 @@ def cmd(monkeypatch):
     monkeypatch.setattr(ARM, "_pose", "talk")
     monkeypatch.setattr(CONNECTION, "_closing", False)
     monkeypatch.setattr(ARM, "_gaze_deg", 0.0)
-    monkeypatch.setattr(d, "_gaze_t", 0.0)
+    monkeypatch.setattr(gaze_h, "_gaze_t", 0.0)
     monkeypatch.setattr(ARM, "_settle_until", 0.0)
     monkeypatch.setattr(NAV, "is_navigating", lambda: False)
     monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: True)

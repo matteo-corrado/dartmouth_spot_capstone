@@ -4,3 +4,5 @@ legacy spot_dispatch branches)."""
 from src.spot.core.registry import Registry
 
 REGISTRY = Registry()
+from src.spot.features.enabled import ENABLED
+REGISTRY.load(ENABLED)
