@@ -58,3 +58,18 @@ def test_snr_gate():
 def test_gate_no_speech_frames_fails():
     s = UtteranceStats(); s.add(-20, False)
     assert passes_gate(s, -60, -50, 10) is False
+
+
+def test_snr_uses_p90_not_median_so_hangover_frames_do_not_sink_real_speech():
+    # A short command: 40% loud speech, 60% VAD hangover at the noise floor.
+    # The median sits near the floor; p90 reflects the actual speech level.
+    s = UtteranceStats()
+    [s.add(-35, True) for _ in range(8)]
+    [s.add(-58, True) for _ in range(12)]
+    assert abs(s.snr_db(-60) - 25.0) < 1e-6
+    assert passes_gate(s, floor_db=-60, min_speech_dbfs=-70, min_snr_db=8) is True
+
+
+def test_snr_gate_still_rejects_floor_level_noise():
+    s = UtteranceStats(); [s.add(-57.5, True) for _ in range(20)]
+    assert passes_gate(s, floor_db=-60, min_speech_dbfs=-70, min_snr_db=8) is False

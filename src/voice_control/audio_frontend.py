@@ -106,7 +106,10 @@ class UtteranceStats:
         return float(np.percentile(self._speech, 90)) if self._speech else -120.0
 
     def snr_db(self, floor_db) -> float:
-        return self.speech_db_median - floor_db
+        # p90, not median: Silero keeps flagging ~0.5 s of floor-level hangover
+        # after speech, so for a 1-2 s command the median sits only 2-8 dB over
+        # the floor (docs/project/demo-tuning-results.md section 1).
+        return self.speech_db_p90 - floor_db
 
     @property
     def duration_s(self) -> float:

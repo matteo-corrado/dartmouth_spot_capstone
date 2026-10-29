@@ -2,7 +2,7 @@
 # Unknown keys are ignored with a logged warning.
 mic_channel: 1   # replay 2026-10-28: wakes 11/13 vs 6/13 (fan); ASR on ch1 to verify live
 # min_speech_dbfs: -50.0
-min_snr_db: 2.0   # STOPGAP: 10 dropped 13/13 real ch1 commands (median-of-VAD-frames gate)
+min_snr_db: 6.0   # gate is p90 speech level over floor. Replay ch1: commands 6.9-13.2 dB, quick replies 12-15, fan noise utts 3.7/5.8 -> 0 drops, 0-1 noise passes/2 min (8 drops 2-3/9)
 # onset_frames: 3
 end_silence_s: 1.2
 end_silence_s_short: 1.0

@@ -1374,7 +1374,7 @@ def main():
                          _tuning.floor_rise_db_per_s, frame_s=FRAME_S)
     floor.seed(dbfs_from_rms(noise_rms))  # seed ONCE (seed clears the window)
     print(f"[Noise floor: {floor.floor_db:.1f} dBFS (gate: speech >= {_tuning.min_speech_dbfs:.0f} dBFS, "
-          f"SNR >= {_tuning.min_snr_db:.0f} dB)]")
+          f"SNR(p90) >= {_tuning.min_snr_db:.1f} dB)]")
 
     # Connect to ASR
     asr_server = "localhost:50055"
@@ -1727,8 +1727,8 @@ def main():
         min_db = _tuning.min_speech_dbfs + (NAV_SPEECH_DB_BOOST if _is_robot_moving() else 0.0)
         if not passes_gate(stats, floor_db, min_db, _tuning.min_snr_db):
             print(f"[Gate] dropped: speech {stats.speech_db_median:.1f} dBFS, "
-                  f"SNR {stats.snr_db(floor_db):.1f} dB (need >= {min_db:.0f} dBFS, "
-                  f">= {_tuning.min_snr_db:.0f} dB)")
+                  f"SNR(p90) {stats.snr_db(floor_db):.1f} dB (need >= {min_db:.0f} dBFS, "
+                  f">= {_tuning.min_snr_db:.1f} dB)")
             utt_log.write(build_utterance_record(**record, accepted=False,
                                                  drop_reason="gate"))
             return

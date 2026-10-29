@@ -849,7 +849,7 @@ def main(argv=None):
 
     if a.endpoint_sweep:
         overs = [dict(min_snr_db=snr, end_silence_s=es, end_silence_s_short=min(es, 1.2))
-                 for snr in (0.0, 2.0, 4.0, 6.0, 10.0) for es in (1.0, 1.2, 1.5)]
+                 for snr in (2.0, 4.0, 6.0, 8.0, 10.0, 12.0) for es in (1.0, 1.2, 1.5)]
         overs += [dict(min_snr_db=4.0, end_silence_s=1.5, end_silence_s_short=sh) for sh in (0.9, 1.5)]
         ex = dict(extra, chimes=False)
         jobs = [("main", str(root), c, ch, o, ex) for o in overs for c in conds for ch in a.channel]
