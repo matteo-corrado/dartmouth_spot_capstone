@@ -1,8 +1,9 @@
 """Navigation FEATURE declarations equal the hand-written sets, regex table
 rows and prompt lines they replace."""
 import pathlib
+import re
 
-from src.spot.brain.intent import COMMANDS, COMMAND_PATTERNS
+from src.spot.brain.intent import COMMANDS, COMMAND_PATTERNS, parse_intent
 from src.spot.features.navigation import FEATURE
 from tests.spot.features._legacy_sets_nav import (
     grammar_action_names, legacy_flags, prompt_action_lines, spec_flags)
@@ -51,3 +52,8 @@ def test_intent_rule_build_matches_parse():
         built = rule.build(hit[1].search(text))
         assert built["intent"] == hit[2]
         assert set(built["params"]) == set(hit[3])
+        params = dict(built["params"])
+        if isinstance(params.get("location"), str):  # parse_intent's post-processing
+            params["location"] = re.sub(r"\s+", "_", params["location"].strip().lower())
+        assert {"intent": built["intent"], "params": params} == \
+            {k: v for k, v in parse_intent(text).items() if k != "raw"}, text
