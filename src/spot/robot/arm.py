@@ -15,6 +15,12 @@ import src.spot.robot.session as _poses
 from src.spot.robot.session import send_arm_pose
 import src.spot.robot as _r
 from src.spot.robot import state as _state
+from src.spot.core.core_intents import (  # noqa: F401  (safety family re-exported)
+    ABORTING_INTENTS,
+    SAFETY_INTENTS,
+    SHUTDOWN_INTENTS,
+    intent_names,
+)
 
 # ---------------------------------------------------------------------------
 # Arm policy (Task 14)
@@ -24,24 +30,19 @@ from src.spot.robot import state as _state
 # send a motion stop FIRST, then run their original branch, then stow without
 # waiting. The only arm motions while walking are that tuck and that restore,
 # and the gripper mouth is latched off for the whole walk / routine.
-LOCOMOTION_INTENTS = frozenset({
-    "walk_to", "turn", "walk", "strafe", "go_to", "tour", "patrol",
-    "come_back", "go_to_object", "follow_me",
-})
-SAFETY_INTENTS = frozenset({"stop", "freeze", "estop"})
-SHUTDOWN_INTENTS = frozenset({"power_off", "shutdown", "sit"})  # stop, stow, then act
-# Intents that abort any locomotion still being set up on another thread.
-ABORTING_INTENTS = SAFETY_INTENTS | SHUTDOWN_INTENTS | {"stow"}
-
+# The safety family is a core constant (src/spot/core/core_intents.py); the
+# locomotion set is generated from the enabled features at call time, so a
+# disabled feature's intent is never tucked for.
 SAFETY_LOCK_TIMEOUT_S = 1.0  # stop/close paths never wait longer on the arm lock
 RPC_TIMEOUT_S = 2.0          # per-RPC timeout for commands sent under the arm lock
 
 
 def arm_policy_for(intent_name: str, current_pose: str) -> tuple[str, str]:
-    """(pose before, pose after) for an intent. Pure."""
+    """(pose before, pose after) for an intent. Pure apart from reading the
+    enabled features' locomotion flags."""
     if intent_name in SAFETY_INTENTS or intent_name in SHUTDOWN_INTENTS:
         return ("stowed", "stowed")
-    if intent_name in LOCOMOTION_INTENTS:
+    if intent_name in intent_names("locomotion"):
         if current_pose == "talk" and _talk_is_walk_pose():
             return ("talk", "talk")  # same folded pose: no re-pose, mouth stays on
         return ("walk", current_pose)

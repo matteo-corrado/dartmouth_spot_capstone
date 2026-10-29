@@ -12,12 +12,14 @@ FEATURE = Feature(
             handler=_h.enable_mouth_action,
             grammar_params=None,  # spot_action.gbnf has one generic params rule
             prompt_line='- enable_mouth: Turn on your gripper "mouth" that moves while you talk. No params. Use for "use your mouth", "talk with your mouth".',
+            grammar_rank=300, prompt_rank=280,
         ),
         ActionSpec(
             name="disable_mouth",
             handler=_h.disable_mouth_action,
             grammar_params=None,
             prompt_line='- disable_mouth: Turn off the gripper mouth. No params. Use for "stop moving your mouth", "close your mouth".',
+            grammar_rank=310, prompt_rank=290,
         ),
     ),
     intent_rules=(),  # intent.py has no regex rule for these intents

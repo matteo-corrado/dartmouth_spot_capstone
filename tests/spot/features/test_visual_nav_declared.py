@@ -1,6 +1,6 @@
 """visual_nav FEATURE declarations equal the hand-written sets, regex table
 rows and prompt lines they replace."""
-from src.spot.brain.intent import COMMANDS
+from tests.spot.golden.legacy_literals import COMMANDS  # base table (generated since Task 16)
 from src.spot.features.visual_nav import FEATURE
 from tests.spot.features._legacy_sets_nav import legacy_flags, prompt_action_lines, spec_flags
 

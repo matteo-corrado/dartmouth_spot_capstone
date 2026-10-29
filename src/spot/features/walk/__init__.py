@@ -25,21 +25,21 @@ FEATURE = Feature(
         ActionSpec(
             name="walk", handler=_h.handle_walk, grammar_params=None,
             prompt_line='- walk: Walk forward/backward. Params: {"direction": "forward"|"backward", "distance": <meters>}. Default distance 1.0.',
-            locomotion=True, short_path_blocked=True),
+            locomotion=True, short_path_blocked=True, grammar_rank=60, prompt_rank=60),
         ActionSpec(
             name="strafe", handler=_h.handle_strafe, grammar_params=None,
             prompt_line='- strafe: Move sideways. Params: {"direction": "left"|"right", "distance": <meters>}. Default distance 0.5.',
-            locomotion=True),
+            locomotion=True, grammar_rank=70, prompt_rank=70),
         ActionSpec(
             name="turn", handler=_h.handle_turn, grammar_params=None,
             prompt_line='- turn: Rotate in place. Params: {"deg": <degrees 0-360>, "dir": "left"|"right"}. Default 90 degrees. "turn around" = 180.',
-            locomotion=True, short_path_blocked=True),
+            locomotion=True, short_path_blocked=True, grammar_rank=80, prompt_rank=80),
         ActionSpec(
             name="body_height", handler=_h.handle_body_height, grammar_params=None,
-            prompt_line='- body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.'),
+            prompt_line='- body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.', grammar_rank=90, prompt_rank=90),
         ActionSpec(
             name="set_speed", handler=_h.handle_set_speed, grammar_params=None,
-            prompt_line='- set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.'),
+            prompt_line='- set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.', grammar_rank=100, prompt_rank=100),
     ),
     intent_rules=(
         # === BODY HEIGHT ===

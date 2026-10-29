@@ -2,7 +2,8 @@
 
 Architecture (Stage 2A):
 - Backend: llama.cpp (default) via SPOT_BRAIN_BACKEND=llamacpp, Ollama fallback.
-- Single grammar (src/spot/brain/grammar/spot_action.gbnf) on every turn.
+- Single grammar on every turn, generated from the core intents and the
+  enabled features (src/spot/brain/grammar/generate.py).
 - Output shape: {"actions": [...], "response": "..."}.
   Action utterances populate actions[]; freeform utterances leave actions=[].
 - No regex intent router. Model decides per turn under grammar.
@@ -89,41 +90,7 @@ For chained commands (do X then Y), list them in execution order.
 For conversation only (no physical action), use an empty list.
 
 AVAILABLE ACTIONS:
-- stop: Stop all movement. No params.
-- freeze: Hold current position. No params.
-- estop: Emergency stop (urgent only). No params.
-- stand: Stand up from sitting. No params.
-- sit: Sit down. No params.
-- selfright: Recover from a fall. No params.
-- walk: Walk forward/backward. Params: {"direction": "forward"|"backward", "distance": <meters>}. Default distance 1.0.
-- strafe: Move sideways. Params: {"direction": "left"|"right", "distance": <meters>}. Default distance 0.5.
-- turn: Rotate in place. Params: {"deg": <degrees 0-360>, "dir": "left"|"right"}. Default 90 degrees. "turn around" = 180.
-- body_height: Adjust height. Params: {"height": <-0.15 to 0.1>}. -0.15=crouch, 0=normal, 0.1=tall.
-- set_speed: Set speed. Params: {"speed": "slow"|"normal"|"fast"}.
-- set_volume: Set your speaking volume. Params: {"level": <1-100>} as a percentage where 100=full, 50=half, 10=quiet. For "louder"/"quieter" without a number, pick a sensible delta from current (e.g. +20).
-- go_to: Navigate to saved location. Params: {"location": "<name>"}. Use lowercase_with_underscores.
-- tour: Visit locations in sequence (one pass). Params: {"locations": ["loc1", "loc2"]} for specific stops, or {"locations": "all"} to visit all. Use for "loop the map", "visit everywhere".
-- patrol: Loop through locations continuously until stopped. Params: same as tour. Use for "patrol", "keep looping", "keep patrolling".
-- come_back: Return to position before last navigation. No params. Use for "come back", "go home", "return".
-- save_location: Save current position. Params: {"location": "<name>"}.
-- list_locations: List saved locations. No params.
-- load_map: Switch to a different GraphNav map. Params: {"map": "<name>"} (optional — omit to reload the last-used map). The available maps are listed in the robot state under "available_maps". Loading a map disrupts any in-progress navigation and the robot will need to re-localize (best with a fiducial visible).
-- list_maps: List the GraphNav maps available on disk. No params.
-- go_to_object: Walk toward any visible object Spot can recognise. Params: {"description": "<what to find>"}. Spot uses YOLO/VLM to identify the target in its surroundings — anything you can describe in a few words. Works for ordinary objects (chairs, tables, posters, backpacks, people), architectural features (doors, exits, doorways, windows), and pick-up targets ("the cup on the floor"). Only for things you can SEE in the camera right now — use go_to for saved map locations.
-- follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".
-- describe: Take a photo and describe what you see. Params: {"camera": "front"|"left"|"right"|"back", "query": "<specific object to look for, if any>"}. Default camera "front". Omit query for general "what do you see" questions.
-- check_obstacles: Query Spot's built-in obstacle map for nearby obstacles. No params. Use for "is there anything in front of you", "is this room cluttered", "what direction is clearest", "can you move forward safely". Returns distances and bearings without using cameras or YOLO — it's a direct read of Spot's footstep-planning grid.
-- battery_status: Check battery level. No params.
-- status: Full robot status report. No params.
-- power_off: Safely power off. No params.
-- set_persona: Switch the robot's personality. Params: {"name": "<persona_name>"}. Available personas: see KNOWN PERSONAS at the end of this prompt. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.
-- enable_mouth: Turn on your gripper "mouth" that moves while you talk. No params. Use for "use your mouth", "talk with your mouth".
-- disable_mouth: Turn off the gripper mouth. No params. Use for "stop moving your mouth", "close your mouth".
-{{EMOTE_ACTION}}- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".
-- add_persona: Create a NEW persona on the fly when the user requests one NOT in your known persona list. Params: {"name": "<persona_name>", "description": "<5-10 word voice + style description>"}. Description should cover voice traits (gender, accent, tone) AND style. Examples:
-  • User: "be a cowboy" → if cowboy NOT in known personas → add_persona({"name":"cowboy", "description":"deep gravelly American male cowboy"})
-  • User: "talk like a French waitress" → add_persona({"name":"french_waitress", "description":"soft warm French female"})
-  Use set_persona for known personas (listed in the set_persona bullet above); add_persona only for new ones.
+{{ACTIONS}}
 
 RULES:
 - When the user asks you to do something physical, put action(s) in the "actions" list.
@@ -195,23 +162,28 @@ User: "Switch to your premium voice" / "Use elevenlabs"
 {"actions": [{"action": "set_backend", "params": {"name": "elevenlabs"}}], "response": "Bringing in the premium voice."}"""
 
 
-# Emote catalogue (static, so it stays inside the cached prompt prefix).
-# Advertised ONLY when the grammar can emit "emote" (else the LLM would be
-# told about an action it can never produce) AND emotes.py is importable.
-_GRAMMAR_PATH = Path(__file__).parent / "grammar" / "spot_action.gbnf"
-_EMOTE_ACTION_LINE = (
-    '- emote: Perform a fun built-in routine (dance, bow, wag, etc.). '
-    'Params: {"name": "<routine name>"}. Use only a routine name from the '
-    'EMOTES list below.\n'
-)
+# The action list and the grammar are generated from the core intents and the
+# enabled features (Task 16). The emote catalogue (static, so it stays inside
+# the cached prompt prefix) and emote's bullet are advertised ONLY when the
+# grammar can emit "emote" (else the LLM would be told about an action it can
+# never produce) AND emotes.py is importable.
+_GRAMMAR_PATH = Path(__file__).parent / "grammar" / "spot_action.gbnf"  # committed snapshot
+_SYSTEM_PROMPT_TEMPLATE = SYSTEM_PROMPT  # {{ACTIONS}} filled by build_system_prompt
 
 
-def _emote_prompt_parts(grammar_text: str, section: Optional[str]) -> tuple:
+def _registry():
+    import src.spot.features as _features
+    return _features.REGISTRY
+
+
+def _emote_prompt_parts(grammar_text: str, section: Optional[str], registry=None) -> tuple:
     """(action bullet, EMOTES section) — both empty unless the grammar
-    mentions "emote" and a non-empty prompt_section() is available."""
-    if "emote" not in grammar_text or not section or not section.strip():
+    mentions "emote", the emote feature is registered and a non-empty
+    prompt_section() is available. The one emote gate (build_system_prompt)."""
+    spec = (registry if registry is not None else _registry()).action("emote")
+    if "emote" not in grammar_text or spec is None or not section or not section.strip():
         return "", ""
-    return _EMOTE_ACTION_LINE, section.strip()
+    return spec.prompt_line, section.strip()
 
 
 def _load_emote_section() -> Optional[str]:
@@ -222,15 +194,31 @@ def _load_emote_section() -> Optional[str]:
         return None
 
 
-try:
-    _GRAMMAR_TEXT = _GRAMMAR_PATH.read_text(encoding="utf-8")
-except OSError:
-    _GRAMMAR_TEXT = ""
-_EMOTE_ACTION, _EMOTES_TEXT = _emote_prompt_parts(_GRAMMAR_TEXT, _load_emote_section())
-SYSTEM_PROMPT = SYSTEM_PROMPT.replace("{{EMOTE_ACTION}}", _EMOTE_ACTION)
-if _EMOTES_TEXT:
-    # prompt_section() already starts with its own "EMOTES:" header.
-    SYSTEM_PROMPT = SYSTEM_PROMPT + "\n\n" + _EMOTES_TEXT
+def build_system_prompt(registry, emote_section: Optional[str]) -> tuple:
+    """(grammar text, SYSTEM_PROMPT before the knowledge packs) for `registry`."""
+    from src.spot.brain.grammar.generate import build_grammar, build_prompt_actions
+    grammar = build_grammar(registry)
+    bullet, emotes_text = _emote_prompt_parts(grammar, emote_section, registry)
+    actions = build_prompt_actions(registry, exclude=() if bullet else {"emote"})
+    prompt = _SYSTEM_PROMPT_TEMPLATE.replace("{{ACTIONS}}", actions)
+    if emotes_text:
+        # prompt_section() already starts with its own "EMOTES:" header.
+        prompt = prompt + "\n\n" + emotes_text
+    return grammar, prompt
+
+
+def allowed_actions(registry) -> frozenset:
+    """The action names the generated grammar's action-name rule allows."""
+    from src.spot.brain.grammar.generate import llm_actions
+    return frozenset(a.name for a in llm_actions(registry, "grammar_rank"))
+
+
+_EMOTE_SECTION = _load_emote_section()
+_GRAMMAR_TEXT, SYSTEM_PROMPT = build_system_prompt(_registry(), _EMOTE_SECTION)
+# R28: post-parse allowlist. A no-op on llamacpp (the GBNF already constrains
+# the output); on ollama only format:"json" is sent, so e.g. walk_to (regex-only,
+# unclamped relative motion) could otherwise reach the dispatcher.
+_ALLOWED_ACTIONS = allowed_actions(_registry())
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +515,14 @@ class LLMBrain:
 
         try:
             parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                # e.g. a top-level JSON list (no GBNF on ollama): no actions, nothing said
+                print(f"[Brain] dropped non-object reply ({type(parsed).__name__})")
+                parsed = {"actions": [], "response": ""}
             grammar_actions = parsed.get("actions", []) or []
+            if not isinstance(grammar_actions, list):
+                print(f"[Brain] dropped non-list actions ({type(grammar_actions).__name__})")
+                grammar_actions = []
             response = parsed.get("response", "").strip()
             thinking = (parsed.get("thinking") or "").strip()
             if thinking:
@@ -539,11 +534,23 @@ class LLMBrain:
             parsed = {"actions": [], "response": response}
 
         # Grammar emits {"action": "stand", ...}; dispatcher expects {"intent": "stand", ...}.
-        actions = [
-            {"intent": a["action"], "params": a.get("params", {})}
-            for a in grammar_actions
-            if isinstance(a, dict) and a.get("action")
-        ]
+        # R28 allowlist: only string names the generated grammar allows, with
+        # object params (missing / null params -> {}), reach the dispatcher.
+        actions = []
+        for a in grammar_actions:
+            if not isinstance(a, dict) or not a.get("action"):
+                continue
+            name = a["action"]
+            if not isinstance(name, str) or name not in _ALLOWED_ACTIONS:
+                print(f"[Brain] dropped non-allowlisted action {name!r}")
+                continue
+            params = a.get("params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                print(f"[Brain] dropped action '{name}': params is {type(params).__name__}, not an object")
+                continue
+            actions.append({"intent": name, "params": params})
 
         # For describe actions the LLM "response" is often hallucinated
         # (model can't see the camera until the dispatcher runs the VLM

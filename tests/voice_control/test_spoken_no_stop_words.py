@@ -34,7 +34,7 @@ def _spoken_literals(path):
 
 
 def test_scanner_finds_lines():
-    lines = _spoken_literals(ROOT / "spot_dispatch.py")
+    lines = _spoken_literals(ROOT.parent / "spot" / "robot" / "dispatcher.py")  # status lines moved (T16)
     assert any("battery" in s for s in lines) and any("released" in s for s in lines)
 
 

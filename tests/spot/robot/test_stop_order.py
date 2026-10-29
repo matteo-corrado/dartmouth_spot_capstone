@@ -357,7 +357,7 @@ def test_registered_false_is_not_redispatched_to_legacy(monkeypatch):
         return False
     spec = ActionSpec(name="t9_probe", handler=handler, grammar_params=None, prompt_line=None)
     monkeypatch.setattr(REGISTRY, "_actions", {"t9_probe": spec})
-    monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",
+    monkeypatch.setattr(dispatcher, "_unknown_intent",
                         lambda *a, **k: pytest.fail("a registered False must not fall through"))
     assert dispatcher.dispatch_intent({"intent": "t9_probe", "params": {"x": 1}}) is False
     assert seen == [({"x": 1}, True, True, True, True)]
@@ -367,7 +367,7 @@ def test_registered_false_is_not_redispatched_to_legacy(monkeypatch):
 def test_registered_result_is_final(monkeypatch, ret):
     spec = ActionSpec(name="t9_probe", handler=lambda p, c: ret, grammar_params=None, prompt_line=None)
     monkeypatch.setattr(REGISTRY, "_actions", {"t9_probe": spec})
-    monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",
+    monkeypatch.setattr(dispatcher, "_unknown_intent",
                         lambda *a, **k: pytest.fail("a registered action must not fall through"))
     assert dispatcher.dispatch_intent({"intent": "t9_probe", "params": {}}) is ret
 
@@ -375,9 +375,9 @@ def test_registered_result_is_final(monkeypatch, ret):
 def test_unregistered_falls_through_to_legacy(monkeypatch):
     calls = []
     monkeypatch.setattr(REGISTRY, "_actions", {})  # Task 13 registers set_speed; probe an empty registry
-    monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",
-                        lambda intent, brain=None, speak=None, session=None:
-                        calls.append(intent["intent"]) or True)
+    monkeypatch.setattr(dispatcher, "_unknown_intent",  # the old legacy fall-through
+                        lambda name, session=None:
+                        calls.append(name) or True)
     assert dispatcher.dispatch_intent({"intent": "set_speed", "params": {}}) is True
     assert calls == ["set_speed"]
 

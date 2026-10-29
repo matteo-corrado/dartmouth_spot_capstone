@@ -22,7 +22,7 @@ NAV = NavRunner()
 
 
 def legacy_features():
-    """The feature functions still in spot_dispatch (Wave 4 moves them).
+    """The feature callbacks spot_dispatch re-exports (mouth auto-arm, disable_mouth).
     Core calls them at call time through the module object, so a test patch
     on spot_dispatch is seen. The module is already loaded by then, so this
     import is a sys.modules lookup and takes no lock."""

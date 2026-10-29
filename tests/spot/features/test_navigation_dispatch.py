@@ -17,7 +17,7 @@ T14 = ("walk_to", "go_to", "tour", "patrol", "come_back", "load_map", "save_loca
 def no_legacy(monkeypatch):
     def legacy(*a, **k):
         raise AssertionError("registered intent reached the legacy branches")
-    monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH", legacy)
+    monkeypatch.setattr(dispatcher, "_unknown_intent", legacy)  # the old legacy fall-through
 
 
 class FakeCmd:

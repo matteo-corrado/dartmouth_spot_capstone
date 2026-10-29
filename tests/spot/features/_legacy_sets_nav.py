@@ -1,13 +1,15 @@
 """Shared helper for the feature-declaration tests: membership of an action
-in the hand-written legacy sets (spec 6.3)."""
+in the hand-written legacy sets (spec 6.3), read from the golden base
+literals since Task 16 generates the live sets."""
+import pathlib
 import re
 
-import src.voice_control.client_mic as cm
-from src.spot.brain import intent
-from src.spot.brain.llm_brain import SYSTEM_PROMPT
-from src.spot.robot import dispatcher
+import tests.spot.golden.legacy_literals as golden
 
-GBNF = "src/voice_control/grammar/spot_action.gbnf"
+# aliases keep the legacy_flags() assertion lines byte-identical to base
+cm = dispatcher = intent = golden
+GBNF = "tests/spot/golden/spot_action.gbnf"
+SYSTEM_PROMPT = (pathlib.Path(__file__).resolve().parents[1] / "golden" / "prompt_actions.txt").read_text()
 
 
 def legacy_flags(name):

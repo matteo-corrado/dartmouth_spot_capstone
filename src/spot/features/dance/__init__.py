@@ -35,6 +35,7 @@ FEATURE = Feature(
             persona=False,
             arm_policy=None,
             needs_session=True,
+            grammar_rank=320, prompt_rank=300,
         ),
     ),
 )

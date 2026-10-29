@@ -47,3 +47,25 @@ def test_disabled_feature_intent_is_refused(no_walk, capsys):
     assert cmd.sent == []                    # nothing reached the robot
     assert ARM._pose == "stowed" and ARM._pose_before_walk is None
     assert NAV.is_navigating() is False
+
+
+def test_disabled_locomotion_feature_is_not_tucked_for_in_talk_pose(no_walk, monkeypatch, capsys):
+    """Task 16: the locomotion set is generated, so a disabled walk is no
+    locomotion intent either: with the arm out in the talk pose, nothing is
+    tucked and no arm command is sent before the refusal."""
+    cmd, reg = no_walk
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(ARM, "_gaze_deg", 30.0)
+    # a separate walk pose: an enabled locomotion intent would tuck talk -> walk
+    monkeypatch.setattr(arm_mod, "_talk_is_walk_pose", lambda: False)
+    assert arm_mod.arm_policy_for("follow_me", "talk") == ("walk", "talk")  # still enabled
+    assert arm_mod.arm_policy_for("walk", "talk") == ("talk", "talk")       # not locomotion now
+
+    walk = d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1.0}})
+    out = capsys.readouterr().out
+
+    assert walk is False
+    assert "[Spot] Unknown intent: walk" in out
+    assert cmd.sent == []                    # no tuck, no motion
+    assert ARM._pose == "talk" and ARM._pose_before_walk is None and ARM._pose_during_walk is None
+    assert NAV.is_navigating() is False

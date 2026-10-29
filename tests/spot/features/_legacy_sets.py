@@ -1,22 +1,24 @@
 """Shared check for the Wave 4 test_<X>_declared tests: every ActionSpec flag
-equals membership in the hand-written legacy sets at base."""
+equals membership in the hand-written legacy sets at base (Task 16: the
+golden literals in tests/spot/golden, since the sets are now generated)."""
 import re
+import pathlib
 
 import src.spot.brain.intent as intent
-import src.spot.brain.llm_brain as llm_brain
-import src.spot.robot.dispatcher as dispatcher
-import src.voice_control.client_mic as client_mic
+import tests.spot.golden.legacy_literals as golden  # base sets and COMMANDS
 from src.spot.robot.arm import arm_policy_for
 
+_GOLDEN = pathlib.Path(__file__).resolve().parents[1] / "golden"
+
 LEGACY = {
-    "locomotion": dispatcher.LOCOMOTION_INTENTS,
-    "aborting": dispatcher.ABORTING_INTENTS,
-    "unlocked": dispatcher._UNLOCKED_INTENTS,
-    "info": dispatcher.INFO_INTENTS,
-    "short_path_blocked": intent.SHORT_PATH_BLOCKED_INTENTS,
-    "state_only": client_mic._STATE_ONLY_INTENTS,
-    "persona": client_mic._PERSONA_INTENTS,
-    "motion_free": client_mic._MOTION_FREE_INTENTS,
+    "locomotion": golden.LOCOMOTION_INTENTS,
+    "aborting": golden.ABORTING_INTENTS,
+    "unlocked": golden._UNLOCKED_INTENTS,
+    "info": golden.INFO_INTENTS,
+    "short_path_blocked": golden.SHORT_PATH_BLOCKED_INTENTS,
+    "state_only": golden._STATE_ONLY_INTENTS,
+    "persona": golden._PERSONA_INTENTS,
+    "motion_free": golden._MOTION_FREE_INTENTS,
 }
 
 
@@ -30,16 +32,16 @@ def flag_mismatches(feature):
 
 
 def prompt_lines_missing(feature):
-    lines = llm_brain.SYSTEM_PROMPT.splitlines()
+    lines = (_GOLDEN / "prompt_actions.txt").read_text().splitlines()
     return [a.name for a in feature.actions if a.prompt_line not in lines]
 
 
 def rule_mismatches(feature):
-    """Each rule is intent.COMMANDS[priority // 10]: same pattern, and build()
+    """Each rule is golden.COMMANDS[priority // 10]: same pattern, and build()
     gives that entry's intent + resolved params on a match."""
     bad = []
     for r in feature.intent_rules:
-        pat, name, template = intent.COMMANDS[r.priority // 10]
+        pat, name, template = golden.COMMANDS[r.priority // 10]
         if r.priority % 10 or r.pattern != pat:
             bad.append((r.priority, r.pattern))
             continue
@@ -57,7 +59,7 @@ def missing_rules(feature):
     """COMMANDS entries for this feature's intents that no rule covers."""
     names = {a.name for a in feature.actions}
     have = {r.priority // 10 for r in feature.intent_rules}
-    return [i for i, (_, n, _) in enumerate(intent.COMMANDS) if n in names and i not in have]
+    return [i for i, (_, n, _) in enumerate(golden.COMMANDS) if n in names and i not in have]
 
 
 _SAMPLES = ["walk forward 2 meters", "go back 3", "walk forward", "move backward", "back up",
@@ -68,14 +70,14 @@ _SAMPLES = ["walk forward 2 meters", "go back 3", "walk forward", "move backward
 
 
 # --- T12 API (mouth/settings tests): flag dicts incl. needs_session ---
-LLM_PROMPT_SOURCE = "src/spot/brain/llm_brain.py"
+LLM_PROMPT_SOURCE = "tests/spot/golden/prompt_actions.txt"  # base prompt action lines
 
 
 def legacy_flags(name: str) -> dict:
     flags = {k: name in v for k, v in LEGACY.items()}
     # legacy _dispatch_core ran exactly the state-only intents before
     # bringing up a session (plus list_maps / list_locations: navigation)
-    flags["needs_session"] = name not in client_mic._STATE_ONLY_INTENTS | {"list_maps", "list_locations"}
+    flags["needs_session"] = name not in golden._STATE_ONLY_INTENTS | {"list_maps", "list_locations"}
     return flags
 
 
