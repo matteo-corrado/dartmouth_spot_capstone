@@ -1711,7 +1711,10 @@ def main():
         now_m = time.monotonic()
         if wake_pcm is None:
             wake_pcm = b"".join(f for _, f in wake_audio)
-        _voice.set_wake(wake_pcm)  # clears the previous speaker's enrolment
+        try:
+            _voice.set_wake(wake_pcm)  # clears the previous speaker's enrolment
+        except Exception as e:  # noqa: BLE001 - a voiceprint failure must never stop the loop
+            print(f"[Voice] set_wake failed ({e}); direction-only")
         degs = _mic_speech_degs(t_wake - 1.5, t_wake)
         ang = _lock.lock(degs, now_m)
         if ang is not None:
@@ -1777,9 +1780,12 @@ def main():
         if state == VoiceState.LISTENING:
             # Voiceprint on the utterance path (main loop; never the audio
             # callback or safety thread). OFF: direction-only, sim only logged.
-            accepted, sim = _voice.decide(b"".join(f for _, f, _, _ in utt_frames),
-                                          dir_ok, _voiceprint_mode,
-                                          _tuning.voiceprint_threshold)
+            try:
+                accepted, sim = _voice.decide(b"".join(f for _, f, _, _ in utt_frames),
+                                              dir_ok, _voiceprint_mode,
+                                              _tuning.voiceprint_threshold)
+            except Exception as e:  # noqa: BLE001 - fail open to direction-only
+                print(f"[Voice] decide failed ({e}); direction-only")
             print(f"[Voice] sim={'n/a' if sim is None else f'{sim:.2f}'} "
                   f"thr={_tuning.voiceprint_threshold:.2f} "
                   f"gate={'on' if _voiceprint_mode else 'off'} "
