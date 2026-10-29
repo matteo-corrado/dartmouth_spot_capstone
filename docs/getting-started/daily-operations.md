@@ -21,7 +21,7 @@ Work through these in order on the Jetson (`ssh spotdog@<tailscale-ip>`, then `c
 | 6 | Event knowledge filled in | Open `src/voice_control/knowledge/event_knowledge.md` | No `[FILL IN]` left on lines you care about (lines still containing it are silently dropped, which is safe: Spot says it does not know) |
 | 7 | Battery and space | Robot battery above about 50 %; `df -h /mnt/ssd` has room | |
 | 8 | Wi-Fi decision | Primary voice is ElevenLabs (cloud). Venue Wi-Fi bad? Plan to launch with `--tts-backend kokoro` | See section 6 |
-| 9 | Arm walking pose decided | `WALK_POSE` in `src/session.py:186` (currently `"stow"`). Test candidates with `scripts/try_walk_pose.py` (stop voice control first; it takes the lease) | Claw opens/closes without hitting the body |
+| 9 | Arm pose | Decided 2026-10-28: the folded **joints** pose (`WALK_JOINTS` in `src/session.py`) is used for both talking and walking (`WALK_POSE = "joints"`). Re-test with `scripts/try_walk_pose.py` only if you change it (stop voice control first; it takes the lease) | Claw opens/closes without hitting the body |
 | 10 | Clear floor | About 1.5 m of free floor around Spot if you want it to dance | Dance refuses otherwise |
 
 Also keep the **map decision** in mind (section 2): with a map the robot powers on and stands *at launch*; without one it stands on the first command that needs it.
@@ -44,7 +44,8 @@ Common options (all optional; they are forwarded to the voice client):
 | Option | Effect |
 |---|---|
 | `--no-map` | Skip the map upload. Use it when the demo is stationary |
-| `--enable-arm` | Deploy the arm at startup and enable the gripper "mouth" (opens/closes with speech). Brings the robot up at launch |
+| `--no-arm` | Opt out of the automatic arm fold + gripper "mouth" (default is on, see below). Same as `auto_arm: false` in `config/tuning.yaml`. "Enable mouth" by voice still works |
+| `--enable-arm` | No-op, kept so old launch lines still work (the arm and mouth are now automatic) |
 | `--no-transcript-log` | Privacy: logs and `spotctl status` store `transcript: null`; console still shows what was heard |
 | `--latency off\|summary\|file\|all` | Timing telemetry. `file` writes `logs/latency-<timestamp>.jsonl`; `summary` prints a percentile table at shutdown |
 | `--tts-backend kokoro\|elevenlabs` | Force the voice engine (Kokoro is local, works with no network) |
@@ -58,7 +59,16 @@ Common options (all optional; they are forwarded to the voice client):
 
 Not forwarded by wakespot (run `scripts/run_voice_control.py` directly if you need them, with the E-Stop running separately): `--dry-run`, `--no-brain`, `--allow-no-safety-kws`, `--latency-out`.
 
-Recommended for a poster demo: `scripts/wakespot --no-map --enable-arm --no-transcript-log --latency file`. (Drop `--enable-arm` if you do not want the gripper mouth.)
+Recommended for a poster demo: `scripts/wakespot --no-map --no-transcript-log --latency file`. (Add `--no-arm` if you do not want the gripper mouth.)
+
+### Arm, mouth and gaze (automatic)
+
+- **The arm only moves once Spot is standing with motors on.** Launch does not bring the robot up. After the first stand (`spotctl stand`, a voice "stand up", or the first command that brings the session up) the arm folds into the joints pose (slow, about 2.5 s) and the gripper mouth turns on. If the session came up during a walk, the fold happens at the start of the next turn.
+- **One pose for talking and walking.** The arm stays folded and the mouth keeps moving while Spot walks; walking sends no arm command (a turned shoulder is re-centred first, without waiting).
+- **Dances** close the claw, stow the arm, dance, then fold back and turn the mouth on again.
+- **stop / freeze** stow the arm and turn the mouth off; the next turn that is allowed to move folds it back. **E-stop, sit, power off and shutdown** stow it and do not bring it back on their own; after an e-stop the arm folds again only after an explicit stand.
+- **"Disable mouth"** (or `spotctl stow`) stows the arm and turns the automatic fold off for the rest of the run; "enable mouth" turns it back on.
+- **Gaze:** while Spot stands still in the folded pose, the shoulder turns slowly toward the locked speaker, at most `gaze_max_deg` (default 20° for the first robot run, capped at 60° in code) either side, only when the speaker's direction moved more than 15° and at most every 2 s. It re-centres when the lock is released. A stop always wins: no gaze follows a stop. Set `gaze_max_deg: 0` in `config/tuning.yaml` to turn gaze off; if Spot turns the wrong way, set `gaze_sh0_sign: -1`.
 
 ### What you should see (about 60 to 90 s from cold)
 
@@ -117,8 +127,8 @@ Exit codes: 0 ok, 1 error reply, 2 cannot reach the server (pipeline not running
 | `stop` | `s` | Cuts speech, aborts any action chain, sends the robot motion-stop **first**, then stows the arm |
 | `freeze` | `f` | Same as stop but holds a stand if the robot is already standing (never stands a sitting robot) |
 | `sit` | none | Stops, stows the arm, then sits |
-| `stand` | none | Stands the robot (brings the session up if needed) |
-| `stow` | `w` | Stows the arm; also cancels an arm-dependent routine |
+| `stand` | none | Stands the robot (brings the session up if needed), then folds the arm + turns the mouth on (unless `--no-arm` / "disable mouth") |
+| `stow` | `w` | Stows the arm and turns the mouth (and the automatic fold) off; also cancels an arm-dependent routine |
 | `hush` | `h` | Cuts Spot's speech now and aborts the action chain; does not touch the robot's legs |
 | `mute` | `m` | Ignore all audio (except the safety stop word). Ring goes solid red |
 | `unmute` | `u` | Resume listening |

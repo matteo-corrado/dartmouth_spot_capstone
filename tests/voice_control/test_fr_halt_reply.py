@@ -134,7 +134,7 @@ def test_stop_from_talk_still_stops_first_then_resume_restores(robot):
     assert t
     t.join(2)                                       # mouth only after the arm arrives
     assert d.get_arm_pose() == "talk" and m.log == ["off", "on"]
-    assert cmd.kinds()[-1] == "arm_ready"
+    assert cmd.kinds()[-1] == "arm_joints"
     assert d.resume_talk_after_halt(d.current_safety_gen()) is False     # one-shot
 
 
@@ -217,7 +217,7 @@ def test_stop_after_turn_gen_snapshot_wins(robot):
     assert d._talk_resume is True
     n = len(cmd.sent)
     assert d.resume_talk_after_halt(gen) is False
-    assert "arm_ready" not in cmd.kinds()[n:] and d.get_arm_pose() == "stowed"
+    assert "arm_joints" not in cmd.kinds()[n:] and d.get_arm_pose() == "stowed"
 
 
 def test_process_utterance_passes_gen_taken_at_turn_start(monkeypatch):

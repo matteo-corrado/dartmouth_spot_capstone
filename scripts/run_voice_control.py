@@ -263,8 +263,11 @@ def main():
                         help="Path to a GraphNav map directory to upload at "
                              "startup (default: don't upload).")
     parser.add_argument("--enable-arm", action="store_true",
-                        help="Forwarded to voice control: deploy arm + enable "
-                             "gripper mouth at startup.")
+                        help="Forwarded to voice control: no-op (the arm folds + mouth "
+                             "turns on automatically once standing; see --no-arm).")
+    parser.add_argument("--no-arm", action="store_true",
+                        help="Forwarded to voice control: never fold the arm / turn the "
+                             "mouth on automatically.")
     parser.add_argument("--latency", choices=["off", "summary", "file", "all"], default=None,
                         help="Forwarded to voice control: latency telemetry mode.")
     parser.add_argument("--latency-out", type=str, default=None,
@@ -353,6 +356,8 @@ def main():
         client_cmd.extend(["--map", args.map])
     if args.enable_arm:
         client_cmd.append("--enable-arm")
+    if args.no_arm:
+        client_cmd.append("--no-arm")
     if args.latency is not None:
         client_cmd.extend(["--latency", args.latency])
     if args.latency_out:

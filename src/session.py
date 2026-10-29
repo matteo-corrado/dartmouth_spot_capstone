@@ -178,16 +178,28 @@ def spot_session(hostname: str = BOSDYN_ROBOT_IP,
 
 # Arm poses (Task 14). "stowed" / "talk" / "walk".
 #
-# WALK_POSE picks the tucked pose used while the legs move. Operator session 2
-# chooses it on the robot with scripts/try_walk_pose.py; switch it here:
-#   "stow"   (a) arm_stow_command (claw closed first)  <- current default
+# Operator decision 2026-10-28 (on-robot): the folded "joints" pose
+# WALK_JOINTS is THE arm pose for both talking and walking. "talk" sends it
+# (sh0 may be yawed toward the speaker, see joints_pose_command), and
+# WALK_POSE picks the walking variant (scripts/try_walk_pose.py):
+#   "stow"   (a) arm_stow_command (claw closed first)
 #   "carry"  (b) arm_carry_command
-#   "joints" (c) joint pose WALK_JOINTS via arm_joint_move_helper (slow, >= 2 s)
-WALK_POSE = "stow"
+#   "joints" (c) joint pose WALK_JOINTS via arm_joint_move_helper (slow, >= 2 s)  <- current
+# The claw opens/closes in this pose without hitting the body (verified).
+WALK_POSE = "joints"
 WALK_JOINTS = (0.0, -2.6, 2.6, 0.0, 0.0, 0.0)  # sh0, sh1, el0, el1, wr0, wr1
 ARM_MAX_LINEAR_VEL = 0.3   # m/s (gaze; named poses expose no limit in SDK 5.x)
 ARM_MAX_ANGULAR_VEL = 1.0  # rad/s (joint-move max_vel for the "joints" pose)
 JOINT_MOVE_SECS = 2.5      # >= 2 s trajectory for joint-space moves
+
+
+def joints_pose_command(sh0_rad: float = 0.0):
+    """The folded WALK_JOINTS pose with shoulder yaw sh0 = sh0_rad (gaze)."""
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    joints = list(WALK_JOINTS)
+    joints[0] = float(sh0_rad)
+    return RobotCommandBuilder.arm_joint_move_helper(
+        joint_positions=[joints], times=[JOINT_MOVE_SECS], max_vel=ARM_MAX_ANGULAR_VEL)
 
 
 def walk_pose_command(variant: str = None):
@@ -199,16 +211,15 @@ def walk_pose_command(variant: str = None):
     if variant == "carry":
         return RobotCommandBuilder.arm_carry_command()
     if variant == "joints":
-        return RobotCommandBuilder.arm_joint_move_helper(
-            joint_positions=[list(WALK_JOINTS)], times=[JOINT_MOVE_SECS],
-            max_vel=ARM_MAX_ANGULAR_VEL)
+        return joints_pose_command(0.0)
     raise ValueError(f"unknown walk pose variant: {variant!r}")
 
 
 def send_arm_pose(cmd_client, pose: str, walk_variant: str = None, rpc_timeout: float = None):
     """Send the command(s) for an arm pose without waiting. Returns the arm cmd id.
 
-    "stowed" closes the gripper first, then stows. "talk" = ready pose.
+    "stowed" closes the gripper first, then stows. "talk" = the folded
+    joints pose (sh0 centred).
     "walk" = the WALK_POSE candidate (or walk_variant). The walk "stow"
     candidate also closes the claw first, like "stowed".
     """
@@ -218,7 +229,7 @@ def send_arm_pose(cmd_client, pose: str, walk_variant: str = None, rpc_timeout: 
         cmd_client.robot_command(RobotCommandBuilder.claw_gripper_open_fraction_command(0.0), **kw)
         return cmd_client.robot_command(RobotCommandBuilder.arm_stow_command(), **kw)
     if pose == "talk":
-        return cmd_client.robot_command(RobotCommandBuilder.arm_ready_command(), **kw)
+        return cmd_client.robot_command(joints_pose_command(0.0), **kw)
     if pose == "walk":
         return cmd_client.robot_command(walk_pose_command(walk_variant), **kw)
     raise ValueError(f"unknown arm pose: {pose!r}")
@@ -238,7 +249,7 @@ def move_arm_to(cmd_client, pose: str, timeout_s=5.0) -> bool:
 
 
 def deploy_arm_safe(cmd_client, timeout_sec: float = 5.0):
-    """Deploy the arm to the ready ("talk") pose. Caller must have motors
+    """Deploy the arm to the folded "talk" (joints) pose. Caller must have motors
     powered and the robot standing. Returns True on arrival."""
     return move_arm_to(cmd_client, "talk", timeout_sec)
 

@@ -34,7 +34,7 @@ Operators: the day-of runbook is [daily-operations.md](../getting-started/daily-
         │ response tokens stream ► TTSChunker ► SpotTTS ► AudioPlayer ► USB speaker (mic gated)
         │                           ElevenLabs (4.5 s budget) ─fail─► Kokoro (local)   │ envelope
         │                                                                              ▼
-        └─ actions ► spot_dispatch.dispatch_intent ► Spot SDK (arm tuck ► walk ≤0.5 m/s, emote, nav, ...)
+        └─ actions ► spot_dispatch.dispatch_intent ► Spot SDK (folded arm ► walk ≤0.5 m/s, emote, nav, ...)
                                                        mouth (gripper) follows speech
 
  OPERATOR ─ssh─► scripts/spotctl ─HTTP 127.0.0.1:8770─► control_server.py ─► client_mic._on_immediate / _on_queued
@@ -73,14 +73,14 @@ Ring limits measured on the device (2026-10-28): 12 LEDs 30 degrees apart; **no 
 | `vc/server.py` | `ASRServicer.StreamingRecognize` (`server.py:28`) | gRPC `:50055`; backend from `SPOT_ASR_BACKEND` (`vc/asr/__init__.py:14`, default `parakeet`; `nemotron` is the rollback). The `server.py` docstring still says nemotron is the default; the code says parakeet |
 | `vc/client_mic.py` | `main` (`client_mic.py:1266`) | Everything else: devices, 2 s noise calibration, brain + warm-up, audio player, TTS, VAD, wake + safety detectors, robot probe, mic array, ring, control server, main loop |
 
-Startup order inside `client_mic.main`: auto-detect devices by name (`XVF3800` mic, `UACDemoV1.0` speaker, `client_mic.py:112`) → calibrate noise (2 s, **stay quiet**) → connect ASR → `LLMBrain.wait_available(90 s)` then `warm_up()` → `AudioPlayer` → `SpotTTS` (warms Kokoro fallback) → Silero VAD → wake KWS → safety KWS → robot probe → open `MicArray` + `RingAnimator` → start safety thread → open input stream → `beep.ready()` (power-on chime) → optional `--enable-arm` → control server → main loop.
+Startup order inside `client_mic.main`: auto-detect devices by name (`XVF3800` mic, `UACDemoV1.0` speaker, `client_mic.py:112`) → calibrate noise (2 s, **stay quiet**) → connect ASR → `LLMBrain.wait_available(90 s)` then `warm_up()` → `AudioPlayer` → `SpotTTS` (warms Kokoro fallback) → Silero VAD → wake KWS → safety KWS → robot probe → open `MicArray` + `RingAnimator` → start safety thread → open input stream → `beep.ready()` (power-on chime) → `set_auto_arm` (automatic fold + mouth once standing, unless `--no-arm` / `auto_arm: false`) → control server → main loop.
 
 Robot bring-up has two paths:
 
 - **With a map** (`wakespot` default, or `wakespot <name>`): `ensure_spot_session(map_path)` runs *at startup* (`client_mic.py:1521`) and **powers on and stands the robot**, uploads the map, localises. Fails closed first: refuses to start without the safety KWS.
 - **`--no-map`**: only a TCP probe to `SPOT_IP:443` (`_probe_host`, `client_mic.py:962`). The real session is created lazily by the **first command that needs the robot**, which stands it (about 30 s).
 
-**Inputs/outputs.** Flags in; a running process group out. Flags: `--no-map`, `--enable-arm`, `--no-transcript-log`, `--latency off|summary|file|all`, `--mic-channel N`, `--tts-backend kokoro|elevenlabs`, `--no-tts`, `--no-wake-word`, `--volume`, `--device/--output-device`, `--skip-services`, `--debug-audio`, `--debug-crash`. `run_voice_control.py` additionally accepts `--dry-run`, `--latency-out`, `--allow-no-safety-kws`, `--no-brain` (wakespot does not forward those four).
+**Inputs/outputs.** Flags in; a running process group out. Flags: `--no-map`, `--no-arm` (`--enable-arm` is a no-op kept for old launch lines), `--no-transcript-log`, `--latency off|summary|file|all`, `--mic-channel N`, `--tts-backend kokoro|elevenlabs`, `--no-tts`, `--no-wake-word`, `--volume`, `--device/--output-device`, `--skip-services`, `--debug-audio`, `--debug-crash`. `run_voice_control.py` additionally accepts `--dry-run`, `--latency-out`, `--allow-no-safety-kws`, `--no-brain` (wakespot does not forward those four).
 
 **Tunables.** Environment (names only): `SPOT_IP` (the TCP probe target), `BOSDYN_ROBOT_IP` (used by `src/session.py` and `src/estop.py` for the real connection and by the E-Stop claim), `SPOT_BRAIN_BACKEND` (`llamacpp` default), `SPOT_ASR_BACKEND`, `SPOT_TTS_BACKEND`, `SPOT_WAKE_BACKEND`, `SPOT_DRY_RUN`, `SPOT_NO_TRANSCRIPT_LOG`, `ELEVENLABS_API_KEY`. Services: `llama-server.service` (docker, port 11435). Ollama is **no longer required** on the default backend.
 
@@ -189,7 +189,7 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 
 **Voiceprint (not live).** `vc/speaker_embed.py` (WeSpeaker ResNet34-LM embedding, cosine similarity, `accept_combined`) exists and `scripts/setup_wespeaker.py` fetches the model, but **nothing in `client_mic.py` calls it**. `spotctl voiceprint` only toggles a status flag and the `voiceprint_enabled` / `voiceprint_threshold` tuning keys are unused. Direction is the only speaker gate at the demo.
 
-**Gaze (not live).** `gaze_at_bearing` (`vc/spot_dispatch.py:1053`) and `vc/gaze.py` (front +/-75 degree arc) exist, but on this branch nothing calls `gaze_at_bearing` from the voice loop, so the arm does **not** turn toward the speaker.
+**Gaze (live, folded arm).** On a wake lock, an accepted lock update and a release (→ centre), client_mic queues `(body_deg, safety_gen)` to one gaze worker (newest request only; the gen is taken at request time, so a stop before pickup wins). `gaze_at_bearing` (`vc/spot_dispatch.py`) turns shoulder yaw sh0 of the folded joints pose with a slow joint move (`ARM_MAX_ANGULAR_VEL`), clamped to ±`gaze_max_deg` (tuning, default 20, capped at 60 in code; `gaze_sh0_sign` flips the direction), ignoring speakers > 150° behind. It only runs in the talk pose, standing + powered, not walking/dancing/closing, at least 3 s after any pose move, when the target moved > 15° and ≥ 2 s since the last gaze. It is sent under `_arm_lock` after re-checking pose and safety gen, with a 0.5 s RPC timeout. `vc/gaze.py` (old arm_gaze_command math) is unused.
 
 **Tunables.** `lock_window_deg`, `lock_timeout_s`, `lock_nudge`, `mic_yaw_*`, `beam_steering`.
 
@@ -270,18 +270,18 @@ Important distinctions:
 - Entry: `execute_on_spot` (`client_mic.py:873`) → `dispatch_intent` (`vc/spot_dispatch.py:1312`). Honors `SPOT_DRY_RUN`. Chains run in order with waits between steps (`CHAIN_MOVEMENT_WAIT_S` 3 s, `CHAIN_POSTURE_WAIT_S` 4 s, or until navigation completes); an operator/voice stop cancels the rest.
 - Routing: safety intents → `_dispatch_safety`; "unlocked" intents (persona, volume, backend, battery/status/obstacle/list info) → `_dispatch_core` directly; locomotion (`LOCOMOTION_INTENTS`, `:70`) → `_dispatch_locomotion`; everything else under `_dispatch_lock`. `ensure_spot_session` (`:460`) brings the session up lazily.
 - **Arm policy** (`arm_policy_for`, `:101`), pure and unit-tested:
-  - Locomotion (walk, strafe, turn, go_to, tour, patrol, come_back, go_to_object, follow_me): the arm **tucks into the walking pose first** (`WALK_POSE` in `src/session.py:186`, currently `"stow"`; the operator picks among `stow`/`carry`/`joints` with `scripts/try_walk_pose.py`). If the tuck fails the robot does not move. The arm is restored only after the motion finishes *naturally*.
+  - The talk pose **is** the walking pose: the folded joints pose `WALK_JOINTS` (`src/session.py`, `WALK_POSE = "joints"`, operator decision 2026-10-28). Locomotion (walk, strafe, turn, go_to, tour, patrol, come_back, go_to_object, follow_me) from the talk pose sends **no arm command** and the mouth keeps animating (a gaze-yawed shoulder is re-centred first, without waiting). With another `WALK_POSE` the old path applies: tuck first, refuse to move if the tuck fails, restore only after a natural finish.
   - stop / freeze / estop / sit / power_off / stow: arm **stows**; sit stows first.
-  - emote: arm stows.
-  - Gripper mouth is latched off for the whole walk or routine.
-- **Walk speed cap**: `walk_speed_cap` (`src/graph_nav_utils.py:17`) = `Tuning.walk_speed_cap` (0.5 m/s) on every velocity, trajectory and GraphNav command; turning limited to 1 rad/s. Named arm poses (stow/ready/carry) keep the SDK's default speed.
+  - emote: mouth off, arm stows; after the routine the arm folds back and the mouth comes back on.
+  - Automatic fold: once the robot is standing + powered (after bring-up, a stand, or at the next turn) the arm folds and the mouth turns on (`auto_arm_if_ready`). E-stop, sit, power-off and close cancel a pending fold; "disable mouth" / `spotctl stow` turn it off for the run.
+- **Walk speed cap**: `walk_speed_cap` (`src/graph_nav_utils.py:17`) = `Tuning.walk_speed_cap` (0.5 m/s) on every velocity, trajectory and GraphNav command; turning limited to 1 rad/s. Named arm poses (stow/carry) keep the SDK's default speed; the joints pose uses a 2.5 s move capped at `ARM_MAX_ANGULAR_VEL`.
 - **Emotes** (`vc/emotes.py`, `_handle_emote` `spot_dispatch.py:1209`): routines `hey_join_me`, `performance_bow`, `smooth_sailing` (dances), `happy_gesture`, `tail_wag`, `upright_sit`, `wanna_play`; "dance"/"random" picks a random dance different from the last. Runs via the Choreography client (works without a license). It **refuses**: while navigating or walking ("I can't dance while I'm on the move"), unless powered and standing ("Ask me to stand up first"), if the floor-clearance scan finds an obstacle inside `dance_clearance_m` (1.5 m; "I need a little more room to dance"), or if there is **no usable obstacle grid** ("I can't check my surroundings right now", fail closed). A stop cancels the routine and stows.
 - Info actions (battery, status, obstacles, locations, maps) speak their results through the `speak=` callback rather than letting the LLM guess.
-- **Gripper mouth** (`vc/animation/mouth.py`): `enable_mouth` (or `--enable-arm` at launch) deploys the arm to "talk" and opens/closes the gripper from the speech loudness envelope at 20 fps. The `mouth_*` keys in `tuning.yaml` (cap, attack, release, rest, lead) are **not wired yet**; the mouth uses the envelope's built-in 0.06 gate and per-sentence normalisation.
+- **Gripper mouth** (`vc/animation/mouth.py`): `enable_mouth` (or the automatic fold) moves the arm to the folded "talk" pose (standing + powered only) and opens/closes the gripper from the speech loudness envelope at 20 fps. The `mouth_*` keys in `tuning.yaml` (cap, attack, release, rest, lead) are **not wired yet**; the mouth uses the envelope's built-in 0.06 gate and per-sentence normalisation.
 
 **Inputs/outputs.** `{"intent", "params"}` in; bool out (False → error buzz, chain aborts); side effects on the robot.
 
-**Tunables.** `walk_speed_cap`, `dance_clearance_m`, `WALK_POSE` (code constant), `--enable-arm`.
+**Tunables.** `walk_speed_cap`, `dance_clearance_m`, `WALK_POSE` / `WALK_JOINTS` (code constants), `auto_arm` / `--no-arm`, `gaze_max_deg`, `gaze_sh0_sign`.
 
 **Failure modes.** Robot not reachable → dry-run (see section 1); lease lost to another client (tablet) → commands fail; battery low; stop during bring-up (no-op, E-Stop needed); emote refusal lines are expected behaviour, not bugs; GraphNav go_to without localisation fails and is announced.
 

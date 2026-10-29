@@ -1320,7 +1320,11 @@ def main():
     parser.add_argument("--map", type=str, default=None,
                         help="GraphNav map path to upload during session bring-up.")
     parser.add_argument("--enable-arm", action="store_true",
-                        help="Deploy the arm + enable gripper-mouth animation at startup (Stage 2E.2).")
+                        help="No-op, kept for old launch lines: the arm folds + the mouth "
+                             "turns on automatically once Spot is standing (see --no-arm).")
+    parser.add_argument("--no-arm", action="store_true",
+                        help="Never fold the arm / turn the gripper mouth on automatically "
+                             "(also: tuning auto_arm: false). 'enable mouth' still works.")
     parser.add_argument(
         "--latency",
         choices=["off", "summary", "file", "all"],
@@ -1654,16 +1658,18 @@ def main():
 
     beep.ready()
 
-    # Stage 2E.2: --enable-arm deploys the arm + enables the gripper mouth at
-    # startup (reuses the safety-gated enable_mouth action, which forces session
-    # bring-up + power/estop checks). Skipped in dry-run.
-    if getattr(args, "enable_arm", False) and not args.dry_run:
+    # Operator decision 3 (2026-10-28): the arm folds into the joints pose and
+    # the gripper mouth turns on automatically once Spot is standing + powered
+    # (session bring-up, a stand, or the next turn) -- never before. Opt out
+    # with --no-arm or tuning auto_arm: false. Skipped in dry-run.
+    _auto = auto_arm_wanted(args, _tuning)
+    print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
+    if not args.dry_run:
         try:
-            from src.voice_control.spot_dispatch import dispatch_intent
-            print("[client_mic] --enable-arm: deploying arm + enabling mouth...")
-            dispatch_intent({"intent": "enable_mouth"})
+            from src.voice_control.spot_dispatch import set_auto_arm
+            set_auto_arm(_auto)
         except Exception as e:
-            print(f"[client_mic] --enable-arm failed: {e}")
+            print(f"[client_mic] auto arm setup failed: {e}")
 
     # ========================================================================
     # Main Loop State
@@ -1738,6 +1744,8 @@ def main():
         else:
             print("[Lock] no direction readings — accepting all directions")
         _status["locked_deg"] = _body(ang)
+        if ang is not None:
+            _gaze_at_speaker(_body(ang))
         state = VoiceState.LISTENING
         listening_since = now_m
         _enter_state(VoiceState.LISTENING)
@@ -1751,6 +1759,7 @@ def main():
         _lock.release()
         _voice.clear()
         _status["locked_deg"] = None
+        _gaze_at_speaker(None)  # back to centre
         if _mic_usable():
             _mic.set_fixed_beams(None)
         state = VoiceState.WAKE_WORD
@@ -1820,6 +1829,8 @@ def main():
             return
         _update_ring()  # accept() may have nudged the lock angle
         _status["locked_deg"] = _body(_lock.angle)
+        if _lock.locked:
+            _gaze_at_speaker(_body(_lock.angle))
 
         print(f"\n>>> Processing ({endpoint})...")
         safety_only = (state == VoiceState.WAKE_WORD)
@@ -2273,6 +2284,62 @@ def _safety_gen_now():
         return None
 
 
+def auto_arm_wanted(args, tuning) -> bool:
+    """Automatic fold + mouth unless --no-arm, tuning auto_arm: false or dry-run."""
+    return bool(tuning.auto_arm and not getattr(args, "no_arm", False)
+                and not getattr(args, "dry_run", False))
+
+
+def _auto_arm_at_turn(gen) -> None:
+    """Retry an owed automatic fold at the start of a motion-allowed turn
+    (e.g. the session came up mid-walk). Background thread; never raises."""
+    if gen is None or os.environ.get("SPOT_DRY_RUN") == "1":
+        return
+    try:
+        from src.voice_control.spot_dispatch import start_auto_arm
+        start_auto_arm(gen)
+    except Exception as e:
+        print(f"[Spot] automatic arm fold skipped: {type(e).__name__}: {e}")
+
+
+_gaze_q = queue.Queue(maxsize=1)  # latest gaze request only: (body deg or None, safety gen)
+_gaze_worker = None
+
+
+def _gaze_loop():
+    from src.voice_control.spot_dispatch import gaze_at_bearing
+    while True:
+        body, gen = _gaze_q.get()
+        try:
+            gaze_at_bearing(body, gen)  # gen taken at request time: a stop since wins
+        except Exception as e:  # noqa: BLE001 - gaze is cosmetic
+            print(f"[Spot] gaze skipped: {type(e).__name__}: {e}")
+
+
+def _gaze_at_speaker(body_deg) -> None:
+    """Ask the folded arm to turn toward the locked speaker (body-frame deg,
+    None = centre). Off the audio loop on one worker; only the newest request
+    is kept; the dispatcher clamps/rate-limits and checks pose/stop. Never
+    raises; no-op in dry-run."""
+    global _gaze_worker
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        return
+    try:
+        if _gaze_worker is None or not _gaze_worker.is_alive():
+            _gaze_worker = threading.Thread(target=_gaze_loop, name="gaze", daemon=True)
+            _gaze_worker.start()
+        try:
+            _gaze_q.get_nowait()  # drop a stale request
+        except queue.Empty:
+            pass
+        gen = _safety_gen_now()  # at request time, never at pickup
+        if gen is None:
+            return  # no robot / dry run: no gaze
+        _gaze_q.put_nowait((body_deg, gen))
+    except Exception as e:  # noqa: BLE001
+        print(f"[Spot] gaze request failed: {type(e).__name__}: {e}")
+
+
 def _resume_talk_after_halt(gen) -> None:
     """Bring the arm/mouth back to "talk" if a safety halt stowed them
     (final-review I1). `gen` was taken at the start of the turn, so a stop
@@ -2495,6 +2562,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         on_thinking()
     if not motion_blocked and not _abort_chain.is_set():
         _resume_talk_after_halt(turn_gen)
+        _auto_arm_at_turn(turn_gen)
 
     global _speaking_hook
     _speaking_hook = on_speaking

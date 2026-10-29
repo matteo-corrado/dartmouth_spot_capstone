@@ -46,6 +46,9 @@ class Tuning:
     mouth_attack_s: float = 0.03
     mouth_release_s: float = 0.10
     mouth_rest_open: float = 0.08
+    auto_arm: bool = True        # fold the arm + mouth on once standing (opt-out: false / --no-arm)
+    gaze_max_deg: float = 20.0   # folded-arm shoulder-yaw gaze limit (capped at 60 in code); 0 disables gaze
+    gaze_sh0_sign: int = 1       # +1: left bearing -> +sh0 (unverified on the robot)
 
 
 def _cast(value, typ):

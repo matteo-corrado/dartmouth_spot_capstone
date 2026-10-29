@@ -90,7 +90,7 @@ def test_emote_runs_routine_with_arm_stowed_then_restores(env):
     assert [e[0] for e in env.choreo.executed] == ["tail_wag"]
     name, t0, slice0 = env.choreo.executed[0]
     assert slice0 == 0 and t0 > time.time() - 5
-    assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_ready"]  # stow, restore
+    assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_joints"]  # stow, restore
     assert d.get_arm_pose() == "talk"
 
 
@@ -141,7 +141,7 @@ def test_rechecks_clearance_right_before_dancing(env, monkeypatch):
     _join()
     assert env.choreo.executed == []           # someone stepped in: no dance
     assert said == ["I need a little more room to dance."]
-    assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_ready"]  # arm put back
+    assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_joints"]  # arm put back
 
 
 def test_refuses_when_sitting(env):
@@ -195,7 +195,7 @@ def test_failed_stow_restores_previous_pose(env, monkeypatch):
     d.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}})
     _join()
     assert env.choreo.executed == []
-    assert env.cmd.kinds()[-1] == "arm_ready"
+    assert env.cmd.kinds()[-1] == "arm_joints"
     assert d.get_arm_pose() == "talk"
 
 
@@ -210,6 +210,11 @@ def test_mouth_off_during_dance(env, monkeypatch):
     env.choreo.block.set()
     _join()
     assert m.log == ["off", "on"]
+    # restored to the folded joints pose (sh0 centred) before the mouth came back
+    assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_joints"]
+    pt = env.cmd.sent[-1][1].synchronized_command.arm_command.arm_joint_move_command.trajectory.points[0]
+    assert pt.position.sh0.value == pytest.approx(0.0)
+    assert d.get_arm_pose() == "talk"
 
 
 def test_grammar_has_emote_on_one_line():
