@@ -52,6 +52,6 @@ def test_startup_status_estop_clause_has_no_stop_words():
 
 
 def test_vlm_prompt_forbids_stop_words():
-    src = (ROOT / "llm_brain.py").read_text()
+    src = (ROOT.parent / "spot" / "brain" / "llm_brain.py").read_text()
     i = src.index("def query_vlm")
     assert "'stop', 'halt', 'freeze'" in src[i:i + 2000]

@@ -1,15 +1,8 @@
-"""Brain runtime backends. Selected via SPOT_BRAIN_BACKEND env var."""
-import os
+"""Moved to src/spot/brain/backends/. Compatibility alias; removed in Task 19."""
+import importlib
+import sys
 
-_DEFAULT = "llamacpp"
-
-
-def get_backend():
-    name = os.environ.get("SPOT_BRAIN_BACKEND", _DEFAULT).lower()
-    if name == "llamacpp":
-        from .llamacpp_backend import LlamaCppBackend
-        return LlamaCppBackend()
-    if name == "ollama":
-        from .ollama_backend import OllamaBackend
-        return OllamaBackend()
-    raise ValueError(f"Unknown SPOT_BRAIN_BACKEND={name!r}; valid: llamacpp|ollama")
+_m = importlib.import_module("src.spot.brain.backends")
+for _sub in ("llamacpp_backend", "ollama_backend"):
+    sys.modules[f"{__name__}.{_sub}"] = importlib.import_module(f"src.spot.brain.backends.{_sub}")
+sys.modules[__name__] = _m
