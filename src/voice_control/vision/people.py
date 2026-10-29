@@ -40,8 +40,18 @@ ASK_HAND = "Can you raise your hand?"
 MSG_FEW_PEOPLE = "I can see a few people. Tell me what you're wearing and I'll come to you."
 MSG_CANT_SEE_YOU = "I can't see you. Could you step in front of me?"
 MSG_NOT_SURE = "I'm not sure who you mean."
+MSG_NO_MATCH = "I can't see anyone who matches."
 MSG_WHICH_SIDE = "Do you mean the person {a} or {b}?"
-TEMPLATES = (ASK_HAND, MSG_FEW_PEOPLE, MSG_CANT_SEE_YOU, MSG_NOT_SURE, MSG_WHICH_SIDE)
+TEMPLATES = (ASK_HAND, MSG_FEW_PEOPLE, MSG_CANT_SEE_YOU, MSG_NOT_SURE, MSG_NO_MATCH,
+             MSG_WHICH_SIDE)
+
+# How a sector reads after "the person ...".
+_WHERE = {"in front": "in front of me", "behind me": "behind me",
+          "on my left": "on my left", "on my right": "on my right"}
+
+
+def _where(sec: str) -> str:
+    return _WHERE.get(sec, f"to my {sec}")
 
 WEARING_PROMPT = "Answer yes or no: is this person wearing {clothing}?"
 YES_NO_SYSTEM = (
@@ -118,9 +128,10 @@ def wait_for_raised_hand(robot, sources, timeout_s: float = 5.0, frames_needed: 
             sleep(0.1)
             continue
         matched: set[int] = set()
+        # Overlapping cameras can see one person twice; keep one detection per person.
+        dets = dedupe([d for d in dets if d.label == "person"
+                       and (accept is None or accept(d))])
         for d in dets:
-            if d.label != "person" or (accept is not None and not accept(d)):
-                continue
             best, best_off = None, TRACK_TOL_DEG
             for i, t in enumerate(tracks):
                 off = _angle_diff(t["bearing"], d.bearing_deg)
@@ -257,10 +268,12 @@ def select_person(robot, phrase: str, speak: Callable[[str], None],
         sectors = list(dict.fromkeys(sector(d.bearing_deg) for d in pool))
         if len(sectors) == 1:
             return pool[0], None
-        return None, MSG_WHICH_SIDE.format(a=sectors[0], b=sectors[1])
+        return None, MSG_WHICH_SIDE.format(a=_where(sectors[0]), b=_where(sectors[1]))
 
     # Clothing (optionally narrowed to a side).
     ref = sb if sb is not None else 0.0
+    if not pool:
+        return None, MSG_NO_MATCH
     pool.sort(key=lambda d: (_angle_diff(d.bearing_deg, ref), _dist_key(d)))
     cands = [d for d in pool if abs(d.bearing_deg) <= GAZE_LIMIT_DEG][:MAX_CLOTHING_CANDIDATES]
     refused = []

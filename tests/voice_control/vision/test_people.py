@@ -137,6 +137,14 @@ def test_wait_for_raised_hand_tracks_small_motion(monkeypatch, clk):
     assert got is not None and got.bearing_deg == 8
 
 
+def test_wait_for_raised_hand_same_person_two_cameras(monkeypatch, clk):
+    a = _p(0, src=FL, conf=0.9, kps=_kps(raised_right=True))
+    b = _p(2, src=FR, conf=0.7, kps=_kps(raised_right=True))
+    _snap_seq(monkeypatch, [[a, b]] * 5, clk)
+    got = people.wait_for_raised_hand(None, [FL, FR], clock=clk, sleep=clk.sleep)
+    assert got is not None and got.source == FL
+
+
 def test_wait_for_raised_hand_two_people_none(monkeypatch, clk):
     a, b = _p(0, kps=_kps(raised_right=True)), _p(40, kps=_kps(raised_left=True))
     _snap_seq(monkeypatch, [[a, b]] * 5, clk)
@@ -387,7 +395,39 @@ def test_select_clothing_arm_disabled_nobody_raises(monkeypatch, clk):
                                 clock=clk, sleep=clk.sleep) == (None, "I'm not sure who you mean.")
 
 
+def test_select_clothing_nobody_visible(monkeypatch, clk):
+    _bearing(monkeypatch, 0.0)
+    _snap_seq(monkeypatch, [[]])
+    speak, gaze = Spy(None), Spy(False)
+    assert people.select_person(None, "person in red shirt", speak, gaze,
+                                clock=clk, sleep=clk.sleep) == \
+        (None, "I can't see anyone who matches.")
+    assert speak.calls == [] and gaze.calls == []
+
+
+def test_select_clothing_duplicate_person_gazed_once(monkeypatch, clk):
+    _bearing(monkeypatch, 0.0)
+    _snap_seq(monkeypatch, [[_p(2, src=FL, conf=0.9), _p(4, src=FR, conf=0.7)]])
+    gaze = Spy(True)
+    _wearing_by_bearing(monkeypatch, {2: True})
+    target, msg = people.select_person(None, "person in red shirt", Spy(None), gaze,
+                                       clock=clk, sleep=clk.sleep)
+    assert gaze.calls == [2] and target.bearing_deg == 2
+
+
 # ---------------------------------------------------------------- select_person: side
+
+def test_select_side_duplicate_person_no_question(monkeypatch, clk):
+    _bearing(monkeypatch, None)
+    _snap_seq(monkeypatch, [[_p(66, src=FR, conf=0.9), _p(68, src="left_fisheye_image", conf=0.6)]])
+    target, msg = people.select_person(None, "person on my left", Spy(None), Spy(True),
+                                       clock=clk, sleep=clk.sleep)
+    assert target.bearing_deg == 66 and msg is None
+
+
+def test_select_side_plain_left_right_wording():
+    assert people.MSG_WHICH_SIDE.format(a=people._where("on my left"), b=people._where("on my right")) \
+        == "Do you mean the person on my left or on my right?"
 
 def test_select_side_single(monkeypatch, clk):
     _bearing(monkeypatch, None)
@@ -412,7 +452,7 @@ def test_select_side_spans_sectors_asks(monkeypatch, clk):
     _snap_seq(monkeypatch, [[_p(50, dist=2.0), _p(95, dist=3.0)]])
     assert people.select_person(None, "person on my left", Spy(None), Spy(True),
                                 clock=clk, sleep=clk.sleep) == \
-        (None, "Do you mean the person front-left or on my left?")
+        (None, "Do you mean the person to my front-left or on my left?")
 
 
 def test_select_side_nobody_there(monkeypatch, clk):
