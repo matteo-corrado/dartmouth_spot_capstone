@@ -150,3 +150,24 @@ def test_close_with_mouth_stand_in_still_stops(monkeypatch):
     CONNECTION.close()
     assert cmd.kinds()[0] == "stop"
     assert CONNECTION._session is None
+
+
+def test_stow_with_mouth_stand_in_clears_latch_and_stows(monkeypatch):
+    """Fix round 2 (W1): the stand-in does the real handler's arm part."""
+    import src.spot.robot.arm as arm_mod
+    monkeypatch.setattr(robot_pkg, "mouth_handlers", robot_pkg._NoMouth("ImportError: boom"))
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda *a: True)
+    cmd = FakeCmd()
+    monkeypatch.setattr(CONNECTION, "_session", {"cmd": cmd, "state": FakeState(), "robot": object()})
+    monkeypatch.setattr(CONNECTION, "_context", object())
+    monkeypatch.setattr(CONNECTION, "_closing", False)
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(ARM, "_pose_before_walk", None)
+    monkeypatch.setattr(ARM, "_pose_during_walk", None)
+    monkeypatch.setattr(ARM, "_last_brain", None)
+    monkeypatch.setattr(ARM, "_mouth_resume", True)
+    monkeypatch.setattr(ARM, "_talk_resume", True)
+    assert robot_pkg.dispatcher.dispatch_intent({"intent": "stow", "params": {}}) is False
+    assert ARM._talk_resume is False and ARM._mouth_resume is False
+    assert "arm_stow" in cmd.kinds()
+    assert ARM._pose == "stowed"

@@ -545,9 +545,11 @@ def test_cleanup_spot_cancel_step_in_fresh_process():
 
 
 def test_no_sdk_degrades_to_dry_run_in_fresh_process():
-    """Fix round 1: with bosdyn missing, --map bring-up hits ModuleNotFoundError;
-    _close_session_if_up never imports the robot package (never raises), so
-    main degrades to dry-run as at base."""
+    """Fix round 1: with bosdyn missing, _bring_up_robot's --map branch hits
+    ModuleNotFoundError and _close_session_if_up never imports the robot
+    package (never raises), so the branch degrades to dry-run. This exercises
+    that branch in isolation only: a full main() without bosdyn dies earlier,
+    at step 3 (_robot_owners imports src.spot.robot)."""
     code = ("import sys; sys.modules['bosdyn'] = None; "
             "import os, src.spot.app.main as m; from types import SimpleNamespace as N; "
             "print('CLOSE', m._close_session_if_up()); "
@@ -559,3 +561,27 @@ def test_no_sdk_degrades_to_dry_run_in_fresh_process():
     assert "CLOSE True" in out.stdout
     assert "SDK not installed" in out.stdout
     assert "BRINGUP True True 1" in out.stdout
+
+
+def test_mouth_stand_in_refuses_robot_start(monkeypatch, capsys):
+    """Fix round 2 (W2): the core bound _NoMouth at import; even if the
+    registry retry loads the real mouth, robot mode refuses (C6)."""
+    import src.spot.robot as _r
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_r, "mouth_handlers", _r._NoMouth("ImportError: boom"))
+    _app.main(["--device", "0", "--output-device", "0"])
+    out = capsys.readouterr().out
+    assert "[Features] FAILED: mouth (core binding)" in out
+    assert "refusing to start on the robot" in out
+    assert seen == ["tuning", "bus", "robot", "features"]
+
+
+def test_mouth_stand_in_only_warns_in_dry_run(monkeypatch, capsys):
+    import src.spot.robot as _r
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_r, "mouth_handlers", _r._NoMouth("ImportError: boom"))
+    _app.main(ARGS)
+    assert "WARNING: --dry-run continues" in capsys.readouterr().out
+    assert seen == STEPS

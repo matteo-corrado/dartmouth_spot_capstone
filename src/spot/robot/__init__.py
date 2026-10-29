@@ -53,7 +53,19 @@ class _NoMouth:
         return None
 
     def _handle_disable_mouth(self, params, session=None):
-        print(f"[Spot] disable_mouth skipped: mouth handlers unavailable ({self.error})")
+        """The real handler's arm part only (ARM / NAV): clear the mouth and
+        talk-resume latches, then stow (or stow when the walk ends). Still
+        False (the mouth itself is unavailable); never raises."""
+        print(f"[Spot] disable_mouth: mouth handlers unavailable ({self.error}); stowing the arm only")
+        try:
+            ARM._mouth_resume = False
+            ARM.set_talk_resume(False)
+            if NAV.is_navigating():
+                ARM._pose_before_walk = "stowed"  # arm is tucked; stow when the walk ends
+            elif session is not None:
+                ARM.send(session["cmd"], "stowed", timeout_s=5.0)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Spot] ✗ disable_mouth (stand-in) failed: {e}")
         return False
 
 

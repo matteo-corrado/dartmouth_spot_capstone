@@ -334,6 +334,12 @@ def _start_features(args, bus, robot, tuning) -> bool:
     from src.spot.features import REGISTRY
     from src.spot.features.enabled import ENABLED
     failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
+    if isinstance(robot.mouth_handlers, robot._NoMouth):
+        # The core bound the no-op stand-in at import (mouth import failed
+        # then): even if the retry above loaded the real handlers, the core
+        # and the feature would be split. Same loud C6 path.
+        failures.append(("mouth (core binding)", ImportError(robot.mouth_handlers.error),
+                         "src.spot.robot bound the _NoMouth stand-in at import\n"))
     ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
               nav=robot.NAV, bus=bus, tuning=tuning)
     for feature in REGISTRY.features:
