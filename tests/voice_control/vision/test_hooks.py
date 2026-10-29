@@ -528,7 +528,14 @@ def robot(monkeypatch):
     r = object()
     monkeypatch.setattr(d, "_spot_session", {"robot": r})
     monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("answers never stand the robot"))
+    _warm_answers(monkeypatch)
     return r
+
+
+def _warm_answers(monkeypatch):
+    ev = threading.Event()
+    ev.set()
+    monkeypatch.setattr(cm, "_vision_warm", ev)
 
 
 def test_find_reply_not_spoken(monkeypatch, robot):
@@ -681,10 +688,13 @@ def test_setup_vision_registers_getter_and_warms(monkeypatch):
         assert not cm._vision_warm.is_set() and not d._vision_warm.is_set()  # not warm mid-build
         if name == "yolo26l-pose":
             raise RuntimeError("engine build failed")
-        return type("M", (), {"provider": "trt"})()
+        return type("M", (), {"provider": "trt",
+                              "detect": lambda self, img: detected.append((name, img.shape))})()
+    detected = []
     monkeypatch.setattr(RT, "load_model", load)
     monkeypatch.setattr(cm, "_vision_warm", threading.Event())
     monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_ok", None)
     monkeypatch.setattr(cm.threading, "Thread", T)
     monkeypatch.setitem(cm._status, "locked_deg", 42.0)
     monkeypatch.setattr(SP, "_getter", None)
@@ -692,14 +702,19 @@ def test_setup_vision_registers_getter_and_warms(monkeypatch):
     assert SP.speaker_bearing() == 42.0
     assert loaded == ["yolo26l-seg", "yolo26l-pose", "yoloe-26l-seg"]  # errors don't end warm-up
     assert started == [True] and cm._vision_warm.is_set() and d._vision_warm.is_set()
+    # one dummy detect per loaded model on a blank 640x480 image (I5c)
+    assert detected == [("yolo26l-seg", (480, 640, 3)), ("yoloe-26l-seg", (480, 640, 3))]
+    assert d._vision_ok is True
 
 
 def test_setup_vision_dry_run_skips_warmup(monkeypatch):
     monkeypatch.setattr(RT, "load_model", lambda name: pytest.fail("no warm-up in dry-run"))
+    monkeypatch.setattr(cm, "_vision_warm", threading.Event())
     monkeypatch.setattr(SP, "_getter", None)
     monkeypatch.setitem(cm._status, "locked_deg", None)
     cm._setup_vision(dry_run=True)
     assert SP._getter is not None and SP.speaker_bearing() is None
+    assert cm._vision_warm.is_set()  # camera answers are not gated forever in dry-run
 
 
 def test_package_reexports():
@@ -757,6 +772,8 @@ def no_session(monkeypatch):
     monkeypatch.setattr(d, "_spot_session", None)
     monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("answers never stand the robot"))
     monkeypatch.setattr(cm, "_eyes_robot", None)
+    monkeypatch.setattr(cm, "_eyes_fail_until", 0.0)
+    _warm_answers(monkeypatch)
     sess_mod = importlib.import_module("src.session")
     made = []
 
@@ -929,3 +946,130 @@ def test_vision_unavailable_says_eyes_down(fake, monkeypatch):
         assert said == [d.EYES_DOWN_LINE] and not d.is_navigating()
     for s in (d.EYES_DOWN_LINE, d.SAY_WHICH_LINE):
         assert not BAD.search(s)
+
+
+# ----------------------------------------------------------------- final fix: I5, M2, D2
+def test_warmup_runtime_import_failure_still_marks_warm(monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "src.voice_control.vision.runtime", None)  # import fails
+    monkeypatch.setattr(cm, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_ok", True)
+    cm._warm_vision_models()
+    assert cm._vision_warm.is_set() and d._vision_warm.is_set()
+    assert d._vision_ok is False  # go-to/follow say the eyes are down, not "warming up"
+
+
+def test_warmup_main_detector_failure_marks_unavailable(monkeypatch):
+    def load(name):
+        if name == "yolo26l-seg":
+            raise RuntimeError("engine build failed")
+        return type("M", (), {"provider": "trt", "detect": lambda self, img: []})()
+    monkeypatch.setattr(RT, "load_model", load)
+    monkeypatch.setattr(cm, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_ok", True)
+    cm._warm_vision_models()
+    assert d._vision_warm.is_set() and d._vision_ok is False
+
+
+def test_warmup_dummy_detect_failure_is_not_a_load_failure(monkeypatch):
+    def bad_detect(self, img):
+        raise RuntimeError("cuda oom")
+    monkeypatch.setattr(RT, "load_model",
+                        lambda name: type("M", (), {"provider": "trt", "detect": bad_detect})())
+    monkeypatch.setattr(cm, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_ok", None)
+    cm._warm_vision_models()
+    assert d._vision_ok is True
+
+
+def test_vision_answers_wait_for_warmup(monkeypatch, robot):
+    monkeypatch.setattr(cm, "_vision_warm", threading.Event())  # still warming
+    monkeypatch.setattr(FI, "find", lambda *a: pytest.fail("no detector while warming"))
+    monkeypatch.setattr(DE, "describe", lambda *a, **k: pytest.fail("no detector while warming"))
+    for cmd, params in (("find", {"what": "cup"}), ("describe", {}), ("look_around", {})):
+        tts = FakeTTS()
+        _turn(monkeypatch, [{"intent": cmd, "params": params}], tts=tts)
+        assert tts.said[-1] == cm.VISION_WARMING_LINE
+    assert not BAD.search(cm.VISION_WARMING_LINE)
+
+
+def _legacy_turn(monkeypatch, transcript, tts=None):
+    events = []
+    monkeypatch.setattr(cm, "_brain_ok", False)
+    monkeypatch.setattr(cm, "get_recorder", lambda: None)
+    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: transcript)
+    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(cm, "execute_on_spot",
+                        lambda intent, brain=None, speak=None: events.append(intent["intent"]) or True)
+    cm._abort_chain.clear()
+    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=None,
+                         info={}, has_wake_detector=True, tts=tts)
+    return events
+
+
+@pytest.mark.parametrize("transcript,what", [
+    ("find a chair", "chair"), ("where is the backpack", "backpack"),
+    ("do you see a cup", "cup"), ("can you see the dog", "dog"), ("look for my keys", "keys")])
+def test_regex_fallback_find_answers_and_never_walks(monkeypatch, robot, transcript, what):
+    from src.voice_control.intent import parse_intent
+    assert parse_intent(transcript) == {"intent": "find", "params": {"what": what},
+                                        "raw": transcript}
+    calls = []
+    monkeypatch.setattr(FI, "find", lambda rb, w: calls.append(w) or
+                        ActionResult(f"Yes, there's a {w} in front.", True))
+    tts = FakeTTS()
+    events = _legacy_turn(monkeypatch, transcript, tts=tts)
+    assert calls == [what] and events == []          # answered, never dispatched (no walk)
+    assert tts.said == [f"Yes, there's a {what} in front."]
+
+
+def test_regex_fallback_describe_and_look_around(monkeypatch, robot):
+    from src.voice_control.intent import parse_intent
+    assert parse_intent("what do you see")["intent"] == "describe"
+    assert parse_intent("look around")["intent"] == "look_around"
+    calls = []
+    monkeypatch.setattr(DE, "describe", lambda rb, side="front", question="":
+                        calls.append(side) or ActionResult("A hallway.", True))
+    tts = FakeTTS()
+    assert _legacy_turn(monkeypatch, "what do you see", tts=tts) == []
+    assert _legacy_turn(monkeypatch, "look around", tts=tts) == []
+    assert calls == ["front", "around"] and tts.said == ["A hallway.", "A hallway."]
+
+
+def test_eyes_connect_failure_cached_for_a_while(monkeypatch, no_session):
+    sess_mod = importlib.import_module("src.session")
+    tries = []
+
+    def down(name, **kw):
+        tries.append(name)
+        raise ConnectionError("no route")
+    monkeypatch.setattr(sess_mod, "quick_robot", down)
+    now = {"t": 1000.0}
+    monkeypatch.setattr(cm.time, "monotonic", lambda: now["t"])
+    assert cm._vision_robot() is None and cm._vision_robot() is None
+    assert tries == ["spot-voice-eyes"]          # no reconnect inside the window
+    now["t"] += cm.EYES_RETRY_S + 1
+    assert cm._vision_robot() is None and len(tries) == 2
+
+
+def test_eyes_robot_dropped_after_connection_error(monkeypatch, no_session):
+    def boom(rb, what):
+        raise ConnectionError("robot rebooted")
+    monkeypatch.setattr(FI, "find", boom)
+    tts = FakeTTS()
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=tts)
+    assert tts.said[-1] == cm.VISION_ERROR_LINE and cm._eyes_robot is None
+    monkeypatch.setattr(FI, "find", lambda rb, what: ActionResult("No.", False))
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=FakeTTS())
+    assert no_session == [("spot-voice-eyes", {}), ("spot-voice-eyes", {})]  # reconnected
+
+
+def test_session_robot_never_dropped(monkeypatch, robot):
+    def boom(rb, what):
+        raise ConnectionError("blip")
+    monkeypatch.setattr(FI, "find", boom)
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=FakeTTS())
+    assert d._spot_session["robot"] is robot

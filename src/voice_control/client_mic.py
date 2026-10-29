@@ -333,7 +333,11 @@ def _vision_answer_action(actions):
 
 
 EYES_OFF_LINE = "I can't see right now."
+VISION_WARMING_LINE = "My eyes are still warming up. Ask me again in a minute."
+VISION_ERROR_LINE = "Sorry, my vision system isn't working right now."
+EYES_RETRY_S = 30.0              # after a failed read-only connect, don't retry for this long
 _eyes_robot = None               # read-only robot for camera answers without a session
+_eyes_fail_until = 0.0           # monotonic time before which quick_robot is not retried
 _eyes_lock = threading.Lock()
 
 
@@ -350,8 +354,9 @@ def _vision_robot():
     """Robot for camera answers. Never brings up the motion session (that
     stands the robot): the live session's robot if there is one, else one
     cached read-only connection (no lease, no power, no stand). None if
-    neither is reachable."""
-    global _eyes_robot
+    neither is reachable; a failed connect is not retried for EYES_RETRY_S
+    (it would block the utterance thread on every answer)."""
+    global _eyes_robot, _eyes_fail_until
     try:
         from src.voice_control import spot_dispatch as sd
         sess = sd._spot_session
@@ -359,12 +364,29 @@ def _vision_robot():
             return sess["robot"]
         with _eyes_lock:
             if _eyes_robot is None:
+                if time.monotonic() < _eyes_fail_until:
+                    return None
                 from src.session import quick_robot  # same robot-IP setting as spot_session
-                _eyes_robot = quick_robot("spot-voice-eyes")
+                try:
+                    _eyes_robot = quick_robot("spot-voice-eyes")
+                except Exception:
+                    _eyes_fail_until = time.monotonic() + EYES_RETRY_S
+                    raise
             return _eyes_robot
     except Exception as e:  # noqa: BLE001
         print(f"[Vision] no camera connection: {type(e).__name__}: {e}")
         return None
+
+
+def _drop_eyes_robot(robot, err) -> None:
+    """A camera answer failed on the cached read-only robot: forget it, so the
+    next answer reconnects (e.g. after a robot reboot). Never touches the
+    motion session's robot."""
+    global _eyes_robot
+    with _eyes_lock:
+        if robot is not None and robot is _eyes_robot:
+            print(f"[Vision] dropping camera connection after {type(err).__name__}")
+            _eyes_robot = None
 
 
 def _run_vision_answer(cmd, params, question):
@@ -373,20 +395,49 @@ def _run_vision_answer(cmd, params, question):
     from src.voice_control.vision.describe import describe
     from src.voice_control.vision.find import find
     from src.voice_control.vision.types import ActionResult
+    if not _vision_warm.is_set():  # a TensorRT build may hold the model lock: don't block
+        return ActionResult(VISION_WARMING_LINE, False)
     robot = _vision_robot()
     if robot is None:
         return ActionResult(EYES_OFF_LINE, False)
-    if cmd == "find":
-        what = str(params.get("what") or params.get("query") or "").replace("_", " ").strip()
-        if what:
-            return find(robot, what)
-        cmd = "describe"
-    if cmd == "look_around":
-        return describe(robot, "around", "")
-    side = str(params.get("side") or params.get("camera") or "front").lower()
-    if side not in ("front", "left", "right", "back"):
-        side = "front"
-    return describe(robot, side, question)
+    try:
+        if cmd == "find":
+            what = str(params.get("what") or params.get("query") or "").replace("_", " ").strip()
+            if what:
+                return find(robot, what)
+            cmd = "describe"
+        if cmd == "look_around":
+            return describe(robot, "around", "")
+        side = str(params.get("side") or params.get("camera") or "front").lower()
+        if side not in ("front", "left", "right", "back"):
+            side = "front"
+        return describe(robot, side, question)
+    except Exception as e:
+        _drop_eyes_robot(robot, e)
+        raise
+
+
+def _speak_vision_answer(cmd, params, question, tts, voice_id, trace=None) -> bool:
+    """Run a camera answer and speak it (scrubbed of stop words). True if it
+    answered, False on an error (an honest fallback is spoken)."""
+    try:
+        with (trace.span("vlm") if trace else nullcontext()):
+            result = _run_vision_answer(cmd, params, question)
+        from src.voice_control.vision.speech import safe_words
+        answer = safe_words(result.text)  # never a stop word (self-halt)
+        print(f"\nSPOT (vision): \"{answer}\"")
+        if tts:
+            tts.wait()
+            _say(tts, answer, voice_id)
+        return True
+    except Exception as e:
+        beep.error()
+        print(f"[VLM] Error: {e}")
+        print(f"\nSPOT (VLM, error): \"{VISION_ERROR_LINE}\"")
+        if tts:
+            tts.wait()
+            _say(tts, VISION_ERROR_LINE, voice_id)
+        return False
 
 # ============================================================================
 # Audio Queue (filled by callback)
@@ -2477,6 +2528,7 @@ _gaze_worker = None
 
 _vision_warm = threading.Event()  # set once the main detector is loaded (no build on the gaze worker)
 VISION_WARM_MODELS = ("yolo26l-seg", "yolo26l-pose", "yoloe-26l-seg")
+VISION_MAIN_MODEL = "yolo26l-seg"  # go-to/follow need it; without it they say the eyes are down
 
 
 def _refined_bearing(body):
@@ -2517,27 +2569,42 @@ def _gaze_loop():
 
 
 def _warm_vision_models():
-    """Load the vision models once (a first TensorRT build is slow) so the
-    first gaze / follow doesn't wait for it. Errors are logged, never raised."""
+    """Load the vision models once (a first TensorRT build is slow) and run one
+    dummy detect each (first-inference setup), so the first gaze / go-to /
+    describe doesn't wait for it. Errors are logged, never raised. The warm
+    flags are set on every path (else go-to/follow would say "warming up"
+    forever); go-to/follow are told whether the main detector works."""
+    ok = False
     try:
-        from src.voice_control.vision.runtime import load_model
-    except Exception as e:  # noqa: BLE001
-        print(f"[Vision] runtime unavailable: {type(e).__name__}: {e}")
-        return
-    for name in VISION_WARM_MODELS:
         try:
-            m = load_model(name)
-            print(f"[Vision] {name} ready ({m.provider})")
+            import numpy as np
+            from src.voice_control.vision.runtime import load_model
         except Exception as e:  # noqa: BLE001
-            print(f"[Vision] {name} warm-up failed: {type(e).__name__}: {e}")
-    # Only now: until every load has finished, the runtime's model lock may be
-    # held by a TensorRT build (go-to/follow refuse, gaze is not refined).
-    _vision_warm.set()
-    try:
-        from src.voice_control.spot_dispatch import mark_vision_warm
-        mark_vision_warm()
-    except Exception as e:  # noqa: BLE001
-        print(f"[Vision] dispatcher warm flag failed: {type(e).__name__}: {e}")
+            print(f"[Vision] runtime unavailable: {type(e).__name__}: {e}")
+            return
+        blank = np.zeros((480, 640, 3), np.uint8)
+        for name in VISION_WARM_MODELS:
+            try:
+                m = load_model(name)
+            except Exception as e:  # noqa: BLE001
+                print(f"[Vision] {name} warm-up failed: {type(e).__name__}: {e}")
+                continue
+            if name == VISION_MAIN_MODEL:
+                ok = True
+            try:
+                m.detect(blank)
+                print(f"[Vision] {name} ready ({m.provider})")
+            except Exception as e:  # noqa: BLE001 - a failed dummy is not a failed load
+                print(f"[Vision] {name} dummy detect failed: {type(e).__name__}: {e}")
+    finally:
+        # Only now: until every load has finished, the runtime's model lock may be
+        # held by a TensorRT build (go-to/follow refuse, gaze is not refined).
+        _vision_warm.set()
+        try:
+            from src.voice_control.spot_dispatch import mark_vision_warm
+            mark_vision_warm(ok=ok)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Vision] dispatcher warm flag failed: {type(e).__name__}: {e}")
 
 
 def _setup_vision(dry_run: bool) -> None:
@@ -2550,6 +2617,10 @@ def _setup_vision(dry_run: bool) -> None:
         print(f"[Vision] speaker bearing hook failed: {type(e).__name__}: {e}")
     if not dry_run:
         threading.Thread(target=_warm_vision_models, name="vision-warm", daemon=True).start()
+    else:
+        # No warm-up in dry-run: let camera answers through (they load on first
+        # use, as before) instead of saying "warming up" forever.
+        _vision_warm.set()
 
 
 def _gaze_at_speaker(body_deg) -> None:
@@ -2941,24 +3012,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                     # Camera answers: the vision package looks and answers
                     if cmd in _VISION_ANSWER_INTENTS:
                         vlm_used = True
-                        try:
-                            with (trace.span("vlm") if trace else nullcontext()):
-                                result = _run_vision_answer(cmd, params, clean)
-                            from src.voice_control.vision.speech import safe_words
-                            answer = safe_words(result.text)  # never a stop word (self-halt)
-                            print(f"\nSPOT (vision): \"{answer}\"")
-                            if tts:
-                                tts.wait()
-                                _say(tts, answer, voice_id)
-                        except Exception as e:
-                            beep.error()
+                        if not _speak_vision_answer(cmd, params, clean, tts, voice_id, trace):
                             vlm_error = True
-                            print(f"[VLM] Error: {e}")
-                            fallback = "Sorry, my vision system isn't working right now."
-                            print(f"\nSPOT (VLM, error): \"{fallback}\"")
-                            if tts:
-                                tts.wait()
-                                _say(tts, fallback, voice_id)
                     else:
                         if execute_on_spot(intent, brain=brain,
                                            speak=((lambda t: _say(tts, t, voice_id)) if tts else None)):
@@ -3016,7 +3071,14 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             params = intent.get('params', {})
             print(f"Command: {cmd}" + (f" {params}" if params else ""))
 
-            if motion_blocked or _abort_chain.is_set():
+            if cmd in _VISION_ANSWER_INTENTS and not _abort_chain.is_set():
+                # Camera answer (no motion): the vision package looks and answers,
+                # exactly as on the LLM path (the dispatcher only acknowledges these).
+                if _speak_vision_answer(cmd, params, clean, tts, None):
+                    print(">>> SUCCESS")
+                else:
+                    print(">>> FAILED")
+            elif motion_blocked or _abort_chain.is_set():
                 print("[Dispatch] skipped — safety halt during this utterance")
             elif execute_on_spot(intent):
                 print(">>> SUCCESS")
