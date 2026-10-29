@@ -70,3 +70,16 @@ def test_distance_words():
     assert distance_words(0.6) == "right next to me"
     assert distance_words(1.2) == "about one metre"
     assert distance_words(2.4) == "about two metres"
+
+
+@pytest.mark.parametrize("rot", [-78.0, -102.0])
+def test_upright_content_alignment(rot):
+    import cv2
+    from src.voice_control.vision.cameras import ROTATION_DEG
+    source = next(s for s, r in ROTATION_DEG.items() if r == rot)
+    raw = np.zeros((480, 640), np.uint8)
+    cv2.circle(raw, (123, 345), 4, 255, -1)
+    up = upright(raw, source)
+    ys, xs = np.nonzero(up > 127)
+    ex, ey = raw_to_upright(123, 345, 480, 640, rot)
+    assert abs(xs.mean() - ex) < 1.0 and abs(ys.mean() - ey) < 1.0
