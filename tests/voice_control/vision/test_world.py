@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -147,8 +149,8 @@ def test_cameras_covering_static(bearing, expected):
 
 
 def test_cameras_covering_static_overlap_nearest_first_max_two():
-    out = world.cameras_covering(50)
-    assert len(out) == 2 and out[0] == "left_fisheye_image"
+    assert world.cameras_covering(50) == ["left_fisheye_image", "frontright_fisheye_image"]
+    assert world.cameras_covering(-50) == ["right_fisheye_image", "frontleft_fisheye_image"]
     assert world.cameras_covering(45.0 + 360) == world.cameras_covering(45.0)
 
 
@@ -157,10 +159,48 @@ def test_cameras_covering_with_frames_uses_transform():
     frames = {"frontleft_fisheye_image": _frame("frontleft_fisheye_image", yaw_deg=-20),
               "frontright_fisheye_image": _frame("frontright_fisheye_image", yaw_deg=20),
               "back_fisheye_image": _frame("back_fisheye_image", yaw_deg=180)}
-    # half-FOV = atan(320/300) = 46.8 deg
+    # upright image 640 wide, f=300: half-FOV ~46.8 deg
     assert world.cameras_covering(25, frames)[0] == "frontright_fisheye_image"
     assert world.cameras_covering(-25, frames)[0] == "frontleft_fisheye_image"
     assert world.cameras_covering(0, frames) == ["frontleft_fisheye_image", "frontright_fisheye_image"] or \
         world.cameras_covering(0, frames) == ["frontright_fisheye_image", "frontleft_fisheye_image"]
     assert world.cameras_covering(180, frames) == ["back_fisheye_image"]
     assert world.cameras_covering(90, frames) == []
+
+
+def test_cameras_covering_follows_upright_horizontal_axis():
+    # Sensor rolled 90 deg: raw columns run vertically in the body frame, so the
+    # upright (rot 90) horizontal extent comes from raw rows (480 -> ~38.7 deg half).
+    a = np.array([1.0, 0, 0])  # optical axis forward
+    T = np.eye(4)
+    T[:3, :3] = np.stack([[0, 0, 1.0], [0, -1.0, 0], a], axis=1)
+    f = _frame("frontleft_fisheye_image")
+    f.body_T_sensor = T
+    f.rot_deg = 90.0
+    f.image = np.zeros((640, 480, 3), np.uint8)
+    frames = {f.source: f}
+    assert world.cameras_covering(35, frames) == [f.source]
+    assert world.cameras_covering(-35, frames) == [f.source]
+    assert world.cameras_covering(43, frames) == []  # old atan(cols/2/fx)=46.8 would cover
+    assert world.cameras_covering(-43, frames) == []
+
+
+FIXTURE = Path(__file__).resolve().parents[2] / "fixtures/vision/private/front_pair.bin"
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="private front_pair fixture missing")
+def test_real_front_pair_intervals():
+    from bosdyn.api import image_pb2
+    from src.voice_control.vision.cameras import frame_from_response
+    msg = image_pb2.GetImageResponse()
+    msg.ParseFromString(FIXTURE.read_bytes())
+    frames = {r.source.name: frame_from_response(r) for r in msg.image_responses
+              if r.source.name in ("frontleft_fisheye_image", "frontright_fisheye_image")}
+    assert len(frames) == 2
+    for name, f in frames.items():
+        centre, lo, hi = world._interval(f)
+        print(name, round(centre, 1), round(centre + lo, 1), round(centre + hi, 1))
+        assert lo < 0 < hi
+        assert world.cameras_covering(centre, frames)[0] == name
+    assert world._interval(frames["frontleft_fisheye_image"])[0] < 0
+    assert world._interval(frames["frontright_fisheye_image"])[0] > 0

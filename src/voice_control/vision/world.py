@@ -32,23 +32,41 @@ def _angle_diff(a: float, b: float) -> float:
 def cameras_covering(bearing_deg: float,
                      frames: dict[str, CameraFrame] | None = None) -> list[str]:
     """Body cameras whose horizontal FOV contains ``bearing_deg`` (+left), nearest axis first, max 2."""
-    table = _STATIC_COVERAGE
-    if frames is not None:
-        table = {}
-        for src in BODY_SOURCES:
+    hits = []
+    if frames is None:
+        # The front cameras are cross-mounted (frontleft looks front-right), so for
+        # a tie prefer frontright on the left side and frontleft on the right side.
+        prefer = ("frontright_fisheye_image" if bearing_deg > 0
+                  else "frontleft_fisheye_image" if bearing_deg < 0 else None)
+        for order, (src, (centre, half)) in enumerate(_STATIC_COVERAGE.items()):
+            off = _angle_diff(bearing_deg, centre)
+            if off <= half:
+                hits.append((off, 0 if src == prefer else 1, order, src))
+    else:
+        for order, src in enumerate(BODY_SOURCES):
             f = frames.get(src)
             if f is None:
                 continue
-            axis = np.asarray(f.body_T_sensor, dtype=float)[:3, 2]
-            yaw = math.degrees(math.atan2(axis[1], axis[0]))
-            table[src] = (yaw, math.degrees(math.atan(f.raw_cols / 2.0 / f.fx)))
-    hits = []
-    for order, (src, (centre, half)) in enumerate(table.items()):
-        off = _angle_diff(bearing_deg, centre)
-        if off <= half:
-            hits.append((off, order, src))
+            centre, lo, hi = _interval(f)
+            rel = _signed_diff(bearing_deg, centre)
+            if lo <= rel <= hi:
+                hits.append((abs(rel), 0, order, src))
     hits.sort()
-    return [s for _, _, s in hits[:2]]
+    return [h[-1] for h in hits[:2]]
+
+
+def _signed_diff(a: float, b: float) -> float:
+    """a - b wrapped to (-180, 180]."""
+    d = (a - b) % 360.0
+    return d - 360.0 if d > 180.0 else d
+
+
+def _interval(f: CameraFrame) -> tuple[float, float, float]:
+    """(centre bearing, lo, hi): horizontal coverage of the upright image, relative to centre."""
+    h, w = f.image.shape[:2]
+    centre = pixel_bearing(f, (w - 1) / 2.0, (h - 1) / 2.0)
+    edges = [_signed_diff(pixel_bearing(f, x, (h - 1) / 2.0), centre) for x in (0.0, w - 1.0)]
+    return centre, min(edges), max(edges)
 
 
 def _names_for(model: str) -> list[str]:
