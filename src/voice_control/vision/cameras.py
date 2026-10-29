@@ -1,6 +1,7 @@
 """Camera geometry: upright rotation, pixel mapping, bearings, spoken wording."""
 from __future__ import annotations
 
+import logging
 import math
 import time
 
@@ -8,6 +9,8 @@ import cv2
 import numpy as np
 
 from .types import CameraFrame
+
+logger = logging.getLogger(__name__)
 
 # Degrees CCW to make each image upright (BD rotation table).
 ROTATION_DEG: dict[str, float] = {
@@ -136,7 +139,10 @@ def frame_from_response(resp, depth_resp=None) -> CameraFrame:
     rows, cols = raw.shape[:2]
     intr = resp.source.pinhole.intrinsics
     snap = resp.shot.transforms_snapshot
-    T = get_a_tform_b(snap, BODY_FRAME_NAME, resp.shot.frame_name_image_sensor).to_matrix()
+    body_T = get_a_tform_b(snap, BODY_FRAME_NAME, resp.shot.frame_name_image_sensor)
+    if body_T is None:
+        raise ValueError(f"no body transform for {name}")
+    T = body_T.to_matrix()
     depth = None
     if depth_resp is not None:
         dimg = depth_resp.shot.image
@@ -146,17 +152,16 @@ def frame_from_response(resp, depth_resp=None) -> CameraFrame:
         depth[arr == 0] = np.nan
         if depth.shape != (rows, cols):
             depth = cv2.resize(depth, (cols, rows), interpolation=cv2.INTER_NEAREST)
-    frame = CameraFrame(
+    # Floor height in the body frame (None when the snapshot has no ground plane).
+    ground = get_a_tform_b(snap, BODY_FRAME_NAME, GROUND_PLANE_FRAME_NAME)
+    return CameraFrame(
         source=name, image=upright(raw, name), raw_rows=rows, raw_cols=cols,
         rot_deg=ROTATION_DEG[name], fx=intr.focal_length.x, fy=intr.focal_length.y,
         cx=intr.principal_point.x, cy=intr.principal_point.y,
         body_T_sensor=np.asarray(T, dtype=float), depth=depth, jpeg=jpeg,
         t=time.time(), raw=raw,
+        ground_z=float(ground.z) if ground is not None else None,
     )
-    # Floor height in the body frame; not a CameraFrame field, read with getattr.
-    ground = get_a_tform_b(snap, BODY_FRAME_NAME, GROUND_PLANE_FRAME_NAME)
-    frame.ground_z = float(ground.z) if ground is not None else GROUND_Z_DEFAULT
-    return frame
 
 
 def capture(robot, sources: list[str], with_depth: bool = False) -> dict[str, CameraFrame]:
@@ -174,14 +179,17 @@ def capture(robot, sources: list[str], with_depth: bool = False) -> dict[str, Ca
     out = {}
     for s in sources:
         if s in by_name:
-            out[s] = frame_from_response(by_name[s], by_name.get(DEPTH_SOURCE.get(s)))
+            try:
+                out[s] = frame_from_response(by_name[s], by_name.get(DEPTH_SOURCE.get(s)))
+            except ValueError as e:
+                logger.warning("capture: dropping %s (%s)", s, e)
     return out
 
 
 def _ground_distance(frame: CameraFrame, box_up) -> float | None:
     x0, y0, x1, y1 = box_up
     origin, d = pixel_ray_body(frame, (x0 + x1) / 2.0, y1)
-    gz = getattr(frame, "ground_z", GROUND_Z_DEFAULT)
+    gz = frame.ground_z if frame.ground_z is not None else GROUND_Z_DEFAULT
     if d[2] >= -1e-6:
         return None
     t = (gz - origin[2]) / d[2]

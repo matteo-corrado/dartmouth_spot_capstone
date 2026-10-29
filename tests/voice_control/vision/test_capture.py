@@ -88,3 +88,31 @@ def test_frame_from_saved_response():
     assert f.raw is not None and f.raw.shape[:2] == (f.raw_rows, f.raw_cols)
     assert f.fx > 0 and f.depth is None
     assert f.body_T_sensor.shape == (4, 4)
+
+
+@pytest.mark.skipif(not FIXTURE.exists(), reason="private front_pair fixture missing")
+def test_capture_tolerates_one_bad_camera(caplog):
+    from bosdyn.api import image_pb2
+    from src.voice_control.vision.cameras import capture
+    msg = image_pb2.GetImageResponse()
+    msg.ParseFromString(FIXTURE.read_bytes())
+    bad = next(r for r in msg.image_responses if r.source.name == "frontleft_fisheye_image")
+    bad.shot.image.data = b"not a jpeg"
+
+    class _Client:
+        def get_image(self, reqs):
+            return list(msg.image_responses)
+
+    class _Robot:
+        def ensure_client(self, name):
+            return _Client()
+
+    srcs = ["frontright_fisheye_image", "frontleft_fisheye_image"]
+    with caplog.at_level("WARNING"):
+        out = capture(_Robot(), srcs)
+    assert list(out) == ["frontright_fisheye_image"]
+    assert "frontleft_fisheye_image" in caplog.text
+
+
+def test_mask_distance_ground_z_field_default_none():
+    assert _cam(30).ground_z is None
