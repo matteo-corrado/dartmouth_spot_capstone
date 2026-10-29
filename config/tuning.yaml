@@ -1,11 +1,11 @@
 # Demo tunables. Every key is commented at its default; uncomment to override.
 # Unknown keys are ignored with a logged warning.
-# mic_channel: 0
+mic_channel: 1   # replay 2026-10-28: wakes 11/13 vs 6/13 (fan); ASR on ch1 to verify live
 # min_speech_dbfs: -50.0
-# min_snr_db: 10.0
+min_snr_db: 2.0   # STOPGAP: 10 dropped 13/13 real ch1 commands (median-of-VAD-frames gate)
 # onset_frames: 3
-# end_silence_s: 1.5
-# end_silence_s_short: 1.2
+end_silence_s: 1.2
+end_silence_s_short: 1.0
 # max_utterance_s: 20.0
 # floor_window_s: 5.0
 # floor_percentile: 10.0
