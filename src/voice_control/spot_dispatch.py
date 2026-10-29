@@ -1166,7 +1166,8 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
             _gaze_deg, _gaze_t = target, now
-        print(f"[Spot] gaze: shoulder yaw {target:+.0f} deg")
+        bearing = "centre" if body_deg is None else f"{((float(body_deg) + 180) % 360) - 180:+.0f} deg (body, +left)"
+        print(f"[Spot] gaze: speaker {bearing} -> shoulder yaw {target:+.0f} deg (limit {max_deg:.0f})")
         return True
     except Exception as e:
         print(f"[Spot] gaze_at_bearing failed: {e}")
