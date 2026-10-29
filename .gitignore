@@ -44,3 +44,7 @@ graphify-out/
 
 # operator demo recordings (voices; local only)
 tests/audio/demo/
+
+# vision upgrade
+models/vision/
+tests/fixtures/vision/private/
