@@ -2,7 +2,9 @@
 # Unknown keys are ignored with a logged warning.
 mic_channel: 1   # replay 2026-10-28: wakes 11/13 vs 6/13 (fan); ASR on ch1 to verify live
 # min_speech_dbfs: -50.0
-min_snr_db: 6.0   # gate is p90 speech level over floor. Replay ch1: commands 6.9-13.2 dB, quick replies 12-15, fan noise utts 3.7/5.8 -> 0 drops, 0-1 noise passes/2 min (8 drops 2-3/9)
+min_snr_db: 8.0   # gate = mean of the loudest 150 ms of speech over floor. Replay ch1 2026-10-29: wake cmds + quick replies 9.5-15.5 dB (18/18 pass), fan noise utts 5.8/11.1 (1/2 pass, the 15 s one)
+# gate_window_ms: 150.0
+short_utt_s: 1.5  # <= this much VAD speech: no loudness gate; gate-failing ones go to ASR and only stop/freeze/commands (+ yes/no mid-conversation) pass. One-word clips 0.57-1.02 s, noise utts 3.5 s+
 # onset_frames: 3
 end_silence_s: 1.2
 end_silence_s_short: 1.0
@@ -28,7 +30,7 @@ ring_reverse: false
 # ring_max_hz: 30.0   # LED ring write cap (Hz); the animator runs at this rate
 # beam_steering: false
 # voiceprint_enabled: false   # TA 89.7% < 90% on replay; try live with `spotctl voiceprint on`
-voiceprint_threshold: 0.35   # replay ch1: same median 0.53, other-voice 0.16 (n=2 podcast segs) -> TA 89.7% FA 3.7%; short follow-ups only 26% (0.25: 68%/FA 17%)
+voiceprint_threshold: 0.25   # operator 2026-10-29. Replay ch1: 0.35 kept only 26% of short follow-ups, 0.25 keeps 68% (FA 17%). Live: spotctl voiceprint threshold <x>
 # thinking_filler_s: 4.0
 # walk_speed_cap: 0.5
 # dance_clearance_m: 1.5

@@ -357,7 +357,7 @@ def simulate(frames, cfg, vad, det=None, start_state="wake", chime_windows=(),
         if ev == "start":
             in_utt = True
             utt = list(preroll)
-            stats = UtteranceStats(frame_s=FRAME_S)
+            stats = UtteranceStats(frame_s=FRAME_S, window_frames=frames_of(cfg.gate_window_ms / 1000.0))
             for _, _, d, s in utt:
                 stats.add(d, s)
             end_sil = cfg.end_silence_s_short
@@ -375,6 +375,7 @@ def simulate(frames, cfg, vad, det=None, start_state="wake", chime_windows=(),
                 t0=utt[0][0], t_last=t_last + FRAME_S, t_end=t + FRAME_S, endpoint=ev,
                 floor_db=floor.floor_db, speech_db=stats.speech_db_median,
                 snr_db=stats.snr_db(floor.floor_db), snr_p90=stats.speech_db_p90 - floor.floor_db,
+                dur_s=len(utt) * FRAME_S, vad_s=stats.duration_s, peak_db=stats.speech_db_peak,
                 passed=passes_gate(stats, floor.floor_db, cfg.min_speech_dbfs, cfg.min_snr_db),
                 pcm=b"".join(u[1] for u in utt)))
             utt, stats = [], None
@@ -384,6 +385,7 @@ def simulate(frames, cfg, vad, det=None, start_state="wake", chime_windows=(),
                          endpoint="open", floor_db=floor.floor_db, speech_db=stats.speech_db_median,
                          snr_db=stats.snr_db(floor.floor_db),
                          snr_p90=stats.speech_db_p90 - floor.floor_db,
+                         dur_s=len(utt) * FRAME_S, vad_s=stats.duration_s, peak_db=stats.speech_db_peak,
                          passed=passes_gate(stats, floor.floor_db, cfg.min_speech_dbfs,
                                             cfg.min_snr_db),
                          pcm=b"".join(u[1] for u in utt)))
@@ -439,6 +441,14 @@ def run_clip(ctx: Ctx, clip, start_state):
                     ctx._listen_cue_s)
 
 
+def gate_u(u) -> dict:
+    """Gate inputs of one utterance (for the --gate-sweep threshold table)."""
+    return dict(snr=round(u["snr_db"], 1), p90=round(u["snr_p90"], 1),
+                med=round(u["speech_db"], 1), dur=round(u.get("dur_s", 0.0), 2),
+                vad=round(u.get("vad_s", 0.0), 2),
+                passed=bool(u["passed"]))
+
+
 def eval_speech_clip(ctx: Ctx, clip) -> dict:
     """wake / wake_pause / overlap clip, full loop from WAKE_WORD."""
     cfg = ctx.cfg
@@ -481,6 +491,7 @@ def eval_speech_clip(ctx: Ctx, clip) -> dict:
                  gate_drop=None)
         return r
     r["gate_drop"] = not first["passed"]
+    r["gate_u"] = gate_u(first)
     cov = coverage(ref, tw, first["t0"], first["t_end"])
     split = any(u["t0"] >= first["t_end"] and overlap_s(ref, u["t0"], u["t_end"]) > 0.15
                 for u in utts[utts.index(first) + 1:])
@@ -522,7 +533,7 @@ def eval_quick_reply(ctx: Ctx, clip) -> dict:
         r.update(utt_t0=None, first_word=False, margin_s=None, cut=None, gate_drop=None)
         return r
     r.update(utt_t0=round(first["t0"], 2), margin_s=round(onset - first["t0"], 2),
-             gate_drop=not first["passed"],
+             gate_drop=not first["passed"], gate_u=gate_u(first),
              first_word=first["t0"] <= onset + 0.03)
     cov = coverage(ref, c1, first["t0"], first["t_end"])
     r["cov"] = None if cov is None else round(cov, 2)
@@ -556,7 +567,29 @@ def eval_background(ctx: Ctx, clip) -> dict:
                 ff_by_kw={k: round(per_min(v, dur), 2) for k, v in by_kw.items()},
                 listen_utts=len(sim["utts"]), listen_passed=sum(u["passed"] for u in sim["utts"]),
                 listen_snr=[round(u["snr_db"], 1) for u in sim["utts"]],
-                listen_snr_p90=[round(u["snr_p90"], 1) for u in sim["utts"]])
+                listen_snr_p90=[round(u["snr_p90"], 1) for u in sim["utts"]],
+                gate_us=[gate_u(u) for u in sim["utts"]])
+
+
+def eval_safety(ctx: Ctx, clip) -> dict:
+    """One-word stop/freeze clip in LISTENING (the state that captures
+    utterances). The safety set has no background recording, so the floor is
+    seeded from the clip's own lead (LEAD_S of room noise before the word)."""
+    pcm = clip["audio"][:, ctx.ch]
+    dur = len(pcm) / SAMPLE_RATE
+    lead = pcm[:int(LEAD_S * SAMPLE_RATE)].astype(np.float64) / 32768.0
+    rms = float(np.sqrt(np.mean(lead * lead))) if len(lead) else 0.0
+    seed = -120.0 if rms <= 1e-6 else max(-120.0, 20 * math.log10(rms))
+    frames = split_frames(np.concatenate([pcm, pad_from_lead(pcm)]))
+    sim = simulate(frames, ctx.cfg, ctx.vad, None, "listen", (), seed,
+                   ctx.preroll_frames, ctx.mask)
+    utts = [u for u in sim["utts"] if u["t0"] < dur]
+    best = max(utts, key=lambda u: u["snr_db"]) if utts else None
+    r = dict(clip=clip["clip"], kind="safety", seed_db=round(seed, 1), utts=len(utts),
+             gate_u=None if best is None else gate_u(best))
+    if ctx.asr is not None and best is not None:
+        r["transcript"] = asr_transcribe(ctx.asr, best["pcm"])
+    return r
 
 
 def _r(x, nd=1):
@@ -649,15 +682,18 @@ def chime_self_trigger(ctx: Ctx, gain: float) -> dict:
 # ---------------------------------------------------------------------------
 def run_condition(clips, ch, cfg, det, vad, preroll_frames, asr=None) -> dict:
     ctx = Ctx(clips, ch, cfg, det, vad, preroll_frames, asr)
-    rows, quick, bg = [], [], None
+    rows, quick, bg, safety = [], [], None, []
     for c in clips:
+        if c["kind"] == "safety":
+            safety.append(eval_safety(ctx, c))
         if c["kind"] in ("wake", "wake_pause", "overlap"):
             rows.append(eval_speech_clip(ctx, c))
         elif c["kind"] == "quick_reply":
             quick.append(eval_quick_reply(ctx, c))
         elif c["kind"] == "background":
             bg = eval_background(ctx, c)
-    return dict(channel=ch, seed_db=round(ctx.seed_db, 1), clips=rows, quick=quick, background=bg)
+    return dict(channel=ch, seed_db=round(ctx.seed_db, 1), clips=rows, quick=quick, background=bg,
+                safety=safety)
 
 
 def kws_only(clips, ch, det) -> dict:
@@ -751,6 +787,52 @@ def table_main(res) -> str:
         out.append(f"\nBackground {bg['dur_s']:.0f} s: wake false fires {bg['ff_per_min']}/min "
                    f"{bg['fires']}; LISTENING utterances started {bg['listen_utts']} "
                    f"(gate-passing {bg['listen_passed']}), SNR med {bg['listen_snr']} p90 {bg.get('listen_snr_p90')}")
+    return "\n".join(out)
+
+
+def gate_sets(results) -> dict:
+    """Per-utterance gate inputs from main results, split into one-word
+    safety positives, other positives (wake commands, quick replies) and
+    negatives (LISTENING utterances on the background recordings)."""
+    out = {"safety": [], "speech": [], "noise": []}
+    for r in results:
+        tag = f"{r['cond']}/ch{r['channel']}"
+        for c in r.get("safety") or []:
+            if c.get("gate_u"):
+                out["safety"].append(dict(c["gate_u"], clip=c["clip"], set=tag))
+        for c in list(r.get("clips") or []) + list(r.get("quick") or []):
+            if c.get("gate_u"):
+                out["speech"].append(dict(c["gate_u"], clip=c["clip"], set=tag))
+        for u in (r.get("background") or {}).get("gate_us") or []:
+            out["noise"].append(dict(u, clip="background", set=tag))
+    return out
+
+
+def table_gate_sweep(sets, ch, thresholds, min_speech_dbfs, short_s) -> str:
+    """Per min_snr_db: utterances passing the gate, and (gate-failing but
+    <= short_s VAD speech) going to the commands-only short path."""
+    pick = lambda k: [u for u in sets[k] if u["set"].endswith(f"ch{ch}")]  # noqa: E731
+    saf, sp, no = pick("safety"), pick("speech"), pick("noise")
+    one = [u for u in saf if "sentence" not in u["clip"]]
+    sent = [u for u in saf if "sentence" in u["clip"]]
+    gate = lambda u, t: u["snr"] >= t and u["med"] >= min_speech_dbfs  # noqa: E731
+    short = lambda u, t: not gate(u, t) and 0 < u["vad"] <= short_s  # noqa: E731
+    cell = lambda us, t: f"{sum(gate(u, t) for u in us)} + {sum(short(u, t) for u in us)}"  # noqa: E731
+    out = [f"cells: gate pass + short path (gate fail, VAD speech <= {short_s} s -> ASR, commands only)\n",
+           f"| min_snr_db | one-word stop/freeze /{len(one)} | stop/freeze in sentence /{len(sent)} | "
+           f"wake cmds + quick replies /{len(sp)} | noise utts /{len(no)} |", "|---|---|---|---|---|"]
+    for t in thresholds:
+        out.append(f"| {t} | {cell(one, t)} | {cell(sent, t)} | {cell(sp, t)} | {cell(no, t)} |")
+    return "\n".join(out)
+
+
+def table_gate_utts(sets, ch) -> str:
+    out = ["| set | clip | peak SNR | p90 SNR | median dBFS | dur s | VAD speech s |",
+           "|---|---|---|---|---|---|---|"]
+    for k in ("safety", "speech", "noise"):
+        for u in sets[k]:
+            if u["set"].endswith(f"ch{ch}"):
+                out.append(f"| {k} {u['set']} | {u['clip']} | {u['snr']} | {u['p90']} | {u['med']} | {u['dur']} | {u['vad']} |")
     return "\n".join(out)
 
 
@@ -967,6 +1049,8 @@ def main(argv=None):
     ap.add_argument("--kws-sweep", action="store_true", help="score x threshold sweep (KWS only)")
     ap.add_argument("--gain-ab", action="store_true", help="kws_peak_target 0.9 vs legacy x8 (KWS only)")
     ap.add_argument("--endpoint-sweep", action="store_true", help="min_snr_db x end_silence_s sweep")
+    ap.add_argument("--gate-sweep", action="store_true",
+                    help="min_snr_db sweep over per-utterance gate stats (safety/speech/noise)")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     ap.add_argument("--json", default=None, help="save all results here")
     ap.add_argument("--voiceprint", action="store_true",
@@ -1003,6 +1087,17 @@ def main(argv=None):
         print(f"Quick reply ({r['cond']} ch{r['channel']}), chime masked:\n" + table_quick(r) + "\n")
         print("Quick reply, mask OFF (acoustic chime self-trigger):\n" + table_quick(r, "quick_nomask") + "\n")
         print("Chime self-trigger (utterances started; must be 0):\n" + table_chimes(r) + "\n")
+
+    if a.gate_sweep:
+        sets = gate_sets(results["main"])
+        results["gate_sets"] = sets
+        for ch in a.channel:
+            print(f"## Gate sweep ch{ch} (peak = mean of loudest {base.gate_window_ms:.0f} ms; "
+                  f"also needs median >= {base.min_speech_dbfs} dBFS)\n")
+            print(table_gate_sweep(sets, ch, (4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0),
+                                   base.min_speech_dbfs, base.short_utt_s), "\n")
+            if a.clips:
+                print(table_gate_utts(sets, ch), "\n")
 
     if a.kws_sweep or a.gain_ab:
         overs = []

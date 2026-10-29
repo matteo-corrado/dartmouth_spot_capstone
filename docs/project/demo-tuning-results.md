@@ -26,9 +26,55 @@ seeded from 2 s of the condition's background take (same as the startup calibrat
 noise is appended so the endpointer can close. The background take can't be used for
 padding because ch0's AGC lifts it about 10 dB above clip silence.
 
-## 1. SNR gate (now p90, `min_snr_db: 6.0`)
+## 1. SNR gate (now loudest 150 ms, `min_snr_db: 8.0`, plus a short-utterance path)
 
-**Current state (fixed after this replay):** `passes_gate` now gates on the **p90**
+**Current state (2026-10-29, after the live demo-day findings):** on the robot, one-word
+commands ("sit", "stop", "freeze") were dropped by the p90 gate. The word is ~0.2-0.4 s of
+a ~2.5 s utterance (0.75 s pre-roll + Silero hangover + end silence), so p90 over all
+VAD-flagged frames lands on hangover. Two changes:
+
+1. **Gate statistic:** `UtteranceStats.snr_db` is now the mean of the loudest
+   `gate_window_ms` (150 ms = 5 frames) of speech-flagged frames over the floor
+   (`speech_db_peak`). `min_snr_db` re-tuned to **8.0** on that scale.
+2. **Short-utterance path:** an utterance with <= `short_utt_s` (**1.5 s**) of VAD-flagged
+   speech that fails the gate still goes to ASR (~0.25 s), but only a safety command
+   (executed exactly like the transcript safety path), a direct command (regex intent or
+   one of `intent.SHORT_COMMAND_WORDS`) or, in a LISTENING conversation, a one-word answer
+   (yes/no/okay...) gets through. Anything else is dropped, no LLM. Short utterances that
+   *pass* the gate take the normal path (the "what's your name" quick replies are 0.99-1.23 s
+   of VAD speech, so a commands-only rule for every short utterance would drop them). A short
+   utterance rejected by the speaker lock or voiceprint gets a safety-only rescue (ASR, run
+   `check_safety_command`, nothing else). Utterances over 1.5 s keep the plain gate; no new
+   ASR load there.
+
+Replay (`tests/audio/replay_demo.py --gate-sweep --clips`), ch1 (live channel). Safety
+clips run in LISTENING with the floor seeded from each clip's own 0.4 s lead (the safety set
+has no background take). Cells: gate pass + short path:
+
+| min_snr_db | one-word stop/freeze /9 | stop/freeze in sentence /2 | wake cmds + quick replies /18 | noise utts /2 |
+|---|---|---|---|---|
+| 4.0 | 4 + 5 | 2 + 0 | 18 + 0 | 2 + 0 |
+| 6.0 | 2 + 7 | 2 + 0 | 18 + 0 | 1 + 0 |
+| **8.0** | 0 + 9 | 2 + 0 | **18 + 0** | 1 + 0 |
+| 10.0 | 0 + 9 | 2 + 0 | 16 + 1 | 1 + 0 |
+| 12.0 | 0 + 9 | 2 + 0 | 12 + 4 | 0 + 0 |
+
+- ch1 peak SNRs: one-word stop/freeze 2.0-7.2 dB (normal 5.4/7.2, quiet 2.0-4.2, far 3.8/6.6),
+  in a sentence 15.1/15.3, wake commands 9.5-15.5, quick replies 13.0-15.4, fan noise
+  utterances 5.8 (3.5 s speech) and 11.1 (14.8 s speech, real talking at 20-44 s).
+- On ch1 **no gate threshold separates quiet one-word stops from noise**, which is why the
+  short path exists. 8.0 is the highest value that keeps all 18 wake commands and quick
+  replies on the normal path; the one noise pass is the same 15 s talking segment that
+  passed under p90 6.0.
+- VAD speech per utterance: one-word clips 0.57-1.02 s, quick replies 0.99-1.23 s, wake
+  commands 1.08-1.8 s, noise utterances 3.54 s and 14.8 s. `short_utt_s: 1.5` covers every
+  one-word clip with ~0.5 s margin for live hangover and never catches the noise.
+- ch1 `safety_freeze_quiet3` and `safety_freeze_far_quiet` start no utterance at all
+  (Silero never flags them), so no gate change reaches them; only the safety KWS can.
+- ASR was not running during this replay, so the short-path transcripts are untested
+  offline; verify live.
+
+**Previous state (p90, 2026-10-28):** `passes_gate` now gates on the **p90**
 speech level over the floor, not the median, and `config/tuning.yaml` sets
 `min_snr_db: 6.0` (see the comment there). Replay ch1 p90 SNRs: commands 6.9-13.2 dB,
 quick replies 12-15 dB, fan noise utterances 3.7/5.8 dB. That gives 0 command drops and
@@ -211,7 +257,8 @@ mic_channel: 1           # kept-phrase wakes 11/13 vs 6/13 (fan), 3/4 vs 0/4 (ba
 kws_score: 1.5           # unchanged; 2.0 ties on ch1, no false-fire evidence to justify a change
 kws_threshold: 0.05      # unchanged; >= 0.2 loses HEY SPOT
 kws_peak_target: 0.9     # ch1 HEY SPOT 6/8 vs 4/8 legacy x8
-min_snr_db: 6.0          # p90 gate (superseded the 2.0 median-gate stopgap): commands 6.9-13.2 dB, noise 3.7/5.8
+min_snr_db: 8.0          # loudest-150 ms gate (2026-10-29; was p90 6.0): commands 9.5-15.5 dB, noise 5.8/11.1
+short_utt_s: 1.5         # <= 1.5 s VAD speech failing the gate -> ASR, commands/safety only
 end_silence_s: 1.2       # 0 cut-offs at 1.0-1.5; 1.2 keeps margin for chained commands
 end_silence_s_short: 1.0 # 0/3 pause cut-offs at 0.9-1.5 (Silero adds ~0.5 s hangover)
 beam_steering: false     # no beams-on data; lock is already unreliable
@@ -224,7 +271,8 @@ lock_window_deg: 180.0   # effectively accept all directions: wake-window lock c
   babble. Coach visitors to say "Hey Spot". Re-run
   `scripts/setup_kws.py --phrases-file config/wake_phrases.txt`.
 - **min_snr_db:** the median gate at 10 answered nothing. This is resolved: the gate now
-  uses p90 with `min_snr_db: 6.0` (ch1 values; ch0 p90 SNRs run higher and would need
+  uses the loudest 150 ms with `min_snr_db: 8.0`, and short utterances go through the
+  commands-only short path (section 1; ch1 values, ch0 SNRs run higher and would need
   re-checking if the demo falls back to ch0).
 - **Check live before the demo:** one "Hey Spot, what is this poster about" on ch1 with
   ASR running, to confirm the transcript keeps "what" and that ch1 ASR quality is fine.
@@ -290,7 +338,10 @@ Trials:
   - Warm-up: 2.5 s on a background thread.
 
 **Decision.**
-- `voiceprint_threshold: 0.35` is set in `tuning.py` and `config/tuning.yaml`.
+- 2026-10-29 (operator): default lowered to `voiceprint_threshold: 0.25` (`tuning.py` and
+  `config/tuning.yaml`) because 0.35 rejected most short follow-ups; still off by default.
+  Set it live with `spotctl voiceprint threshold <x>` (clamped 0.0-0.9, shown as
+  `voiceprint_threshold` in `spotctl status`). The original 0.35 analysis follows.
 - `voiceprint_enabled` stays **false**: true accept is 89.7 %, just under the 90 % bar,
   false accept rests on n = 2 other-voice segments, and short follow-ups pass only 26 %
   of the time at 0.35. When enabled, a voiceprint rejection is *added* to the direction
@@ -298,12 +349,12 @@ Trials:
   name") would be dropped.
 - **Try it live:**
   1. Run `spotctl voiceprint on`.
-  2. Watch the `[Voice] sim=... thr=0.35` line printed for every utterance. The score is
+  2. Watch the `[Voice] sim=... thr=0.25` line printed for every utterance. The score is
      logged even while gating is off.
   3. Check `spotctl status`: `voiceprint`, `voiceprint_enrolled`, `voiceprint_last_sim`.
   4. Expect short replies to score around 0.2-0.4. If gating is wanted live, use about
-     **0.25** (quick-reply TA 68 %, FA 17 % in replay) by setting `voiceprint_threshold`
-     in `config/tuning.yaml` and restarting. Otherwise leave it off.
+     **0.25** (quick-reply TA 68 %, FA 17 % in replay), now the default; adjust live with
+     `spotctl voiceprint threshold <x>`. Otherwise leave it off.
 - **Enrolment rules (memory only, never written to disk):**
   - The wake audio and the first accepted utterance are averaged.
   - The enrolment is cleared on release, timeout, crowd mode, `spotctl listen`,

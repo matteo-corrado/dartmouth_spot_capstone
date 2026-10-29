@@ -242,7 +242,8 @@ def _rnd(x):
 def build_utterance_record(endpoint, end_silence_s, duration_s, floor_db, stats,
                            lock_mic_deg, utt_mic_deg, accepted, transcript=None,
                            reached_llm=False, latency_s=None, drop_reason=None,
-                           voice_sim=None) -> dict:
+                           voice_sim=None, short_path=False, rescued=None,
+                           rescue_transcript=None) -> dict:
     """One metrics line per utterance (logs/utterances/<date>.jsonl)."""
     return {
         "kind": "utterance",
@@ -250,7 +251,12 @@ def build_utterance_record(endpoint, end_silence_s, duration_s, floor_db, stats,
         "floor_dbfs": _rnd(floor_db),
         "speech_dbfs_median": _rnd(stats.speech_db_median),
         "speech_dbfs_p90": _rnd(stats.speech_db_p90),
+        "speech_dbfs_peak": _rnd(stats.speech_db_peak),
         "snr_db": _rnd(stats.snr_db(floor_db)),
+        "speech_s": round(stats.duration_s, 2),
+        "short_path": short_path,
+        "rescued": rescued,
+        "rescue_transcript": rescue_transcript,
         "endpoint": endpoint,
         "end_silence_s": end_silence_s,
         "duration_s": round(duration_s, 2),
@@ -352,6 +358,7 @@ _player_last_busy_at = 0.0  # monotonic timestamp of the most recent speech-busy
 _operator_muted = False
 _crowd_mode = False        # after each reply drop back to WAKE_WORD
 _voiceprint_mode = _tuning.voiceprint_enabled  # spotctl voiceprint on|off toggles live
+_voiceprint_threshold = _tuning.voiceprint_threshold  # spotctl voiceprint threshold <x> sets live
 # Set by an operator stop/freeze/sit/stand/stow/hush: the chained-action loop
 # in process_utterance checks it before each step and waits on it instead of
 # sleeping, so an operator stop also cancels the rest of a chain.
@@ -868,8 +875,8 @@ def float32_to_pcm16(audio: np.ndarray) -> bytes:
 # ============================================================================
 # ASR Communication
 # ============================================================================
-def send_to_asr(stub, pcm_bytes: bytes) -> str:
-    """Stream audio to ASR server and return transcript."""
+def send_to_asr(stub, pcm_bytes: bytes, timeout=None) -> str:
+    """Stream audio to ASR server and return transcript (timeout: gRPC deadline, s)."""
     def request_generator():
         # Send config first
         yield StreamingRequest(config=StreamingConfig(
@@ -883,7 +890,8 @@ def send_to_asr(stub, pcm_bytes: bytes) -> str:
             yield StreamingRequest(audio=AudioChunk(pcm16=pcm_bytes[i:i+chunk_size]))
 
     try:
-        responses = stub.StreamingRecognize(request_generator())
+        responses = (stub.StreamingRecognize(request_generator()) if timeout is None
+                     else stub.StreamingRecognize(request_generator(), timeout=timeout))
         for response in responses:
             if response.is_final:
                 return response.transcript.strip()
@@ -1016,7 +1024,8 @@ def _wait_for_nav_complete(timeout: float = 120.0):
 # Safety commands (stop/freeze/estop) bypass the LLM. The rule + patterns live
 # in intent.py (single source); re-exported here because tests and the
 # barge-in eval import check_safety_command from client_mic.
-from src.voice_control.intent import check_safety_command, is_filler_only  # noqa: E402
+from src.voice_control.intent import (  # noqa: E402
+    check_safety_command, is_filler_only, short_utterance_ok)
 
 
 def _run_safety(text: str) -> bool:
@@ -1030,6 +1039,37 @@ def _run_safety(text: str) -> bool:
     _start_hush()  # cut speech on its own thread; never delays the halt
     _dispatch_safety(safety)
     return True
+
+
+RESCUE_ASR_TIMEOUT_S = 3.0  # rescue ASR deadline; a dead ASR server can't stall the loop
+
+
+def is_short_utterance(stats, max_speech_s: float) -> bool:
+    """Short = little VAD-flagged speech (a one-word command is ~0.6-1.0 s
+    including Silero's hangover; background noise utterances run 3.5 s+)."""
+    return 0.0 < stats.duration_s <= max_speech_s
+
+
+def rescue_safety(stub, pcm_bytes: bytes, asr=None, run_safety=None) -> tuple:
+    """Safety-only rescue for a short utterance that was rejected (lock /
+    voiceprint): ASR it and run the transcript safety path. Anything that is
+    not stop/freeze/estop is discarded (no LLM, no reply). Returns
+    (transcript, executed). The always-on safety KWS thread is independent of
+    this and never waits on it."""
+    asr = asr or (lambda st, pcm: send_to_asr(st, pcm, timeout=RESCUE_ASR_TIMEOUT_S))
+    run_safety = run_safety or _run_safety
+    if not pcm_bytes:
+        return "", False
+    try:
+        transcript = asr(stub, pcm_bytes) or ""
+    except Exception as e:  # noqa: BLE001 - rescue must never break the loop
+        print(f"[Rescue] ASR failed: {type(e).__name__}: {e}")
+        return "", False
+    if not transcript:
+        return "", False
+    clean = re.sub(r'\s+', ' ', re.sub(r'\.\s*', ' ', transcript)).strip()
+    executed = bool(run_safety(transcript) or (clean and run_safety(clean)))
+    return transcript, executed
 
 
 # Wake phrases (config/wake_phrases.txt). strip_wake_phrase removes a
@@ -1216,6 +1256,7 @@ def _status_snapshot() -> dict:
     """Plain-attribute read; never blocks."""
     s = dict(_status)
     s.update(muted=_operator_muted, crowd=_crowd_mode, voiceprint=_voiceprint_mode,
+             voiceprint_threshold=round(_voiceprint_threshold, 3),
              voiceprint_enrolled=_voice.enrolled,
              voiceprint_last_sim=(None if _voice.last_sim is None else round(_voice.last_sim, 3)),
              voiceprint_ready=_voice.embedder is not None,
@@ -1250,6 +1291,26 @@ def _on_immediate(name: str, arg=None) -> dict:
         _ring_pending = True  # main loop repaints (red while muted)
         return {"ok": True, "muted": _operator_muted}
     return {"error": f"unhandled immediate command {name!r}"}
+
+
+VOICEPRINT_THRESHOLD_MAX = 0.9
+
+
+def apply_voiceprint_arg(arg, mode: bool, threshold: float) -> tuple:
+    """spotctl voiceprint [on|off|threshold <x>] -> (mode, threshold).
+    The threshold is clamped to [0.0, 0.9]; a bad number raises ValueError."""
+    a = (arg or "").strip().lower().split()
+    if a and a[0] in ("threshold", "thr", "t"):
+        if len(a) < 2:
+            raise ValueError("threshold needs a value, e.g. 'voiceprint threshold 0.25'")
+        try:
+            x = float(a[1])
+        except ValueError:
+            raise ValueError(f"bad threshold {a[1]!r}") from None
+        if x != x:  # NaN
+            raise ValueError("bad threshold 'nan'")
+        return mode, min(VOICEPRINT_THRESHOLD_MAX, max(0.0, x))
+    return _toggle(mode, arg), threshold
 
 
 def _toggle(current: bool, arg) -> bool:
@@ -1630,7 +1691,7 @@ def main():
     if _wt is not None:
         _wt.join(timeout=15.0)
     print(f"[Voice] voiceprint gating {'ON' if _voiceprint_mode else 'OFF'} "
-          f"(threshold {_tuning.voiceprint_threshold:.2f}; spotctl voiceprint on|off)")
+          f"(threshold {_voiceprint_threshold:.2f}; spotctl voiceprint on|off|threshold <x>)")
 
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
@@ -1786,13 +1847,24 @@ def main():
             lock_mic_deg=_lock.angle, utt_mic_deg=circular_median_deg(degs))
 
         min_db = _tuning.min_speech_dbfs + (NAV_SPEECH_DB_BOOST if _is_robot_moving() else 0.0)
+        # Short utterances (one-word "sit"/"stop") aren't judged by loudness:
+        # a gate-failing short one still goes to ASR, but only a safety
+        # command / direct command / mid-conversation answer gets through
+        # (short_filter in process_utterance). Long ones keep the gate.
+        short = is_short_utterance(stats, _tuning.short_utt_s)
+        short_filter = False
         if not passes_gate(stats, floor_db, min_db, _tuning.min_snr_db):
-            print(f"[Gate] dropped: speech {stats.speech_db_median:.1f} dBFS, "
-                  f"SNR(p90) {stats.snr_db(floor_db):.1f} dB (need >= {min_db:.0f} dBFS, "
-                  f">= {_tuning.min_snr_db:.1f} dB)")
-            utt_log.write(build_utterance_record(**record, accepted=False,
-                                                 drop_reason="gate"))
-            return
+            if not short:
+                print(f"[Gate] dropped: speech {stats.speech_db_median:.1f} dBFS, "
+                      f"SNR(peak) {stats.snr_db(floor_db):.1f} dB (need >= {min_db:.0f} dBFS, "
+                      f">= {_tuning.min_snr_db:.1f} dB)")
+                utt_log.write(build_utterance_record(**record, accepted=False,
+                                                     drop_reason="gate"))
+                return
+            short_filter = True
+            print(f"[Gate] short utterance ({stats.duration_s:.2f} s speech, "
+                  f"SNR(peak) {stats.snr_db(floor_db):.1f} dB) -> ASR, commands only")
+        record["short_path"] = short_filter
         # Direction verdict: None when unlocked / no readings (signal unavailable).
         prev_angle = _lock.angle
         dir_ok = (_lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic(), touch=False)
@@ -1805,11 +1877,11 @@ def main():
             try:
                 accepted, sim = _voice.decide(b"".join(f for _, f, _, _ in utt_frames),
                                               dir_ok, _voiceprint_mode,
-                                              _tuning.voiceprint_threshold)
+                                              _voiceprint_threshold)
             except Exception as e:  # noqa: BLE001 - fail open to direction-only
                 print(f"[Voice] decide failed ({e}); direction-only")
             print(f"[Voice] sim={'n/a' if sim is None else f'{sim:.2f}'} "
-                  f"thr={_tuning.voiceprint_threshold:.2f} "
+                  f"thr={_voiceprint_threshold:.2f} "
                   f"gate={'on' if _voiceprint_mode else 'off'} "
                   f"enrolled={'yes' if _voice.enrolled else 'no'}")
         record["voice_sim"] = None if sim is None else round(sim, 3)
@@ -1821,9 +1893,17 @@ def main():
             else:
                 _lock.angle = prev_angle  # undo accept()'s nudge toward a rejected voice
                 print(f"[Voice] rejected utterance: sim {sim:.2f} "
-                      f"< {_tuning.voiceprint_threshold:.2f}")
+                      f"< {_voiceprint_threshold:.2f}")
                 reason = "voice"
             _signal_reject()
+            if short:
+                # Safety rescue: a short rejected utterance may still be a
+                # quiet stop/freeze. ASR it; only a safety command executes.
+                text, done = rescue_safety(stub, b"".join(f for _, f, _, _ in utt_frames))
+                record.update(rescue_transcript=(text if store_transcript else "<not logged>")
+                              if text else None, rescued=done)
+                if done:
+                    print("[Rescue] safety command from a rejected utterance")
             utt_log.write(build_utterance_record(**record, accepted=False,
                                                  drop_reason=reason))
             return
@@ -1856,7 +1936,9 @@ def main():
                                        has_wake_detector=bool(wake_detector),
                                        on_thinking=(None if safety_only else _announce_thinking),
                                        info=info, utt_t0=t0,
-                                       on_speaking=(None if safety_only else _announce_speaking))
+                                       on_speaking=(None if safety_only else _announce_speaking),
+                                       short_filter=short_filter,
+                                       in_conversation=(state == VoiceState.LISTENING))
         except Exception as e:
             # A per-utterance failure (ASR/LLM/TTS) must drop the turn, not
             # crash voice control. result=None routes to the idle-based gate
@@ -1894,7 +1976,7 @@ def main():
 
     def _on_queued(name, arg):
         nonlocal state, listening_since
-        global _crowd_mode, _voiceprint_mode
+        global _crowd_mode, _voiceprint_mode, _voiceprint_threshold
         if name == "listen":
             # Open the conversation with no direction lock (accept all).
             _lock.release()
@@ -1922,8 +2004,14 @@ def main():
             _crowd_mode = _toggle(_crowd_mode, arg)
             print(f"[Control] crowd mode {'ON' if _crowd_mode else 'OFF'}")
         elif name == "voiceprint":
-            _voiceprint_mode = _toggle(_voiceprint_mode, arg)
+            try:
+                _voiceprint_mode, _voiceprint_threshold = apply_voiceprint_arg(
+                    arg, _voiceprint_mode, _voiceprint_threshold)
+            except ValueError as e:
+                print(f"[Control] voiceprint: {e}")
+                return
             print(f"[Control] voiceprint gating {'ON' if _voiceprint_mode else 'OFF'} "
+                  f"threshold {_voiceprint_threshold:.2f} "
                   f"(enrolled={'yes' if _voice.enrolled else 'no'}, "
                   f"model={'ready' if _voice.embedder is not None else 'not loaded'})")
 
@@ -2080,7 +2168,8 @@ def main():
                 if ev == "start":
                     in_utt = True
                     utt = list(preroll_buffer)  # includes this frame
-                    stats = UtteranceStats(frame_s=FRAME_S)
+                    stats = UtteranceStats(frame_s=FRAME_S,
+                                           window_frames=_frames(_tuning.gate_window_ms / 1000.0))
                     for _, _, d, s in utt:
                         stats.add(d, s)
                     end_sil_s = _tuning.end_silence_s_short
@@ -2413,8 +2502,12 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
                       has_wake_detector=False, on_thinking=None, info=None, utt_t0=None,
-                      on_speaking=None):
+                      on_speaking=None, short_filter=False, in_conversation=False):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
+
+    short_filter: a short utterance that failed the loudness gate; after the
+                  safety check only a direct command (or a one-word answer when
+                  in_conversation) continues, anything else is dropped (no LLM).
 
     Args:
         safety_only: If True, only execute safety commands (stop/freeze/estop).
@@ -2548,6 +2641,11 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                 # Just the wake phrase with no command — ignore
                 print(f"[Wake phrase only — no command after stripping]")
                 return None
+
+    # Short, quiet utterance (failed the loudness gate): commands only.
+    if short_filter and (safety_only or not short_utterance_ok(clean, in_conversation)):
+        print(f"[Short] dropped {_heard(clean)} — not a command")
+        return None
 
     # Stage 2F P6: the utterance survived STT (real words, not a safety command,
     # not a bare wake phrase) and is about to be dispatched to the brain — signal

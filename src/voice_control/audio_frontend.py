@@ -87,10 +87,16 @@ class Endpointer:
 
 
 class UtteranceStats:
-    """Collects frames; statistics are over speech-flagged frames only."""
+    """Collects frames; statistics are over speech-flagged frames only.
 
-    def __init__(self, frame_s=0.03):
+    The gate scores an utterance by its loudest ~150 ms: the mean dB of the
+    top ``window_frames`` speech-flagged frames. A one-word command ("sit",
+    "stop") is ~0.3 s inside a ~2 s utterance (pre-roll + VAD hangover + end
+    silence), so any percentile over all speech frames reads it as quiet."""
+
+    def __init__(self, frame_s=0.03, window_frames=5):
         self._frame_s = frame_s
+        self._window = max(1, int(window_frames))
         self._speech = []
 
     def add(self, db, is_speech):
@@ -105,11 +111,19 @@ class UtteranceStats:
     def speech_db_p90(self) -> float:
         return float(np.percentile(self._speech, 90)) if self._speech else -120.0
 
+    @property
+    def speech_db_peak(self) -> float:
+        """Mean of the loudest ``window_frames`` speech frames (~150 ms)."""
+        if not self._speech:
+            return -120.0
+        top = sorted(self._speech)[-self._window:]
+        return float(np.mean(top))
+
     def snr_db(self, floor_db) -> float:
-        # p90, not median: Silero keeps flagging ~0.5 s of floor-level hangover
-        # after speech, so for a 1-2 s command the median sits only 2-8 dB over
-        # the floor (docs/project/demo-tuning-results.md section 1).
-        return self.speech_db_p90 - floor_db
+        # Peak (top-N mean), not p90/median: Silero keeps flagging ~0.5 s of
+        # floor-level hangover after speech, and a one-word command is a small
+        # fraction of the utterance (docs/project/demo-tuning-results.md s.1).
+        return self.speech_db_peak - floor_db
 
     @property
     def duration_s(self) -> float:

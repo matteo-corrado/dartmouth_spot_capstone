@@ -267,3 +267,30 @@ def parse_intent(text: str):
 
     return None
 
+
+# Short-utterance path (client_mic._finish_utterance): a short utterance that
+# fails the loudness gate still goes to ASR, but only a safety command, a
+# direct robot command or (mid-conversation) a one-word answer is let through.
+# Commands the regex table doesn't cover but the brain handles in one word:
+SHORT_COMMAND_WORDS = frozenset({"dance", "stow", "wave", "bow", "nod", "spin",
+                                 "sit", "stand", "stop", "freeze"})
+SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok",
+                                "sure", "hello", "hi", "hey", "thanks", "thank", "you",
+                                "please"})
+
+
+def short_utterance_ok(text: str, in_conversation: bool = False) -> bool:
+    """True if a short, quiet utterance's transcript is worth acting on:
+    a safety command, a regex-known command, a known one-word command, or
+    (only in an active LISTENING conversation) a short yes/no/okay answer."""
+    if not text or not text.strip():
+        return False
+    if check_safety_command(text) is not None or parse_intent(text) is not None:
+        return True
+    words = _WORD_RE.findall(text.lower())
+    if not words:
+        return False
+    if len(words) <= 3 and any(w in SHORT_COMMAND_WORDS for w in words):
+        return True
+    return in_conversation and all(w in SHORT_ANSWER_WORDS for w in words)
+
