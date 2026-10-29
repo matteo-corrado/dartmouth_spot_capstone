@@ -86,7 +86,27 @@ def build_prompts(phrases: list[str]) -> list[Prompt]:
                           0, 6.0, readable(first), f"{first.lower()} {QUESTION}"))
     out.append(Prompt("background", "background",
                       "Stay silent (no wake phrase). Normal room noise / chatter.", 0, 120.0))
+    out.extend(SAFETY_PROMPTS)
     return out
+
+
+# Safety words for the always-on stop listener (--set safety). No wake phrase.
+SAFETY_PROMPTS = [
+    Prompt(f"safety_{word}_{style}", "safety", say, 0, 3.0, "", expected)
+    for word, expected, variants in (
+        ("stop", "stop", (("normal", 'Say "stop" (normal voice)'),
+                          ("quiet", 'Say "stop" QUIETLY'),
+                          ("sentence", 'Say "okay Spot, stop"'))),
+        ("freeze", "freeze", (("normal", 'Say "freeze" (normal voice)'),
+                              ("quiet", 'Say "freeze" QUIETLY'),
+                              ("sentence", 'Say "okay Spot, freeze"'))),
+        ("estop", "e stop", (("normal", 'Say "e-stop" (normal voice)'),
+                             ("quiet", 'Say "e-stop" QUIETLY'),
+                             ("sentence", 'Say "okay Spot, e-stop"'))),
+    )
+    for style, say in variants
+] + [Prompt(f"safety_{w.replace('-', '')}_far", "safety", f'Step back ~3 m, then say "{w}" (normal voice)', 0, 3.0, "",
+            w.replace("-", " ")) for w in ("stop", "freeze", "e-stop")]
 
 
 # Short sets: only the clips a noise condition changes (--set). "full" = everything.
@@ -94,6 +114,7 @@ SETS = {
     "babble": lambda p: (p.kind == "wake" and p.clip.endswith("_front"))
     or p.clip in ("quick_reply_1", "quick_reply_2", "background"),
     "overlap": lambda p: p.kind == "overlap" or (p.kind == "wake" and p.clip.endswith("_front")),
+    "safety": lambda p: p.kind == "safety",
 }
 
 
