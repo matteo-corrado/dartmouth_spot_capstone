@@ -1,6 +1,6 @@
 # intent.py
 
-`src/voice_control/intent.py` -- Regex-based intent parser.
+`src/spot/brain/intent.py` -- Regex-based intent parser.
 
 Maps free-text voice commands to structured intent dicts using precompiled
 regex patterns. Used as the primary parser in `--no-brain` mode and as the

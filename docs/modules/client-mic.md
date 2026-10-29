@@ -1,5 +1,7 @@
 # client_mic.py
 
+> **Being split.** This file is being broken up into the `src/spot/` packages (see [package-map.md](../architecture/package-map.md)). The path below stays valid as the launch path; internals are moving.
+
 `src/voice_control/client_mic.py` -- Main voice control loop.
 
 Captures audio from the microphone, runs VAD to detect speech, sends audio to

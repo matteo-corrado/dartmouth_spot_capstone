@@ -1,6 +1,6 @@
 # visual_nav.py
 
-`src/voice_control/visual_nav.py` -- YOLO detection and visual navigation.
+`src/spot/features/visual_nav/navigator.py` -- YOLO detection and visual navigation.
 
 Provides camera-based object seeking (YOLO-World open-vocabulary) and person
 following (YOLOv8n). Both models run on CPU to avoid GPU/VRAM competition

@@ -63,7 +63,7 @@ The entire action catalog lives in the system prompt.
 
 ### 3. Persistent Spot Session
 
-`src/session.py` provides a `spot_session()` context manager that creates a
+`src/spot/robot/session.py` provides a `spot_session()` context manager that creates a
 single long-lived connection to the robot. Authentication, lease acquisition,
 time sync, and power-on happen once at startup. All commands share this
 session, eliminating per-command auth overhead (~2s saved per command).
@@ -103,19 +103,19 @@ speech at normal conversational distance.
 | Component | File | Purpose |
 |---|---|---|
 | Voice Client | `src/voice_control/client_mic.py` | Main audio loop: VAD, speech detection, ASR dispatch, LLM orchestration |
-| ASR Bridge Server | `src/voice_control/server.py` | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
-| LLM Brain | `src/voice_control/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
+| ASR Bridge Server | `src/spot/stt/server.py` (`src/voice_control/server.py` is a shim) | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
+| LLM Brain | `src/spot/brain/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
 | Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision) |
-| Wake Word Detector | `src/voice_control/wake_word.py` | sherpa-onnx keyword spotter for "Hey Spot" |
-| TTS | `src/voice_control/spot_tts.py` | sherpa-onnx Kokoro TTS (non-blocking, speaker af_sarah) |
-| Audio Feedback | `src/voice_control/audio_feedback.py` | Short beep/chime tones for user feedback |
-| Visual Nav | `src/voice_control/visual_nav.py` | YOLO-based object approach and person following |
-| Intent Parser | `src/voice_control/intent.py` | Regex fallback intent parser (legacy, used with `--no-brain`) |
-| Session Manager | `src/session.py` | Persistent Spot connection context manager |
+| Wake Word Detector | `src/spot/wake/sherpa_onnx.py` | sherpa-onnx keyword spotter for "Hey Spot" |
+| TTS | `src/spot/tts/speaker.py` | sherpa-onnx Kokoro TTS (non-blocking, speaker af_sarah) |
+| Audio Feedback | `src/spot/audio/chimes.py` | Short beep/chime tones for user feedback |
+| Visual Nav | `src/spot/features/visual_nav/navigator.py` | YOLO-based object approach and person following |
+| Intent Parser | `src/spot/brain/intent.py` | Regex fallback intent parser (legacy, used with `--no-brain`) |
+| Session Manager | `src/spot/robot/session.py` | Persistent Spot connection context manager |
 | Config | `src/config.py` | Environment variables (robot IP, credentials) |
-| Location Manager | `src/location_manager.py` | Save/load named locations to `locations.json` |
-| GraphNav Utils | `src/graph_nav_utils.py` | Map upload, localization, waypoint listing |
-| Proto Definitions | `src/voice_control/asr_pb2.py` | Generated protobuf for ASR bridge communication |
+| Location Manager | `src/spot/nav/location_manager.py` | Save/load named locations to `locations.json` |
+| GraphNav Utils | `src/spot/nav/graph_nav_utils.py` | Map upload, localization, waypoint listing |
+| Proto Definitions | `src/spot/stt/asr_pb2.py` | Generated protobuf for ASR bridge communication |
 | Entry Point | `scripts/run_voice_control.py` | Orchestrates service startup and launches client |
 | E-Stop | `scripts/estop_run.py` | E-Stop keepalive (must run in separate terminal) |
 | Web Panel | `scripts/web_panel.py` | Mobile-friendly E-Stop + pipeline control web UI |

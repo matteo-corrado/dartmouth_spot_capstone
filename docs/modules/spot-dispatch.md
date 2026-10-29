@@ -1,5 +1,7 @@
 # spot_dispatch.py
 
+> **Being split.** This file is being broken up into the `src/spot/` packages (see [package-map.md](../architecture/package-map.md)). The path below stays valid as the launch path; internals are moving.
+
 `src/voice_control/spot_dispatch.py` -- Command execution and navigation.
 
 Central dispatcher that translates parsed intents into Boston Dynamics SDK
@@ -138,7 +140,7 @@ close_spot_session()
 
 ## Dependencies
 
-**Project modules:** `src.session` (`spot_session`), `src.location_manager`
+**Project modules:** `src.spot.robot.session` (`spot_session`), `src.spot.nav.location_manager`
 (`list_locations`), `visual_nav` (`navigate_to_object`, `follow_person`)
 
 **External packages:** `bosdyn.client` (robot_command, frame_helpers,

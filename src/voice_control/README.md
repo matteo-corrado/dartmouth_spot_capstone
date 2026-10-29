@@ -2,6 +2,8 @@
 
 This directory contains the voice I/O system for controlling Spot via natural language commands.
 
+> **Being restructured.** Most modules have moved to `src/spot/` (see `docs/architecture/package-map.md`). `server.py` and most other files here are thin shims that forward to the new location. `client_mic.py` and `spot_dispatch.py` are real code and are being split.
+
 ## Architecture
 
 - **`server.py`**: gRPC ASR server using Faster Whisper for speech-to-text
@@ -124,7 +126,7 @@ sudo systemctl start ollama
 ollama pull qwen2.5:3b
 
 # Test the LLM parser
-python src/voice_control/intent_llm.py
+python -m src.spot.brain.llm_brain
 ```
 
 The system uses regex matching first (fast), then falls back to LLM for complex phrases.

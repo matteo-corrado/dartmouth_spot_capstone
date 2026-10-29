@@ -30,12 +30,12 @@ models/tts/kokoro-v1.0/
     voices-v1.0.bin             # ~27MB, 54 voice embeddings
 ```
 
-The default speaker is `af_sarah`, a warm American English female voice. Speaker can be changed in `src/voice_control/spot_tts.py`.
+The default speaker is `af_sarah`, a warm American English female voice. Speaker can be changed in `src/spot/tts/speaker.py`.
 
 Verify:
 
 ```bash
-python src/voice_control/spot_tts.py
+python -m src.spot.tts.speaker
 ```
 
 ## Wake Word: sherpa-onnx KWS
@@ -69,7 +69,7 @@ python scripts/setup_kws.py --check
 Test with microphone:
 
 ```bash
-python src/voice_control/wake_word.py --test-mic --device 24
+python -m src.spot.wake.sherpa_onnx --test-mic --device 24
 ```
 
 ## YOLO: Object Detection
@@ -105,4 +105,4 @@ ollama list
 
 ## ASR Backend
 
-The ASR backend (`src/voice_control/server.py`) requires no model download. It is auto-started by `run_voice_control.py`. A Parakeet-based model download step will be added in Stage 2.
+The ASR backend (`src/spot/stt/server.py`; `src/voice_control/server.py` is a shim that forwards to it) requires no model download. It is auto-started by `run_voice_control.py`. A Parakeet-based model download step will be added in Stage 2.
