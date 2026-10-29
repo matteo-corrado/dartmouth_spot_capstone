@@ -44,7 +44,9 @@ class SpeakerLock:
         self._last = now
         return m
 
-    def accept(self, degs, now) -> bool:
+    def accept(self, degs, now, touch=True) -> bool:
+        """touch=False: accept/nudge without restarting the conversation clock
+        (the caller touches once the turn is known to be real)."""
         if not self.locked:
             return True
         m = circular_median_deg(degs)
@@ -53,7 +55,8 @@ class SpeakerLock:
             return True
         if ang_diff(m, self.angle) <= self.window_deg:
             self.angle = (self.angle + self.nudge * _signed_diff(self.angle, m)) % 360.0
-            self._last = now
+            if touch:
+                self._last = now
             return True
         return False
 

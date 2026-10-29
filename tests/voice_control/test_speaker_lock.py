@@ -60,3 +60,9 @@ def test_release():
 def test_mic_to_body():
     assert mic_to_body_deg(100, offset_deg=90, sign=1) == pytest.approx(10)
     assert mic_to_body_deg(80, offset_deg=90, sign=-1) == pytest.approx(10)
+
+
+def test_accept_without_touch_keeps_clock():
+    L = SpeakerLock(35, 20, 0.5); L.lock([0], 0)
+    assert L.accept([5], 15, touch=False) is True
+    assert L.expired(20.5) is True  # clock still runs from the lock at t=0

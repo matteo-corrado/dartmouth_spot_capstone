@@ -217,6 +217,16 @@ def conversation_expired(lock, listening_since: float, now: float, timeout_s: fl
     return (now - listening_since) > timeout_s
 
 
+def refresh_conversation(lock, listening_since: float, now: float, reached_llm: bool) -> float:
+    """Restart the conversation clock (lock + unlocked fallback) only for a
+    turn that reached intent/LLM; loud noise, empty or ignored transcripts
+    leave it running (final-review M1). Returns the new listening_since."""
+    if not reached_llm:
+        return listening_since
+    lock.touch(now)
+    return now
+
+
 def _body(deg):
     if deg is None:
         return None
@@ -1732,14 +1742,13 @@ def main():
             utt_log.write(build_utterance_record(**record, accepted=False,
                                                  drop_reason="gate"))
             return
-        if not _lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic()):
+        if not _lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic(), touch=False):
             print(f"[Lock] rejected utterance from {record['utt_mic_deg']:.0f} deg "
                   f"(locked {_lock.angle:.0f} deg)")
             _signal_reject()
             utt_log.write(build_utterance_record(**record, accepted=False,
                                                  drop_reason="lock"))
             return
-        listening_since = time.monotonic()
         _update_ring()  # accept() may have nudged the lock angle
         _status["locked_deg"] = _body(_lock.angle)
 
@@ -1775,6 +1784,8 @@ def main():
             print(f"[Error] utterance processing failed: {type(e).__name__}: {e}")
             result = None
         latency = time.monotonic() - t_proc
+        listening_since = refresh_conversation(_lock, listening_since, time.monotonic(),
+                                               bool(info.get("reached_llm")))
         _status["last_latency_s"] = round(latency, 2)
         if info.get("transcript"):
             _status["last_transcript"] = info["transcript"] if store_transcript else "<not logged>"
@@ -1896,6 +1907,7 @@ def main():
                     utt = []
                     _mic_reopen_at = None
                     response_pending = False
+                    turn_reached = gate_announced  # True iff the turn reached the LLM
                     gate_announced = False
                     _mic_gated = False
                     if state == VoiceState.WAKE_WORD:
@@ -1907,8 +1919,9 @@ def main():
                         print(">>> Crowd mode — say the wake word for the next turn")
                     else:
                         state = VoiceState.LISTENING
-                        listening_since = now_m
-                        _lock.touch(now_m)  # conversation clock restarts at reopen
+                        # Clock restarts at reopen only after a real turn (M1).
+                        listening_since = refresh_conversation(_lock, listening_since, now_m,
+                                                               turn_reached)
                         # Always cue: the listen chime fires as the mic opens
                         # (beeps no longer mute the mic, so nothing is lost).
                         _enter_state(VoiceState.LISTENING)
