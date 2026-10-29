@@ -6,6 +6,9 @@ import pytest
 
 import src.session as session_mod
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import ARM, CONNECTION, NAV
+import src.spot.robot.arm as arm_mod
+import src.spot.robot.state as state_mod
 import src.voice_control.tuning as tuning
 from src.voice_control.client_mic import auto_arm_wanted
 from tests.voice_control.test_arm_policy import FakeCmd, FakeState
@@ -39,22 +42,22 @@ def env(monkeypatch):
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
-    monkeypatch.setattr(d, "_spot_session", sess)
-    monkeypatch.setattr(d, "_session_context", object())
-    monkeypatch.setattr(d, "_closing", False)
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: True)
-    monkeypatch.setattr(d, "_close_mouth", m.disable)
-    monkeypatch.setattr(d, "_arm_pose", "stowed")
-    monkeypatch.setattr(d, "_pose_before_walk", None)
-    monkeypatch.setattr(d, "_pose_during_walk", None)
-    monkeypatch.setattr(d, "_mouth_resume", False)
-    monkeypatch.setattr(d, "_talk_resume", False)
-    monkeypatch.setattr(d, "_last_brain", None)
+    monkeypatch.setattr(CONNECTION, "_session", sess)
+    monkeypatch.setattr(CONNECTION, "_context", object())
+    monkeypatch.setattr(CONNECTION, "_closing", False)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: True)
+    monkeypatch.setattr(ARM, "close_mouth", m.disable)
+    monkeypatch.setattr(ARM, "_pose", "stowed")
+    monkeypatch.setattr(ARM, "_pose_before_walk", None)
+    monkeypatch.setattr(ARM, "_pose_during_walk", None)
+    monkeypatch.setattr(ARM, "_mouth_resume", False)
+    monkeypatch.setattr(ARM, "_talk_resume", False)
+    monkeypatch.setattr(ARM, "_last_brain", None)
     monkeypatch.setattr(d, "_auto_arm", False)
     monkeypatch.setattr(d, "_auto_arm_pending", False)
     monkeypatch.setattr(d, "_auto_arm_thread", None)
     state = SimpleNamespace(standing=True)
-    monkeypatch.setattr(d, "_standing_and_powered", lambda s: state.standing)
+    monkeypatch.setattr(state_mod, "standing_and_powered", lambda s: state.standing)
     monkeypatch.setattr(d.time, "sleep", lambda s: None)
     yield SimpleNamespace(cmd=cmd, mouth=m, state=state, sess=sess)
     d._cancel_nav()
@@ -112,8 +115,8 @@ def test_auto_waits_for_standing_and_powered(env):
 
 def test_auto_never_without_session(env, monkeypatch):
     _owe()
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     assert d.auto_arm_if_ready(d.current_safety_gen()) is False
     assert d.start_auto_arm(d.current_safety_gen()) is None
 
@@ -181,14 +184,14 @@ def test_estop_cancels_pending_auto_fold(env):
 
 def test_not_while_moving(env, monkeypatch):
     _owe()
-    monkeypatch.setattr(d, "is_navigating", lambda: True)
+    monkeypatch.setattr(NAV, "is_navigating", lambda: True)
     assert d.auto_arm_if_ready(d.current_safety_gen()) is False
     assert env.cmd.sent == [] and d._auto_arm_pending is True
 
 
 def test_halt_resume_owns_the_arm(env, monkeypatch):
     _owe()
-    monkeypatch.setattr(d, "_talk_resume", True)
+    monkeypatch.setattr(ARM, "_talk_resume", True)
     assert d.auto_arm_if_ready(d.current_safety_gen()) is False
     assert env.cmd.sent == []
 
@@ -243,7 +246,7 @@ def test_close_session_cancels_pending_fold(env, monkeypatch):
         def power_off(self, **k):
             pass
     env.sess["robot"] = R()
-    monkeypatch.setattr(d, "_session_context", Ctx())
+    monkeypatch.setattr(CONNECTION, "_context", Ctx())
     _owe()
     d.close_spot_session()
     assert d._auto_arm_pending is False

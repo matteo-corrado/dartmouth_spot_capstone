@@ -7,6 +7,10 @@ from bosdyn.api import robot_command_pb2
 
 import src.session as session_mod
 import src.voice_control.spot_dispatch as d
+from src.spot.robot import ARM, CONNECTION
+import src.spot.robot.arm as arm_mod
+import src.spot.robot.connection as connection_mod
+import src.spot.robot.state as state_mod
 from src.graph_nav_utils import capped_mobility_params, capped_travel_params
 from src.voice_control.spot_dispatch import arm_policy_for
 
@@ -120,17 +124,17 @@ class FakeState:
 def fake(monkeypatch):
     cmd = FakeCmd()
     sess = {"cmd": cmd, "state": FakeState(), "robot": object()}
-    monkeypatch.setattr(d, "_spot_session", sess)
-    monkeypatch.setattr(d, "_session_context", object())
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: True)
-    monkeypatch.setattr(d, "_close_mouth", lambda: None)
-    monkeypatch.setattr(d, "_arm_pose", "talk")
-    monkeypatch.setattr(d, "_pose_before_walk", None)
-    monkeypatch.setattr(d, "_pose_during_walk", None)
-    monkeypatch.setattr(d, "_gaze_deg", 0.0)
+    monkeypatch.setattr(CONNECTION, "_session", sess)
+    monkeypatch.setattr(CONNECTION, "_context", object())
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: True)
+    monkeypatch.setattr(ARM, "close_mouth", lambda: None)
+    monkeypatch.setattr(ARM, "_pose", "talk")
+    monkeypatch.setattr(ARM, "_pose_before_walk", None)
+    monkeypatch.setattr(ARM, "_pose_during_walk", None)
+    monkeypatch.setattr(ARM, "_gaze_deg", 0.0)
     monkeypatch.setattr(d, "_auto_arm", False)
     monkeypatch.setattr(d, "_auto_arm_pending", False)
-    monkeypatch.setattr(d, "_last_brain", None)
+    monkeypatch.setattr(ARM, "_last_brain", None)
     yield cmd
     d._cancel_nav()
 
@@ -161,7 +165,7 @@ def test_freeze_estop_stop_first(fake, name):
 def test_stow_after_stop_never_waits(fake, monkeypatch):
     def boom(*a):
         raise AssertionError("safety stow must not wait for arrival")
-    monkeypatch.setattr(d, "block_until_arm_arrives", boom)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", boom)
     assert d.dispatch_intent({"intent": "stop", "params": {}}) is True
 
 
@@ -179,8 +183,8 @@ def test_walk_from_joints_sends_no_arm_command(fake):
 
 
 def test_walk_recentres_a_gaze_yaw_without_waiting(fake, monkeypatch):
-    monkeypatch.setattr(d, "_gaze_deg", 30.0)
-    monkeypatch.setattr(d, "block_until_arm_arrives",
+    monkeypatch.setattr(ARM, "_gaze_deg", 30.0)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives",
                         lambda *a: pytest.fail("re-centre must not wait"))
     d.dispatch_intent({"intent": "turn", "params": {"direction": "left"}})
     k = fake.kinds()
@@ -218,7 +222,7 @@ def test_stop_mid_walk_stows_and_never_restores(fake):
 
 
 def test_tuck_failure_refuses_to_move(fake, monkeypatch, stow_walk):
-    monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: False)
     said = []
     assert d.dispatch_intent({"intent": "walk", "params": {}}, speak=said.append) is False
     assert "mobility" not in fake.kinds()
@@ -226,7 +230,7 @@ def test_tuck_failure_refuses_to_move(fake, monkeypatch, stow_walk):
 
 
 def test_walk_with_stowed_arm_moves_arm_never(fake, monkeypatch):
-    monkeypatch.setattr(d, "_arm_pose", "stowed")
+    monkeypatch.setattr(ARM, "_pose", "stowed")
     d.dispatch_intent({"intent": "strafe", "params": {"direction": "left", "distance": 0.5}})
     _join_nav()
     assert fake.kinds() == ["mobility"]
@@ -234,7 +238,7 @@ def test_walk_with_stowed_arm_moves_arm_never(fake, monkeypatch):
 
 def test_enable_mouth_refused_while_walking(fake, monkeypatch):
     fake.at_goal = False
-    monkeypatch.setattr(d, "_arm_pose", "stowed")
+    monkeypatch.setattr(ARM, "_pose", "stowed")
     d.dispatch_intent({"intent": "walk", "params": {}})
     assert d.is_navigating()
     import src.voice_control.spot_tts as tts_mod
@@ -311,7 +315,7 @@ def test_visual_nav_velocity_clamped(monkeypatch):
 
 
 def test_stop_when_stowed_sends_only_stop(fake, monkeypatch):
-    monkeypatch.setattr(d, "_arm_pose", "stowed")
+    monkeypatch.setattr(ARM, "_pose", "stowed")
     d.dispatch_intent({"intent": "stop", "params": {}})
     assert fake.kinds() == ["stop", "stop"]
 
@@ -324,17 +328,17 @@ def test_sit_stows_before_sitting(fake):
 
 
 def test_stop_without_session_never_connects(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
-    monkeypatch.setattr(d, "_close_mouth", lambda: None)
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(ARM, "close_mouth", lambda: None)
     for n in ("stop", "freeze", "estop"):
         assert d.dispatch_intent({"intent": n, "params": {}}) is False
 
 
 def test_unfinished_trajectory_stops_and_keeps_tuck(fake, monkeypatch):
     fake.at_goal = False
-    monkeypatch.setattr(d, "_arm_pose", "walk")
-    monkeypatch.setattr(d, "_pose_before_walk", "talk")
+    monkeypatch.setattr(ARM, "_pose", "walk")
+    monkeypatch.setattr(ARM, "_pose_before_walk", "talk")
     d._start_restore_watch(fake, 1, time.time() + 0.4)
     _join_nav()
     assert fake.kinds() == ["stop"]       # stopped, no restore
@@ -360,7 +364,7 @@ def test_stop_during_tuck_aborts_walk(fake, monkeypatch, stow_walk):
             calls["n"] += 1
             d.dispatch_intent({"intent": "stop", "params": {}})
         return True
-    monkeypatch.setattr(d, "block_until_arm_arrives", arrive_after_stop)
+    monkeypatch.setattr(arm_mod, "block_until_arm_arrives", arrive_after_stop)
     assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
     k = fake.kinds()
     assert "mobility" not in k and "arm_joints" not in k
@@ -386,7 +390,7 @@ def test_mouth_stays_on_while_walking_in_joints(fake, monkeypatch):
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
-    monkeypatch.setattr(d, "_mouth_resume", False)
+    monkeypatch.setattr(ARM, "_mouth_resume", False)
     fake.at_goal = False
     d.dispatch_intent({"intent": "walk", "params": {}})
     assert d.is_navigating() and m.log == [] and m.enabled   # mouth keeps talking
@@ -400,8 +404,8 @@ def test_stop_mid_joints_walk_stows_mouth_off_and_arms_resume(fake, monkeypatch)
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
-    monkeypatch.setattr(d, "_close_mouth", m.disable)
-    monkeypatch.setattr(d, "_talk_resume", False)
+    monkeypatch.setattr(ARM, "close_mouth", m.disable)
+    monkeypatch.setattr(ARM, "_talk_resume", False)
     fake.at_goal = False
     d.dispatch_intent({"intent": "walk", "params": {}})
     d.dispatch_intent({"intent": "stop", "params": {}})
@@ -430,7 +434,7 @@ def test_mouth_latched_off_while_walking_and_restored(fake, monkeypatch, stow_wa
     m = _Mouth()
     import src.voice_control.spot_tts as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
-    monkeypatch.setattr(d, "_mouth_resume", False)
+    monkeypatch.setattr(ARM, "_mouth_resume", False)
     fake.at_goal = False
     d.dispatch_intent({"intent": "walk", "params": {}})
     assert m.log == ["off"] and not m.enabled   # claw still while walking
@@ -457,15 +461,15 @@ def test_freeze_never_stands_a_sitting_robot(fake):
 
 
 def test_freeze_holds_stand_when_standing(fake, monkeypatch):
-    monkeypatch.setattr(d, "_is_standing", lambda s: True)
+    monkeypatch.setattr(state_mod, "is_standing", lambda s: True)
     d.dispatch_intent({"intent": "freeze", "params": {}})
     assert fake.kinds()[:3] == ["stop", "stop", "mobility"]
 
 
 @pytest.mark.parametrize("name", ["sit", "power_off", "stow"])
 def test_no_session_shutdown_intents_never_connect(monkeypatch, name):
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     assert d.dispatch_intent({"intent": name, "params": {}}) is False
 
 
@@ -489,15 +493,15 @@ def test_stand_fault_recovery_never_self_rights(fake):
 
 # ---------------------------------------------------------------- round 2
 def test_safety_and_aborting_intents_use_held_session(fake, monkeypatch):
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     for n in ("stop", "freeze", "estop", "sit", "stow"):
         d.dispatch_intent({"intent": n, "params": {}})
 
 
 def test_closing_refuses_bring_up(monkeypatch):
-    monkeypatch.setattr(d, "_spot_session", None)
-    monkeypatch.setattr(d, "_closing", True)
-    monkeypatch.setattr(d, "spot_session", lambda **k: pytest.fail("no bring-up"))
+    monkeypatch.setattr(CONNECTION, "_session", None)
+    monkeypatch.setattr(CONNECTION, "_closing", True)
+    monkeypatch.setattr(connection_mod, "spot_session", lambda **k: pytest.fail("no bring-up"))
     with pytest.raises(RuntimeError):
         d.ensure_spot_session()
     assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
@@ -507,7 +511,7 @@ def test_close_session_sets_closing_and_aborts(fake, monkeypatch):
     import bosdyn.client.robot_command as rc
     monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
     monkeypatch.setattr(d.time, "sleep", lambda s: None)
-    monkeypatch.setattr(d, "_closing", False)
+    monkeypatch.setattr(CONNECTION, "_closing", False)
 
     class Ctx:
         def __exit__(self, *a):
@@ -517,7 +521,7 @@ def test_close_session_sets_closing_and_aborts(fake, monkeypatch):
         def power_off(self, **k):
             pass
     d._spot_session["robot"] = R()
-    monkeypatch.setattr(d, "_session_context", Ctx())
+    monkeypatch.setattr(CONNECTION, "_context", Ctx())
     g = d._safety_gen
     d.close_spot_session()
     assert d._closing is True and d._safety_gen == g + 1
