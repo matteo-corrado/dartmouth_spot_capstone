@@ -143,6 +143,39 @@ NEW = [
 ]
 
 
+# --- "simple" set: plain beeps, told apart by rhythm + pitch direction ---
+# Based on earcon guidelines (Brewster, Glasgow; Google Assistant earcon guidance):
+# different note counts, contour up = "your turn" / down = "done", first note
+# accented, last note slightly longer, a few harmonics so beeps don't sound thin,
+# notes >= 80 ms (>= 30 ms only for 1-2 note cues), 0.1 s gaps.
+def beep(f, dur, vol=0.22):
+    """Plain beep: fundamental + soft 2nd/3rd harmonic, 5 ms attack, gentle decay."""
+    t = _t(dur)
+    tone = np.sin(2 * np.pi * f * t) + 0.25 * np.sin(4 * np.pi * f * t) + 0.12 * np.sin(6 * np.pi * f * t)
+    env = np.exp(-t * 3.0)
+    return _fade(vol * env * tone / 1.37, 5)
+
+
+SIMPLE = [
+    ("simple_ready", "Power-on: three rising notes, slow (C5 E5 G5)",
+     lambda: seq(beep(523, .12, .26), gap(.06), beep(659, .12), gap(.06), beep(784, .22))),
+    ("simple_listen", "Mic open, your turn: two quick RISING notes, high (A5 -> E6)",
+     lambda: seq(beep(880, .09, .26), gap(.04), beep(1319, .14))),
+    ("simple_think", "Heard you, thinking: one short LOW note (A4)",
+     lambda: beep(440, .12, .2)),
+    ("simple_ok", "Command accepted: two identical quick notes (beep-beep, C6 C6)",
+     lambda: seq(beep(1047, .07, .24), gap(.06), beep(1047, .1))),
+    ("simple_chain", "Next chained action: one very short high tick (G6)",
+     lambda: beep(1568, .04, .16)),
+    ("simple_error", "Something failed: two slow FALLING notes, low (E4 -> C4)",
+     lambda: seq(beep(330, .16, .26), gap(.08), beep(262, .28))),
+    ("simple_released", "Conversation over: two FALLING notes, mid (E6 -> A5) = mirror of mic-open",
+     lambda: seq(beep(1319, .09, .24), gap(.04), beep(880, .16))),
+    ("simple_speak", "About to speak: (proposed: no sound - the blue ring and the voice are the cue)",
+     lambda: gap(.05)),
+]
+
+
 def play(player, samples):
     """Play through the pipeline's own AudioPlayer (same stream, resampling and device)."""
     lead = np.zeros(int(LEAD_S * SAMPLE_RATE), dtype=np.float32)
@@ -153,7 +186,7 @@ def play(player, samples):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--only", help="play one chime by name (e.g. listen_cue, new_listen_A)")
-    ap.add_argument("--set", choices=["current", "new", "both"], default="current",
+    ap.add_argument("--set", choices=["current", "new", "simple", "both"], default="current",
                     help="current pipeline chimes, the candidate redesign, or both")
     ap.add_argument("--repeat", type=int, default=1, help="times to play each chime")
     ap.add_argument("--volume", type=float, default=1.0, help="master gain, same as the pipeline --volume")
@@ -172,8 +205,11 @@ def main():
     items.append(("listen_cue_louder", "OPTION: listen_cue at 200 ms, vol 0.35 (compare with listen_cue)",
                   listen_cue_louder() * fb.volume))
     new_items = [(n, d, f() * fb.volume) for n, d, f in NEW]
+    simple_items = [(n, d, f() * fb.volume) for n, d, f in SIMPLE]
     if args.only:
-        items = items + new_items
+        items = items + new_items + simple_items
+    elif args.set == "simple":
+        items = simple_items
     elif args.set == "new":
         items = new_items
     elif args.set == "both":
@@ -182,7 +218,7 @@ def main():
         items = [i for i in items if i[0] == args.only]
         if not items:
             sys.exit(f"unknown chime {args.only!r}; choose from: "
-                     + ", ".join([n for n, _ in CHIMES] + ["listen_cue_louder"] + [n for n, _, _ in NEW]))
+                     + ", ".join([n for n, _ in CHIMES] + ["listen_cue_louder"] + [n for n, _, _ in NEW + SIMPLE]))
 
     for name, desc, samples in items:
         if samples is None:
