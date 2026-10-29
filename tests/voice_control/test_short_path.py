@@ -67,7 +67,7 @@ def test_short_utterance_is_by_vad_speech_not_wall_clock():
     ("turn left", False, True),
     ("Yes.", True, True), ("okay", True, True), ("yes", False, False),
     ("what's your name", True, False), ("the", True, False), ("", True, False),
-    ("I like to dance a lot", False, False),
+    ("I like to dance a lot", False, False), ("Thank you.", True, False), ("you", True, False),
 ])
 def test_short_utterance_ok(text, conv, ok):
     assert short_utterance_ok(text, conv) is ok

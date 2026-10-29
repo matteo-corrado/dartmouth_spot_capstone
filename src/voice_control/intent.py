@@ -274,9 +274,8 @@ def parse_intent(text: str):
 # Commands the regex table doesn't cover but the brain handles in one word:
 SHORT_COMMAND_WORDS = frozenset({"dance", "stow", "wave", "bow", "nod", "spin",
                                  "sit", "stand", "stop", "freeze"})
-SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok",
-                                "sure", "hello", "hi", "hey", "thanks", "thank", "you",
-                                "please"})
+# No "thank you"/"you": those are classic ASR hallucinations on noise.
+SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok", "sure"})
 
 
 def short_utterance_ok(text: str, in_conversation: bool = False) -> bool:
