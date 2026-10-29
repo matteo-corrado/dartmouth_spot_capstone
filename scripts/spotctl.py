@@ -10,7 +10,8 @@ Stdlib only.
 
 Names: mute unmute listen release reset hush say persona stop freeze sit
 stand stow status crowd voiceprint   (say/persona need an arg;
-crowd/voiceprint take an optional on|off, no arg flips)
+crowd/voiceprint take an optional on|off, no arg flips;
+`spotctl voiceprint threshold 0.3` sets the voiceprint threshold live, 0.0-0.9)
 """
 from __future__ import annotations
 

@@ -14,7 +14,9 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "tuning.yaml"
 class Tuning:
     mic_channel: int = 1
     min_speech_dbfs: float = -50.0
-    min_snr_db: float = 6.0  # p90-over-floor; replay 2026-10-28: ch1 commands 6.9-13.2, noise 3.7-5.8
+    min_snr_db: float = 8.0  # loudest-150ms-over-floor; replay 2026-10-29 ch1: commands 9.5-15.5, noise 5.8/11.1
+    gate_window_ms: float = 150.0  # gate scores the loudest this-many ms of speech frames (top-N mean)
+    short_utt_s: float = 1.5  # <= this much VAD speech skips the gate -> ASR, commands only (one-word 0.57-1.02 s)
     onset_frames: int = 3
     end_silence_s: float = 1.2
     end_silence_s_short: float = 1.0
@@ -37,7 +39,7 @@ class Tuning:
     ring_max_hz: float = 30.0          # LED ring write cap (RingAnimator + direct writes)
     beam_steering: bool = False
     voiceprint_enabled: bool = False
-    voiceprint_threshold: float = 0.35  # replay 2026-10-28 ch1: midway same 0.53 / other-voice 0.16 medians
+    voiceprint_threshold: float = 0.25  # operator 2026-10-29; replay 2026-10-28 ch1: 0.35 kept only 26% of short follow-ups, 0.25 keeps 68% (FA 17%)
     thinking_filler_s: float = 4.0
     walk_speed_cap: float = 0.5
     dance_clearance_m: float = 1.0  # operator 2026-10-29 (from body centre; ~0.45 m past front/back edge)

@@ -60,9 +60,9 @@ def test_gate_no_speech_frames_fails():
     assert passes_gate(s, -60, -50, 10) is False
 
 
-def test_snr_uses_p90_not_median_so_hangover_frames_do_not_sink_real_speech():
+def test_snr_uses_peak_not_median_so_hangover_frames_do_not_sink_real_speech():
     # A short command: 40% loud speech, 60% VAD hangover at the noise floor.
-    # The median sits near the floor; p90 reflects the actual speech level.
+    # The median sits near the floor; the loudest 150 ms reflects the speech level.
     s = UtteranceStats()
     [s.add(-35, True) for _ in range(8)]
     [s.add(-58, True) for _ in range(12)]

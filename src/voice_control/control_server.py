@@ -70,6 +70,7 @@ _QUEUED_NAMES = ("listen", "release", "reset", "say", "persona", "crowd",
                  "voiceprint")
 _ARG_NAMES = ("say", "persona")
 # Toggles: an optional "on"/"off" arg is forwarded; no arg means flip.
+# voiceprint also takes "threshold <x>" (parsed by client_mic.apply_voiceprint_arg).
 _OPTIONAL_ARG_NAMES = ("crowd", "voiceprint")
 
 COMMANDS: dict[str, Command] = {
