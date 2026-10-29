@@ -205,3 +205,63 @@ def test_disabling_walk_removes_its_rules_and_sets():
     assert not intent_names("locomotion", reg) & {"walk", "strafe", "turn"}
     assert '"\\"walk\\""' not in build_grammar(reg)
     assert intent.parse_intent("walk forward") is not None  # live registry untouched
+
+
+def test_grammar_params_refused_until_wired():
+    """M3: per-action params rules are not wired into `action ::=`."""
+    from src.spot.core.registry import ActionSpec, Feature
+    reg = Registry()
+    reg.add(Feature("p", actions=(ActionSpec("probe", lambda p, c: True, 'probe-params ::= "{}"',
+                                             "- probe: x"),)))
+    with pytest.raises(ValueError, match="grammar_params"):
+        build_grammar(reg)
+
+
+def test_safety_intent_raise_never_reads_registry(monkeypatch):
+    """S2: a raising stop branch does not read the feature registry."""
+    from src.spot.robot import dispatcher
+    import src.spot.robot as _r
+
+    def boom(*a, **k):
+        raise RuntimeError("no robot")
+
+    def no_registry(*a, **k):
+        raise AssertionError("stop path read the registry")
+    monkeypatch.setattr(_r.CONNECTION, "ensure", boom)
+    monkeypatch.setattr(dispatcher, "intent_names", no_registry)
+    said = []
+    for name in ("stop", "freeze", "estop"):
+        assert dispatcher._dispatch_core({"intent": name, "params": {}}, speak=said.append) is False
+    assert said == []
+
+
+def test_brain_drops_non_allowlisted_actions(monkeypatch, tmp_path, capsys):
+    """S3 / R28: an ollama-shaped reply (format:"json", no GBNF) naming walk_to
+    or an unknown action never reaches the dispatcher."""
+    from src.spot.conversation import conversation_log
+
+    class OllamaShaped:
+        name = "ollama"
+
+        def is_available(self):
+            return True
+
+        def chat(self, *a, **k):
+            return ('{"actions": [{"action": "walk_to", "params": {"relative": [9.0, 0.0, 3.1]}},'
+                    ' {"action": "quack"}, {"action": "stand", "params": {}}],'
+                    ' "response": "On my way."}')
+
+    monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
+    monkeypatch.setattr(llm_brain, "_BACKEND", OllamaShaped())
+    assert "walk_to" not in llm_brain._ALLOWED_ACTIONS
+    assert llm_brain._ALLOWED_ACTIONS == llm_brain.allowed_actions(REGISTRY)
+    out = llm_brain.LLMBrain().process("come here", state={})
+    assert [a["intent"] for a in out["actions"]] == ["stand"]
+    printed = capsys.readouterr().out
+    assert "[Brain] dropped non-allowlisted action 'walk_to'" in printed
+    assert "[Brain] dropped non-allowlisted action 'quack'" in printed
+
+
+def test_allowlist_is_the_grammar_action_names():
+    line = next(l for l in build_grammar(REGISTRY).splitlines() if l.startswith("action-name ::="))
+    assert llm_brain.allowed_actions(REGISTRY) == set(re.findall(r'\\"(\w+)\\"', line))

@@ -8,7 +8,7 @@ def _legacy_flags(name: str) -> dict:
     """Membership in the hand-written intent sets each flag mirrors (spec 6.3),
     as captured on base (the live sets are generated since Task 16)."""
     import tests.spot.golden.legacy_literals as dispatcher
-    intent = cm = dispatcher
+    intent = cm = dispatcher  # aliases keep the assertion lines below byte-identical
     return {
         "locomotion": name in dispatcher.LOCOMOTION_INTENTS,
         "aborting": name in dispatcher.ABORTING_INTENTS,
@@ -32,6 +32,7 @@ def test_flags_match_legacy_sets():
 
 def test_prompt_line_verbatim_from_llm_brain():
     import tests.spot.golden.legacy_literals as intent
+    # shim: llm_brain no longer has _EMOTE_ACTION_LINE; keeps the assertion byte-identical
     llm_brain = SimpleNamespace(_EMOTE_ACTION_LINE=intent.EMOTE_ACTION_LINE)
     (spec,) = FEATURE.actions
     assert spec.prompt_line == llm_brain._EMOTE_ACTION_LINE

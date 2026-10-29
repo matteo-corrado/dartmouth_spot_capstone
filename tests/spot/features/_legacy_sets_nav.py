@@ -6,6 +6,7 @@ import re
 
 import tests.spot.golden.legacy_literals as golden
 
+# aliases keep the legacy_flags() assertion lines byte-identical to base
 cm = dispatcher = intent = golden
 GBNF = "tests/spot/golden/spot_action.gbnf"
 SYSTEM_PROMPT = (pathlib.Path(__file__).resolve().parents[1] / "golden" / "prompt_actions.txt").read_text()

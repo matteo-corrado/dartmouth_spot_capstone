@@ -176,11 +176,11 @@ def _registry():
     return _features.REGISTRY
 
 
-def _emote_prompt_parts(grammar_text: str, section: Optional[str]) -> tuple:
+def _emote_prompt_parts(grammar_text: str, section: Optional[str], registry=None) -> tuple:
     """(action bullet, EMOTES section) — both empty unless the grammar
     mentions "emote", the emote feature is registered and a non-empty
-    prompt_section() is available."""
-    spec = _registry().action("emote")
+    prompt_section() is available. The one emote gate (build_system_prompt)."""
+    spec = (registry if registry is not None else _registry()).action("emote")
     if "emote" not in grammar_text or spec is None or not section or not section.strip():
         return "", ""
     return spec.prompt_line, section.strip()
@@ -198,19 +198,27 @@ def build_system_prompt(registry, emote_section: Optional[str]) -> tuple:
     """(grammar text, SYSTEM_PROMPT before the knowledge packs) for `registry`."""
     from src.spot.brain.grammar.generate import build_grammar, build_prompt_actions
     grammar = build_grammar(registry)
-    has_emote = ("emote" in grammar and registry.action("emote") is not None
-                 and bool(emote_section and emote_section.strip()))
-    actions = build_prompt_actions(registry, exclude=() if has_emote else {"emote"})
+    bullet, emotes_text = _emote_prompt_parts(grammar, emote_section, registry)
+    actions = build_prompt_actions(registry, exclude=() if bullet else {"emote"})
     prompt = _SYSTEM_PROMPT_TEMPLATE.replace("{{ACTIONS}}", actions)
-    if has_emote:
+    if emotes_text:
         # prompt_section() already starts with its own "EMOTES:" header.
-        prompt = prompt + "\n\n" + emote_section.strip()
+        prompt = prompt + "\n\n" + emotes_text
     return grammar, prompt
+
+
+def allowed_actions(registry) -> frozenset:
+    """The action names the generated grammar's action-name rule allows."""
+    from src.spot.brain.grammar.generate import llm_actions
+    return frozenset(a.name for a in llm_actions(registry, "grammar_rank"))
 
 
 _EMOTE_SECTION = _load_emote_section()
 _GRAMMAR_TEXT, SYSTEM_PROMPT = build_system_prompt(_registry(), _EMOTE_SECTION)
-_EMOTE_ACTION, _EMOTES_TEXT = _emote_prompt_parts(_GRAMMAR_TEXT, _EMOTE_SECTION)
+# R28: post-parse allowlist. A no-op on llamacpp (the GBNF already constrains
+# the output); on ollama only format:"json" is sent, so e.g. walk_to (regex-only,
+# unclamped relative motion) could otherwise reach the dispatcher.
+_ALLOWED_ACTIONS = allowed_actions(_registry())
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +532,13 @@ class LLMBrain:
             for a in grammar_actions
             if isinstance(a, dict) and a.get("action")
         ]
+        kept = []
+        for a in actions:
+            if a["intent"] in _ALLOWED_ACTIONS:
+                kept.append(a)
+            else:
+                print(f"[Brain] dropped non-allowlisted action '{a['intent']}'")
+        actions = kept
 
         # For describe actions the LLM "response" is often hallucinated
         # (model can't see the camera until the dispatcher runs the VLM

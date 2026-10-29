@@ -502,7 +502,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
     except Exception as e:
         print(f"[Spot] Error executing intent '{name}': {e}")
-        if name in intent_names("info"):
+        # the stop path never reads the registry (no safety intent is info)
+        if name not in SAFETY_INTENTS and name in intent_names("info"):
             _say(speak, "I can't reach my sensors right now.")
         import traceback
         traceback.print_exc()

@@ -52,6 +52,22 @@ class Feature:
     requires: tuple[str, ...] = ()
 
 
+def _check_flags(feature: str, a: ActionSpec) -> None:
+    """Safety rules for a feature action (Task 16 safety review S1)."""
+    from src.spot.core.core_intents import CORE_INTENTS  # lazy: core_intents imports this module
+    where = f"feature {feature!r} action {a.name!r}"
+    if a.name in CORE_INTENTS:
+        raise ValueError(f"{where}: name is a core intent (core intents are declared only in core_intents)")
+    if a.aborting:
+        raise ValueError(f"{where}: aborting=True is not allowed (ABORTING_INTENTS is a core constant)")
+    if a.unlocked and not a.motion_free:
+        raise ValueError(f"{where}: unlocked=True requires motion_free=True "
+                         "(an action that skips the dispatch lock must not move the robot)")
+    if a.locomotion and (a.unlocked or a.motion_free or a.state_only):
+        raise ValueError(f"{where}: locomotion=True cannot be combined with "
+                         "unlocked, motion_free or state_only")
+
+
 class Registry:
     def __init__(self) -> None:
         self.features: list[Feature] = []
@@ -61,6 +77,7 @@ class Registry:
         for a in feature.actions:
             if a.name in self._actions:
                 raise ValueError(f"duplicate action: {a.name}")
+            _check_flags(feature.name, a)
         for a in feature.actions:
             self._actions[a.name] = a
         self.features.append(feature)

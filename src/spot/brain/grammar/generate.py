@@ -11,7 +11,7 @@ from pathlib import Path
 from src.spot.core.core_intents import all_actions
 
 TEMPLATE_PATH = Path(__file__).with_name("spot_action.gbnf.tmpl")
-# One generic params rule pair; per-action grammar_params rules follow it.
+# One generic params rule pair (grammar_params is rejected: see build_grammar).
 _GENERIC_PARAMS = ('params ::= "{" ws ( param ( "," ws param )* )? ws "}"\n'
                    'param ::= string ":" ws value')
 
@@ -24,9 +24,16 @@ def llm_actions(registry, key: str, exclude=frozenset()):
 
 def build_grammar(registry) -> str:
     acts = llm_actions(registry, "grammar_rank")
+    # Per-action params rules are not wired into `action ::=` (which uses the
+    # generic `params`); none exist today, so refuse one rather than emit a
+    # rule the grammar never reaches.
+    custom = [a.name for a in all_actions(registry) if a.grammar_params is not None]
+    if custom:
+        raise ValueError(f"grammar_params is not supported yet (action-specific params "
+                         f"rules are not wired into `action ::=`): {custom}")
     # one line: llama.cpp's GBNF parser fails silently on multi-line `|`
     names = "action-name ::= " + " | ".join(f'"\\"{a.name}\\""' for a in acts)
-    params = "\n".join([_GENERIC_PARAMS] + [a.grammar_params for a in acts if a.grammar_params])
+    params = _GENERIC_PARAMS
     text = TEMPLATE_PATH.read_text(encoding="utf-8")
     return text.replace("{{ACTION_NAMES}}", names).replace("{{PARAMS}}", params)
 
