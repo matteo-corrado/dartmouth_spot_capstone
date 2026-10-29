@@ -909,6 +909,8 @@ def voiceprint_calibration(root: Path, conds, ch: int, model_path: Path) -> dict
 
     same = [cosine(en["v"], u["v"]) for en in enrols for u in utts
             if u["cond"] == en["cond"] and u["clip"] != en["clip"]]
+    same_quick = [cosine(en["v"], u["v"]) for en in enrols for u in utts
+                  if u["cond"] == en["cond"] and u["clip"].startswith("quick_reply")]
     other = [cosine(en["v"], o["v"]) for en in enrols for o in others]
     unk = [cosine(en["v"], o["v"]) for en in enrols for o in unknown]
     noi = [cosine(en["v"], o["v"]) for en in enrols for o in noise]
@@ -918,22 +920,25 @@ def voiceprint_calibration(root: Path, conds, ch: int, model_path: Path) -> dict
     res = dict(channel=ch, conds=list(conds), n_enrol=len(enrols), n_utts=len(utts),
                n_other_segs=len(others), n_unknown_segs=len(unknown), n_noise_segs=len(noise),
                other_spans={o["clip"]: o["span"] for o in others}, other_by_seg=other_by_seg,
-               same=_summ(same), other=_summ(other), unknown=_summ(unk), noise=_summ(noi))
+               same=_summ(same), same_quick=_summ(same_quick), other=_summ(other), unknown=_summ(unk), noise=_summ(noi))
     if same and other:
         thr = threshold_midway(same, other)
         ta, fa = accept_rates(same, other, thr)
         res.update(threshold=round(thr, 3), true_accept=round(ta, 3), false_accept=round(fa, 3),
                    unknown_accept=None if not unk else round(accept_rates(unk, unk, thr)[0], 3),
                    noise_accept=None if not noi else round(accept_rates(noi, noi, thr)[0], 3))
+        res["quick_accept"] = None if not same_quick else round(accept_rates(same_quick, [], thr)[0], 3)
         res["sweep"] = [dict(thr=t, ta=round(accept_rates(same, other, t)[0], 3),
-                             fa=round(accept_rates(same, other, t)[1], 3))
-                        for t in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7)]
+                             fa=round(accept_rates(same, other, t)[1], 3),
+                             ta_quick=(None if not same_quick
+                                       else round(accept_rates(same_quick, [], t)[0], 3)))
+                        for t in (0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6)]
     return res
 
 
 def table_voiceprint(r) -> str:
     rows = ["| set | n pairs | min | p10 | median | p90 | max |", "|---|---|---|---|---|---|---|"]
-    for k in ("same", "other", "unknown", "noise"):
+    for k in ("same", "same_quick", "other", "unknown", "noise"):
         d = r[k]
         if d.get("n"):
             rows.append(f"| {k} | {d['n']} | {d['min']} | {d['p10']} | {d['median']} | {d['p90']} | {d['max']} |")
@@ -944,9 +949,10 @@ def table_voiceprint(r) -> str:
     out += f"\nother-voice median sim per segment: {r['other_by_seg']}"
     if "threshold" in r:
         out += (f"\nthreshold (midway between medians) = {r['threshold']}: true-accept "
-                f"{r['true_accept']:.0%}, false-accept {r['false_accept']:.0%}, "
+                f"{r['true_accept']:.0%} (quick replies {r['quick_accept']}), false-accept {r['false_accept']:.0%}, "
                 f"unknown-talker accept {r['unknown_accept']}, noise accept {r['noise_accept']}")
-        out += "\nsweep: " + ", ".join(f"{d['thr']}: TA {d['ta']:.0%} FA {d['fa']:.0%}" for d in r["sweep"])
+        out += "\nsweep: " + ", ".join(f"{d['thr']}: TA {d['ta']:.0%} (quick {d['ta_quick']}) "
+                                       f"FA {d['fa']:.0%}" for d in r["sweep"])
     return out
 
 

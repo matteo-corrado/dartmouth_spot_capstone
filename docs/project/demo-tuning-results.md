@@ -156,7 +156,8 @@ LISTENING from t = 0. The recorded chime is masked with sidecar timestamps plus
 **First word captured on 10/10** with pre-roll 25 (0.39-0.52 s of margin). The same
 fan ch0 clips with the old pre-roll 10 gave margin 0.04 s on clip 1 and **missed the
 first word on clips 2 and 3**, so this validates the Gate 2 fix. Every one of these
-utterances is still dropped by the SNR gate at 10 dB (section 1). The chime tail can
+utterances was dropped by the old median SNR gate at 10 dB (section 1); under the
+current p90 gate (quick replies 12-15 dB p90) they pass. The chime tail can
 sit inside the captured audio sent to ASR (utterance t0 0.63 s is before chime end
 0.70 s). Its effect on ASR is untested.
 
@@ -261,6 +262,7 @@ Trials:
 | ch1 (mic_channel) | n pairs | min | p10 | median | p90 | max |
 |---|---|---|---|---|---|---|
 | same speaker | 595 | 0.14 | 0.34 | **0.53** | 0.66 | 0.82 |
+| ...of which quick replies (~0.9 s) | 77 | 0.14 | 0.19 | **0.30** | 0.38 | 0.46 |
 | other voice (podcast) | 54 | -0.02 | 0.07 | **0.16** | 0.26 | 0.37 |
 | unknown talker (fan bg) | 162 | 0.01 | 0.10 | 0.20 | 0.32 | 0.44 |
 | noise only (babble bg) | 270 | -0.12 | -0.02 | 0.08 | 0.17 | 0.27 |
@@ -273,11 +275,14 @@ Trials:
 - **Threshold:** midway between the medians, **0.347, rounded to 0.35**.
   - True accept is **89.7 %** and false accept is **3.7 %**.
   - Unknown talker accept is 3 % and noise accept is 0 %.
-- **Sweep (TA / FA):**
+- **Short follow-ups score low.** Quick replies ("what's your name", about 0.9 s of
+  speech) are what real follow-ups look like, and at 0.35 only **26 %** of them are
+  accepted. Short audio gives noisier embeddings.
+- **Sweep (all same-speaker TA / quick-reply TA / FA, %):**
 
-  | threshold | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 |
-  |---|---|---|---|---|---|
-  | TA / FA | 98 / 35 | 93 / 7 | 84 / 0 | 62 / 0 | 24 / 0 |
+  | threshold | 0.2 | 0.25 | 0.3 | 0.35 | 0.4 | 0.5 |
+  |---|---|---|---|---|---|---|
+  | TA / quick TA / FA | 98 / 87 / 35 | 96 / 68 / 17 | 93 / 49 / 7 | 90 / 26 / 4 | 84 / 8 / 0 | 62 / 0 / 0 |
 - **ch0** (for reference): same 0.55 median against other 0.09, which is 1 segment. The
   midpoint is 0.32 (TA 91 %, FA 0 %).
 - **Embedding cost on the Orin (CUDA EP):**
@@ -287,16 +292,18 @@ Trials:
 **Decision.**
 - `voiceprint_threshold: 0.35` is set in `tuning.py` and `config/tuning.yaml`.
 - `voiceprint_enabled` stays **false**: true accept is 89.7 %, just under the 90 % bar,
-  and false accept rests on n = 2 other-voice segments. When enabled, a voiceprint
-  rejection is *added* to the direction check (`accept_combined` needs both), so roughly
-  1 in 10 genuine follow-ups would be dropped.
+  false accept rests on n = 2 other-voice segments, and short follow-ups pass only 26 %
+  of the time at 0.35. When enabled, a voiceprint rejection is *added* to the direction
+  check (`accept_combined` needs both), so most short follow-ups ("yes", "what's your
+  name") would be dropped.
 - **Try it live:**
   1. Run `spotctl voiceprint on`.
   2. Watch the `[Voice] sim=... thr=0.35` line printed for every utterance. The score is
      logged even while gating is off.
   3. Check `spotctl status`: `voiceprint`, `voiceprint_enrolled`, `voiceprint_last_sim`.
-  4. If genuine follow-ups score under 0.35, lower the threshold to 0.30 (TA 93 % /
-     FA 7 % in replay) or turn the voiceprint off.
+  4. Expect short replies to score around 0.2-0.4. If gating is wanted live, use about
+     **0.25** (quick-reply TA 68 %, FA 17 % in replay) by setting `voiceprint_threshold`
+     in `config/tuning.yaml` and restarting. Otherwise leave it off.
 - **Enrolment rules (memory only, never written to disk):**
   - The wake audio and the first accepted utterance are averaged.
   - The enrolment is cleared on release, timeout, crowd mode, `spotctl listen`,

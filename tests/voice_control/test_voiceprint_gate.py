@@ -52,7 +52,8 @@ def test_enrol_and_clear_lifecycle():
     g.decide(A, None, True, 0.5)
     assert np.array_equal(g.enrol, first_enrol)                 # later utterances don't re-enrol
     g.clear()                                                   # lock release
-    assert not g.enrolled and g.wake_emb is None and g.last_sim is None
+    assert not g.enrolled and g.wake_emb is None
+    assert g.last_sim is not None                               # score survives for spotctl status
 
 
 def test_takeover_wake_restarts_enrolment():

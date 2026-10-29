@@ -132,9 +132,10 @@ class VoiceprintGate:
         return v / n
 
     def clear(self):
+        """Forget the voiceprint. last_sim (a score, not a voiceprint) is kept
+        for `spotctl status`."""
         self.wake_emb = None
         self.enrol = None
-        self.last_sim = None
 
     def set_wake(self, pcm16):
         """Wake fired: start a fresh enrolment from the wake audio."""
