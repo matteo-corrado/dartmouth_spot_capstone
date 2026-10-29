@@ -6,7 +6,7 @@ from src.voice_control.tuning import load_tuning
 
 def test_defaults_when_file_missing(tmp_path):
     t = load_tuning(tmp_path / "nope.yaml")
-    assert t.lock_window_deg == 35.0 and t.mic_channel == 0 and t.lock_timeout_s == 20.0
+    assert t.lock_window_deg == 35.0 and t.mic_channel == 1 and t.lock_timeout_s == 20.0
 
 
 def test_yaml_overrides(tmp_path):

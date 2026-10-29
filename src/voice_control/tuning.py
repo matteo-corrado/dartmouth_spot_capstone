@@ -12,12 +12,12 @@ DEFAULT_PATH = Path(__file__).resolve().parents[2] / "config" / "tuning.yaml"
 
 @dataclass(frozen=True)
 class Tuning:
-    mic_channel: int = 0
+    mic_channel: int = 1
     min_speech_dbfs: float = -50.0
-    min_snr_db: float = 10.0
+    min_snr_db: float = 2.0
     onset_frames: int = 3
-    end_silence_s: float = 1.5
-    end_silence_s_short: float = 1.2
+    end_silence_s: float = 1.2
+    end_silence_s_short: float = 1.0
     max_utterance_s: float = 20.0
     floor_window_s: float = 5.0
     floor_percentile: float = 10.0
