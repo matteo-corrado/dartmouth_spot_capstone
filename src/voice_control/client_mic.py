@@ -100,6 +100,7 @@ from src.voice_control.audio_frontend import (
     frame_dbfs, FloorTracker, Endpointer, UtteranceStats, passes_gate)
 from src.voice_control.speaker_lock import (
     SpeakerLock, circular_median_deg, mic_to_body_deg)
+from src.voice_control.speaker_embed import VoiceprintGate, warm_up_async
 
 _tuning = get_tuning()
 from src.voice_control.voice_state import VoiceState
@@ -161,6 +162,7 @@ TRAILING_KEEP_FRAMES = 10        # silence kept after the last speech frame for 
 NOISE_CALIBRATION_SECONDS = 2    # Seconds to measure ambient noise
 NAV_SPEECH_DB_BOOST = 6.0        # added to Tuning.min_speech_dbfs while the robot moves
 LOCK_ACCEPT_MAX_SAMPLES = 100    # cap DoA samples per lock.accept (medoid is O(n^2))
+WAKE_AUDIO_S = 1.5               # wake-phrase audio kept for the voiceprint (= DoA lock lookback)
 UTTERANCE_LOG_DIR = project_root / "logs" / "utterances"
 
 
@@ -239,7 +241,8 @@ def _rnd(x):
 
 def build_utterance_record(endpoint, end_silence_s, duration_s, floor_db, stats,
                            lock_mic_deg, utt_mic_deg, accepted, transcript=None,
-                           reached_llm=False, latency_s=None, drop_reason=None) -> dict:
+                           reached_llm=False, latency_s=None, drop_reason=None,
+                           voice_sim=None) -> dict:
     """One metrics line per utterance (logs/utterances/<date>.jsonl)."""
     return {
         "kind": "utterance",
@@ -260,6 +263,7 @@ def build_utterance_record(endpoint, end_silence_s, duration_s, floor_db, stats,
         "transcript": transcript,
         "reached_llm": reached_llm,
         "latency_s": None if latency_s is None else round(latency_s, 2),
+        "voice_sim": voice_sim,  # cosine score only; never the embedding
     }
 
 
@@ -347,7 +351,7 @@ _player_last_busy_at = 0.0  # monotonic timestamp of the most recent speech-busy
 # read/flip them without locks so a slow request can never delay a stop.
 _operator_muted = False
 _crowd_mode = False        # after each reply drop back to WAKE_WORD
-_voiceprint_mode = False   # flag only (voiceprint gating is Wave 3)
+_voiceprint_mode = _tuning.voiceprint_enabled  # spotctl voiceprint on|off toggles live
 # Set by an operator stop/freeze/sit/stand/stow/hush: the chained-action loop
 # in process_utterance checks it before each step and waits on it instead of
 # sleeping, so an operator stop also cancels the rest of a chain.
@@ -365,6 +369,10 @@ _mic = None
 _mic_dead_logged = False
 # Speaker lock, MIC frame degrees (body frame only for status/metrics/gaze).
 _lock = SpeakerLock(_tuning.lock_window_deg, _tuning.lock_timeout_s, _tuning.lock_nudge)
+# Voiceprint (Task 18): memory-only enrolment for the current conversation.
+# The embedder is assigned by a background warm-up thread (None until then:
+# fail open to direction-only). Only the main loop mutates the enrolment.
+_voice = VoiceprintGate()
 
 
 def _mic_usable() -> bool:
@@ -1200,6 +1208,9 @@ def _status_snapshot() -> dict:
     """Plain-attribute read; never blocks."""
     s = dict(_status)
     s.update(muted=_operator_muted, crowd=_crowd_mode, voiceprint=_voiceprint_mode,
+             voiceprint_enrolled=_voice.enrolled,
+             voiceprint_last_sim=(None if _voice.last_sim is None else round(_voice.last_sim, 3)),
+             voiceprint_ready=_voice.embedder is not None,
              safety_kws_ok=bool(_safety_active and _safety_health.get("ok")
                                 and _safety_thread is not None and _safety_thread.is_alive()))
     return s
@@ -1598,6 +1609,12 @@ def main():
         _start_safety_thread(safety_detector)
         print("[SafetyKWS] safety thread running (every state, ignores mute/gate)")
 
+    # Voiceprint model warm-up off the main thread (torch import + ORT/CUDA
+    # init take seconds); utterances fail open to direction-only until ready.
+    warm_up_async(_voice)
+    print(f"[Voice] voiceprint gating {'ON' if _voiceprint_mode else 'OFF'} "
+          f"(threshold {_tuning.voiceprint_threshold:.2f}; spotctl voiceprint on|off)")
+
     # Open audio stream (stereo for XVF3800, mono fallback, retry on busy)
     try:
         stream = _open_input_stream_with_retry(args.device, audio_callback)
@@ -1647,6 +1664,8 @@ def main():
     # (t_monotonic, pcm16, dbfs, is_speech). Sized to cover the onset frames
     # plus Silero's min_speech_duration lag so first words aren't clipped.
     preroll_buffer = deque(maxlen=PREROLL_FRAMES + _tuning.onset_frames)
+    # Last WAKE_AUDIO_S of frames: the wake phrase for the voiceprint enrolment.
+    wake_audio = deque(maxlen=_frames(WAKE_AUDIO_S))
 
     # Front-end (Task 10): VAD on every frame -> Endpointer; FloorTracker
     # seeded ONCE from calibration; SNR gate at utterance end.
@@ -1683,12 +1702,16 @@ def main():
     listening_since = time.monotonic()
     _enter_state(state)
 
-    def _on_wake(t_wake):
+    def _on_wake(t_wake, wake_pcm=None):
         """Wake fired (KWS frame at t_wake, or ASR fallback): lock onto the
         speaker's direction, then enter LISTENING (A10). A wake while already
-        locked re-locks to the new speaker."""
+        locked re-locks to the new speaker and restarts the voiceprint
+        enrolment from this wake's audio."""
         nonlocal state, listening_since
         now_m = time.monotonic()
+        if wake_pcm is None:
+            wake_pcm = b"".join(f for _, f in wake_audio)
+        _voice.set_wake(wake_pcm)  # clears the previous speaker's enrolment
         degs = _mic_speech_degs(t_wake - 1.5, t_wake)
         ang = _lock.lock(degs, now_m)
         if ang is not None:
@@ -1710,6 +1733,7 @@ def main():
         in_utt = False
         utt = []
         _lock.release()
+        _voice.clear()
         _status["locked_deg"] = None
         if _mic_usable():
             _mic.set_fixed_beams(None)
@@ -1744,12 +1768,36 @@ def main():
             utt_log.write(build_utterance_record(**record, accepted=False,
                                                  drop_reason="gate"))
             return
-        if not _lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic(), touch=False):
-            print(f"[Lock] rejected utterance from {record['utt_mic_deg']:.0f} deg "
-                  f"(locked {_lock.angle:.0f} deg)")
+        # Direction verdict: None when unlocked / no readings (signal unavailable).
+        prev_angle = _lock.angle
+        dir_ok = (_lock.accept(degs[-LOCK_ACCEPT_MAX_SAMPLES:], time.monotonic(), touch=False)
+                  if (_lock.locked and degs) else None)
+        utt_frames = trim_trailing(utt, TRAILING_KEEP_FRAMES)
+        accepted, sim = dir_ok is not False, None
+        if state == VoiceState.LISTENING:
+            # Voiceprint on the utterance path (main loop; never the audio
+            # callback or safety thread). OFF: direction-only, sim only logged.
+            accepted, sim = _voice.decide(b"".join(f for _, f, _, _ in utt_frames),
+                                          dir_ok, _voiceprint_mode,
+                                          _tuning.voiceprint_threshold)
+            print(f"[Voice] sim={'n/a' if sim is None else f'{sim:.2f}'} "
+                  f"thr={_tuning.voiceprint_threshold:.2f} "
+                  f"gate={'on' if _voiceprint_mode else 'off'} "
+                  f"enrolled={'yes' if _voice.enrolled else 'no'}")
+        record["voice_sim"] = None if sim is None else round(sim, 3)
+        if not accepted:
+            if dir_ok is False:
+                print(f"[Lock] rejected utterance from {record['utt_mic_deg']:.0f} deg "
+                      f"(locked {_lock.angle:.0f} deg)")
+                reason = "lock"
+            else:
+                _lock.angle = prev_angle  # undo accept()'s nudge toward a rejected voice
+                print(f"[Voice] rejected utterance: sim {sim:.2f} "
+                      f"< {_tuning.voiceprint_threshold:.2f}")
+                reason = "voice"
             _signal_reject()
             utt_log.write(build_utterance_record(**record, accepted=False,
-                                                 drop_reason="lock"))
+                                                 drop_reason=reason))
             return
         _update_ring()  # accept() may have nudged the lock angle
         _status["locked_deg"] = _body(_lock.angle)
@@ -1771,7 +1819,7 @@ def main():
             _enter_state(VoiceState.RESPONDING)
 
         t_proc = time.monotonic()
-        audio = [pcm16_to_float32(f) for _, f, _, _ in trim_trailing(utt, TRAILING_KEEP_FRAMES)]
+        audio = [pcm16_to_float32(f) for _, f, _, _ in utt_frames]
         try:
             result = process_utterance(stub, None, audio, brain,
                                        safety_only=safety_only, tts=tts,
@@ -1802,7 +1850,7 @@ def main():
             state = VoiceState.RESPONDING
         elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
             print(">>> Now listening for commands...")
-            _on_wake(t1)
+            _on_wake(t1, b"".join(f for _, f, _, _ in utt_frames))
             _drain_audio_queue()
         elif use_wake_word:
             # safety-only / ignored utterance: keep prior behavior
@@ -1820,6 +1868,7 @@ def main():
         if name == "listen":
             # Open the conversation with no direction lock (accept all).
             _lock.release()
+            _voice.clear()  # no stale enrolment; the first utterance enrols
             _status["locked_deg"] = None
             if _mic_usable():
                 _mic.set_fixed_beams(None)
@@ -1844,7 +1893,9 @@ def main():
             print(f"[Control] crowd mode {'ON' if _crowd_mode else 'OFF'}")
         elif name == "voiceprint":
             _voiceprint_mode = _toggle(_voiceprint_mode, arg)
-            print(f"[Control] voiceprint flag {'ON' if _voiceprint_mode else 'OFF'}")
+            print(f"[Control] voiceprint gating {'ON' if _voiceprint_mode else 'OFF'} "
+                  f"(enrolled={'yes' if _voice.enrolled else 'no'}, "
+                  f"model={'ready' if _voice.embedder is not None else 'not loaded'})")
 
     try:
         while True:
@@ -1968,6 +2019,7 @@ def main():
                     floor.update(db, is_speech)
                 _status["floor_dbfs"] = round(floor.floor_db, 1)
                 preroll_buffer.append((t_frame, frame, db, is_speech))
+                wake_audio.append((t_frame, frame))
 
                 # Safety KWS runs on its own thread (safety_kws_loop) in every
                 # state; nothing to do here.

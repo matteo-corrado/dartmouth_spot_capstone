@@ -69,6 +69,8 @@ _IMMEDIATE_NAMES = ("hush", "stop", "freeze", "sit", "stand", "stow",
 _QUEUED_NAMES = ("listen", "release", "reset", "say", "persona", "crowd",
                  "voiceprint")
 _ARG_NAMES = ("say", "persona")
+# Toggles: an optional "on"/"off" arg is forwarded; no arg means flip.
+_OPTIONAL_ARG_NAMES = ("crowd", "voiceprint")
 
 COMMANDS: dict[str, Command] = {
     **{n: Command(n, True, n in _ARG_NAMES) for n in _IMMEDIATE_NAMES},
@@ -82,7 +84,8 @@ def parse_command(path: str, body: dict) -> tuple[str, Optional[str]]:
     """Map ``/cmd/<name>`` + JSON body to ``(name, arg)``.
 
     Raises ValueError for an unknown name or a missing/empty arg. An arg sent
-    to a command that takes none is ignored (returned as None).
+    to a command that takes none is ignored (returned as None), except the
+    toggles (crowd, voiceprint), which forward an optional on/off arg.
     """
     prefix = "/cmd/"
     if not path.startswith(prefix):
@@ -91,9 +94,11 @@ def parse_command(path: str, body: dict) -> tuple[str, Optional[str]]:
     cmd = COMMANDS.get(name)
     if cmd is None:
         raise ValueError(f"unknown command: {name!r}")
+    arg = (body or {}).get("arg")
+    if name in _OPTIONAL_ARG_NAMES:
+        return name, (str(arg).strip() if arg is not None and str(arg).strip() else None)
     if not cmd.takes_arg:
         return name, None
-    arg = (body or {}).get("arg")
     if arg is None or not str(arg).strip():
         raise ValueError(f"command {name!r} needs an arg")
     return name, str(arg)

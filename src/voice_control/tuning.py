@@ -37,7 +37,7 @@ class Tuning:
     ring_max_hz: float = 30.0          # LED ring write cap (RingAnimator + direct writes)
     beam_steering: bool = False
     voiceprint_enabled: bool = False
-    voiceprint_threshold: float = 0.5
+    voiceprint_threshold: float = 0.35  # replay 2026-10-28 ch1: midway same 0.53 / other-voice 0.16 medians
     thinking_filler_s: float = 4.0
     walk_speed_cap: float = 0.5
     dance_clearance_m: float = 1.5

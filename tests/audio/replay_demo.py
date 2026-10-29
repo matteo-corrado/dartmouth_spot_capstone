@@ -8,6 +8,7 @@ opens the mic, talks to the robot or writes into models/.
 
     spot-env/bin/python tests/audio/replay_demo.py --channel 0 1 --json out.json
     spot-env/bin/python tests/audio/replay_demo.py --kws-sweep --gain-ab --endpoint-sweep
+    spot-env/bin/python tests/audio/replay_demo.py --voiceprint --channel 1   # voiceprint only
 
 Recordings: <root>/<condition>/{manifest.json, <clip>.wav (stereo int16 16 kHz,
 ch0 processed / ch1 ASR beam), <clip>.doa.csv, <clip>.chime.json}.
@@ -164,6 +165,25 @@ def last_word_heard(expected: str, transcript: str) -> bool:
         return True
     heard = [w.strip("?.,!'").lower() for w in (transcript or "").split()]
     return words[-1] in heard
+
+
+def threshold_midway(same, other):
+    """Voiceprint threshold midway between the same-speaker and other-voice medians."""
+    return (float(np.median(same)) + float(np.median(other))) / 2.0
+
+
+def accept_rates(same, other, thr):
+    """(true-accept, false-accept) fractions at `thr` (sim >= thr accepts)."""
+    ta = sum(x >= thr for x in same) / len(same) if same else None
+    fa = sum(x >= thr for x in other) / len(other) if other else None
+    return ta, fa
+
+
+def pcm_slice(pcm: np.ndarray, t0: float, t1: float) -> bytes:
+    """int16 mono clip [t0, t1) seconds (clamped) -> PCM16 bytes."""
+    a = max(0, int(t0 * SAMPLE_RATE))
+    b = min(len(pcm), int(t1 * SAMPLE_RATE))
+    return pcm[a:b].tobytes() if b > a else b""
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +820,142 @@ def table_endpoint(rows) -> str:
     return "\n".join(out)
 
 
+# ---------------------------------------------------------------------------
+# Voiceprint calibration (Task 18 step 5)
+# ---------------------------------------------------------------------------
+VP_WAKE_FIRE_S = 1.1     # proxy KWS fire time after Silero onset (replay: fires 0.8-1.4 s in)
+VP_WAKE_AUDIO_S = 1.5    # = client_mic.WAKE_AUDIO_S (audio kept before the fire)
+VP_VISITOR_S = 2.6       # "hey spot what is this poster about" length (wake clips, Silero)
+VP_PAD_S = 0.3           # pre-roll / trailing keep around a Silero segment
+VP_MIN_S = 0.8           # shortest segment embedded
+
+
+def _summ(xs):
+    if not xs:
+        return dict(n=0)
+    a = np.asarray(xs)
+    return dict(n=len(xs), min=round(float(a.min()), 3), p10=round(float(np.percentile(a, 10)), 3),
+                median=round(float(np.median(a)), 3), p90=round(float(np.percentile(a, 90)), 3),
+                max=round(float(a.max()), 3))
+
+
+def voiceprint_calibration(root: Path, conds, ch: int, model_path: Path) -> dict:
+    """Same-speaker vs other-voice cosine scores against live-style enrolments.
+
+    Enrolment per wake / pause / overlap clip = L2-normalised mean of
+    embed(wake audio) and embed(first utterance), as client_mic does:
+      wake audio  = the VP_WAKE_AUDIO_S before a proxy fire at onset + VP_WAKE_FIRE_S
+      first utt   = the visitor's Silero speech (+/- VP_PAD_S; overlap clips
+                    capped at onset + VP_VISITOR_S, the podcast keeps going).
+    Trials (the recordings are all one operator):
+      same    = enrolment vs every OTHER clip's first utterance + quick replies (same condition)
+      other   = enrolment vs the podcast tail of each overlap clip (second voice, off to the side)
+      unknown = enrolment vs talking in the fan background take (speaker unknown)
+      noise   = enrolment vs 2 s chunks of the babble background (no Silero speech: noise only)
+    """
+    from src.voice_control.speaker_embed import SpeakerEmbedder, cosine
+    emb = SpeakerEmbedder(model_path)
+
+    def e(b):
+        return emb.embed(b) if len(b) >= int(VP_MIN_S * SAMPLE_RATE) * 2 else None
+
+    enrols, utts, others, unknown, noise = [], [], [], [], []
+    for cond in conds:
+        for c in load_condition(root, cond):
+            pcm = c["audio"][:, ch]
+            dur = len(pcm) / SAMPLE_RATE
+            ref = reference_speech(pcm)
+            kind = c["kind"]
+            if kind in ("wake", "wake_pause", "overlap") and ref:
+                on = ref[0][0]
+                end = ref[-1][1]
+                if kind == "overlap":
+                    end = min(end, on + VP_VISITOR_S)
+                fire = on + VP_WAKE_FIRE_S
+                wv = e(pcm_slice(pcm, fire - VP_WAKE_AUDIO_S, fire))
+                fv = e(pcm_slice(pcm, on - VP_PAD_S, end + VP_PAD_S))
+                if wv is None or fv is None:
+                    continue
+                m = (wv + fv) / 2.0
+                enrols.append(dict(cond=cond, clip=c["clip"], v=m / np.linalg.norm(m)))
+                utts.append(dict(cond=cond, clip=c["clip"], v=fv))
+                if kind == "overlap":
+                    tail = [(max(a, end + VP_PAD_S), b) for a, b in ref if b > end + VP_PAD_S]
+                    tail = [(a, b) for a, b in tail if b - a >= VP_MIN_S]
+                    if tail:
+                        ov = e(pcm_slice(pcm, tail[0][0], tail[-1][1]))
+                        if ov is not None:
+                            others.append(dict(cond=cond, clip=c["clip"], v=ov,
+                                               span=(round(tail[0][0], 2), round(tail[-1][1], 2))))
+            elif kind == "quick_reply":
+                c1 = (c.get("chime") or {}).get("chime_end_s", 0.0)
+                segs = [s for s in ref if s[1] > c1]
+                if segs:
+                    qv = e(pcm_slice(pcm, max(c1, segs[0][0] - VP_PAD_S), segs[-1][1] + VP_PAD_S))
+                    if qv is not None:
+                        utts.append(dict(cond=cond, clip=c["clip"], v=qv))
+            elif kind == "background":
+                if ref:
+                    for a, b in ref:
+                        if b - a >= VP_MIN_S:
+                            v = e(pcm_slice(pcm, a, b))
+                            if v is not None:
+                                unknown.append(dict(cond=cond, clip=f"bg@{a:.0f}s", v=v))
+                else:
+                    for t in np.arange(0.0, min(dur, 40.0) - 2.0, 4.0):
+                        v = e(pcm_slice(pcm, t, t + 2.0))
+                        if v is not None:
+                            noise.append(dict(cond=cond, clip=f"bg@{t:.0f}s", v=v))
+
+    same = [cosine(en["v"], u["v"]) for en in enrols for u in utts
+            if u["cond"] == en["cond"] and u["clip"] != en["clip"]]
+    same_quick = [cosine(en["v"], u["v"]) for en in enrols for u in utts
+                  if u["cond"] == en["cond"] and u["clip"].startswith("quick_reply")]
+    other = [cosine(en["v"], o["v"]) for en in enrols for o in others]
+    unk = [cosine(en["v"], o["v"]) for en in enrols for o in unknown]
+    noi = [cosine(en["v"], o["v"]) for en in enrols for o in noise]
+    # Per-utterance medians (pairs share segments, so these are the honest n).
+    other_by_seg = {o["clip"]: round(float(np.median([cosine(en["v"], o["v"]) for en in enrols])), 3)
+                    for o in others}
+    res = dict(channel=ch, conds=list(conds), n_enrol=len(enrols), n_utts=len(utts),
+               n_other_segs=len(others), n_unknown_segs=len(unknown), n_noise_segs=len(noise),
+               other_spans={o["clip"]: o["span"] for o in others}, other_by_seg=other_by_seg,
+               same=_summ(same), same_quick=_summ(same_quick), other=_summ(other), unknown=_summ(unk), noise=_summ(noi))
+    if same and other:
+        thr = threshold_midway(same, other)
+        ta, fa = accept_rates(same, other, thr)
+        res.update(threshold=round(thr, 3), true_accept=round(ta, 3), false_accept=round(fa, 3),
+                   unknown_accept=None if not unk else round(accept_rates(unk, unk, thr)[0], 3),
+                   noise_accept=None if not noi else round(accept_rates(noi, noi, thr)[0], 3))
+        res["quick_accept"] = None if not same_quick else round(accept_rates(same_quick, [], thr)[0], 3)
+        res["sweep"] = [dict(thr=t, ta=round(accept_rates(same, other, t)[0], 3),
+                             fa=round(accept_rates(same, other, t)[1], 3),
+                             ta_quick=(None if not same_quick
+                                       else round(accept_rates(same_quick, [], t)[0], 3)))
+                        for t in (0.2, 0.25, 0.3, 0.35, 0.4, 0.5, 0.6)]
+    return res
+
+
+def table_voiceprint(r) -> str:
+    rows = ["| set | n pairs | min | p10 | median | p90 | max |", "|---|---|---|---|---|---|---|"]
+    for k in ("same", "same_quick", "other", "unknown", "noise"):
+        d = r[k]
+        if d.get("n"):
+            rows.append(f"| {k} | {d['n']} | {d['min']} | {d['p10']} | {d['median']} | {d['p90']} | {d['max']} |")
+    out = "\n".join(rows)
+    out += (f"\n\nch{r['channel']}: {r['n_enrol']} enrolments, {r['n_utts']} same-speaker utterances, "
+            f"{r['n_other_segs']} other-voice segments {r['other_spans']}, "
+            f"{r['n_unknown_segs']} unknown-talker segments, {r['n_noise_segs']} noise chunks")
+    out += f"\nother-voice median sim per segment: {r['other_by_seg']}"
+    if "threshold" in r:
+        out += (f"\nthreshold (midway between medians) = {r['threshold']}: true-accept "
+                f"{r['true_accept']:.0%} (quick replies {r['quick_accept']}), false-accept {r['false_accept']:.0%}, "
+                f"unknown-talker accept {r['unknown_accept']}, noise accept {r['noise_accept']}")
+        out += "\nsweep: " + ", ".join(f"{d['thr']}: TA {d['ta']:.0%} (quick {d['ta_quick']}) "
+                                       f"FA {d['fa']:.0%}" for d in r["sweep"])
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--root", default=str(DEFAULT_ROOT))
@@ -813,6 +969,10 @@ def main(argv=None):
     ap.add_argument("--endpoint-sweep", action="store_true", help="min_snr_db x end_silence_s sweep")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1))
     ap.add_argument("--json", default=None, help="save all results here")
+    ap.add_argument("--voiceprint", action="store_true",
+                    help="voiceprint calibration only (same-speaker vs other-voice similarity)")
+    ap.add_argument("--speaker-model", default=str(MAIN_CHECKOUT / "models" / "speaker"
+                                                   / "voxceleb_resnet34_LM.onnx"))
     a = ap.parse_args(argv)
 
     root = Path(a.root)
@@ -820,6 +980,18 @@ def main(argv=None):
     base = load_tuning(REPO / "config" / "tuning.yaml")
     extra = dict(asr=a.asr, preroll=a.preroll_frames, chimes=True)
     results = {"tuning": dataclasses.asdict(base), "preroll_frames": a.preroll_frames}
+
+    if a.voiceprint:
+        results["voiceprint"] = []
+        for ch in a.channel:
+            r = voiceprint_calibration(root, conds, ch, Path(a.speaker_model))
+            results["voiceprint"].append(r)
+            print(f"## Voiceprint calibration ch{ch} ({', '.join(conds)})\n")
+            print(table_voiceprint(r), "\n")
+        if a.json:
+            Path(a.json).write_text(json.dumps(results, indent=1, default=str))
+            print(f"saved {a.json}")
+        return
 
     main_jobs = [("main", str(root), c, ch, {}, extra) for c in conds for ch in a.channel]
     results["main"] = pool_map(main_jobs, a.jobs)

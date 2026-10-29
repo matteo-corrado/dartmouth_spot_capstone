@@ -64,3 +64,19 @@ def test_split_frames_and_pad():
     pad = R.pad_from_lead(np.ones(16000, dtype=np.int16), lead_s=0.1, pad_s=0.5)
     assert len(pad) == 8000 and pad.dtype == np.int16
     assert R.frames_of(1.2) == 40
+
+
+def test_voiceprint_threshold_and_rates():
+    same, other = [0.4, 0.5, 0.6], [0.1, 0.2, 0.3]
+    assert R.threshold_midway(same, other) == 0.35
+    assert R.accept_rates(same, other, 0.35) == (1.0, 0.0)
+    ta, fa = R.accept_rates(same, other, 0.5)
+    assert ta == 2 / 3 and fa == 0.0
+    assert R.accept_rates([], [], 0.3) == (None, None)
+
+
+def test_pcm_slice_clamps():
+    pcm = np.arange(32000, dtype=np.int16)
+    b = R.pcm_slice(pcm, -1.0, 0.5)
+    assert np.frombuffer(b, np.int16).tolist() == list(range(8000))
+    assert R.pcm_slice(pcm, 3.0, 4.0) == b""

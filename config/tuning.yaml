@@ -27,8 +27,8 @@ ring_offset_leds: 6
 ring_reverse: false
 # ring_max_hz: 30.0   # LED ring write cap (Hz); the animator runs at this rate
 # beam_steering: false
-# voiceprint_enabled: false
-# voiceprint_threshold: 0.5
+# voiceprint_enabled: false   # TA 89.7% < 90% on replay; try live with `spotctl voiceprint on`
+voiceprint_threshold: 0.35   # replay ch1: same median 0.53, other-voice 0.16 (n=2 podcast segs) -> TA 89.7% FA 3.7%; short follow-ups only 26% (0.25: 68%/FA 17%)
 # thinking_filler_s: 4.0
 # walk_speed_cap: 0.5
 # dance_clearance_m: 1.5
