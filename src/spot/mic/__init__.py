@@ -1,1 +1,1 @@
-"""Spot mic package (placeholder)."""
+"""Spot mic package."""
