@@ -1,19 +1,19 @@
 """Mouth feature handlers: enable/disable the gripper mouth and the automatic
-fold + mouth once standing (operator decision 3). Moved verbatim from
-src/voice_control/spot_dispatch.py.
+fold + mouth once standing (operator decision 3). Moved verbatim from the old
+spot_dispatch module.
 
 The robot owners (src.spot.robot) are imported at call time only: this module
 is loaded while src.spot.features builds REGISTRY, so a module-level robot
-import could cycle. The core (dispatcher / Connection) still calls
+import could cycle. The core (dispatcher / Connection) calls
 _cancel_auto_arm, _auto_arm_after_stand, start_auto_arm and
-_handle_disable_mouth through spot_dispatch (src.spot.robot.legacy_features),
-which re-exports them from here.
+_handle_disable_mouth through src.spot.robot.mouth_handlers (this module,
+bound once when src.spot.robot is imported).
 """
 import threading
 import time
 
-# Feature state (mouth auto-arm). spot_dispatch forwards reads of these names
-# here (spot_dispatch._FEATURE_FORWARDS), so there is one live copy.
+# Feature state (mouth auto-arm): the one live copy (read as
+# src.spot.features.mouth.handlers._auto_arm etc.).
 _auto_arm = False           # operator decision 3: fold the arm + mouth on once standing
 _auto_arm_pending = False   # an auto fold is still owed (startup / after a stand)
 _auto_arm_thread = None
@@ -28,8 +28,8 @@ def _handle_enable_mouth(params, gen=None):
     from src.spot.robot import state as _state
     global _auto_arm, _auto_arm_pending
     try:
-        from src.voice_control.spot_tts import get_tts
-        from src.voice_control.animation.mouth import MouthDriver
+        from src.spot.tts.speaker import get_tts
+        from src.spot.features.mouth.driver import MouthDriver
         tts = get_tts()
         if tts is None:
             print("[Spot] enable_mouth: TTS not initialized")
@@ -83,7 +83,7 @@ def _handle_disable_mouth(params, session=None):
     _auto_arm_pending = False
     _r.ARM.set_talk_resume(False)
     try:
-        from src.voice_control.spot_tts import get_tts
+        from src.spot.tts.speaker import get_tts
         tts = get_tts()
         if tts is not None and tts.mouth is not None:
             tts.mouth.disable()

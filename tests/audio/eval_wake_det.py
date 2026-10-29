@@ -15,7 +15,7 @@ import wave
 
 import numpy as np
 
-from src.voice_control.wake.livekit import WINDOW_SAMPLES
+from src.spot.wake.livekit import WINDOW_SAMPLES
 
 CORPUS = pathlib.Path(__file__).resolve().parent
 POSITIVE_GLOB = "hey_spot_*_lab.wav"
@@ -60,7 +60,7 @@ def _ci_upper_per_hour(false_accepts, hours):
 
 
 def main():
-    from src.voice_control.wake.livekit import LiveKitWakeWord
+    from src.spot.wake.livekit import LiveKitWakeWord
     det = LiveKitWakeWord()
     if not det.is_available():
         raise SystemExit("[eval_wake_det] livekit detector unavailable — deploy the 3 ONNX first")

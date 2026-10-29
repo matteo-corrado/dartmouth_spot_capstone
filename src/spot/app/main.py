@@ -7,7 +7,7 @@ Architecture (Boston Dynamics "Robots That Can Chat" style):
 Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
 
-Moved from src/voice_control/client_mic.py (Task 10): CLI args, startup,
+Moved from the old client_mic.py (Task 10): CLI args, startup,
 the shutdown signal handler and the shutdown sequence. The voice loop itself
 is Conversation.run() (src/spot/conversation/loop.py).
 
@@ -40,20 +40,10 @@ try:
 except Exception:
     pass
 
-from src.voice_control.chatbot.persona import get_persona, voice_id_for  # noqa: F401
-
-import re  # noqa: F401
-import glob  # noqa: F401
-import json  # noqa: F401
-import math  # noqa: F401
-import time  # noqa: F401
-import queue  # noqa: F401
-import random  # noqa: F401
+import time  # noqa: F401  (the golden harness patches _app.time)
+import queue
 import signal
 import argparse
-import subprocess  # noqa: F401
-import threading  # noqa: F401
-import numpy as np  # noqa: F401
 import sounddevice as sd
 from sherpa_onnx import VoiceActivityDetector, VadModelConfig, SileroVadModelConfig
 import grpc
@@ -93,27 +83,17 @@ signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 from contextlib import nullcontext
 from types import SimpleNamespace
 
-from src.spot.stt.asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk  # noqa: F401
 from src.spot.stt.asr_pb2_grpc import ASRStub
-from src.spot.brain.intent import parse_intent  # noqa: F401
 from src.spot.brain.llm_brain import LLMBrain, DEFAULT_MODEL
 from src.spot.audio.player import AudioPlayer
 from src.spot.tts.speaker import SpotTTS
 from src.spot.audio.chimes import beep
 from src.spot.core.latency import init_recorder, get_recorder
-from src.voice_control import startup_status  # noqa: F401 — available for later use
-from src.voice_control.response_gate import should_arm_reopen, should_reopen_mic  # noqa: F401
-from src.voice_control.tuning import get_tuning
-from src.voice_control.barge_in import should_reset_after_player  # noqa: F401
-from src.voice_control.audio_frontend import (  # noqa: F401
-    frame_dbfs, FloorTracker, Endpointer, UtteranceStats, passes_gate)
-from src.voice_control.speaker_lock import (  # noqa: F401
-    SpeakerLock, circular_median_deg, mic_to_body_deg)
-from src.voice_control.speaker_embed import VoiceprintGate, warm_up_async  # noqa: F401
+from src.spot.core.tuning import get_tuning
+from src.spot.audio.frontend import FloorTracker
+from src.spot.conversation.voiceprint import warm_up_async
 
 _tuning = get_tuning()
-from src.voice_control.voice_state import VoiceState  # noqa: F401,E402
-from src.voice_control.state_feedback import chime_for, ring_for as _ring_for  # noqa: F401,E402
 
 import src.spot.audio.capture as _cap  # noqa: E402
 import src.spot.conversation.loop as _loop  # noqa: E402
@@ -159,12 +139,12 @@ def cleanup_spot():
     # module-load side effects in a path advertised as robot-free.
     if os.environ.get("SPOT_DRY_RUN") != "1":
         try:
-            from src.voice_control.spot_dispatch import _cancel_nav
+            from src.spot.nav.runner import _cancel_nav
             _cancel_nav()
         except Exception as e:
             print(f"[Spot] cancel_nav error during cleanup: {e}")
         try:
-            from src.voice_control.spot_dispatch import close_spot_session
+            from src.spot.robot.connection import close_spot_session
             close_spot_session()
         except Exception:
             pass
@@ -331,6 +311,9 @@ def _robot_owners():
     """The robot owner singletons (SAFETY_GEN, CONNECTION, ARM, NAV), created
     at import of src.spot.robot (Task 9). Importing connects nothing."""
     import src.spot.robot as _r
+    # Preload: the first stop (safety thread / spotctl) must not pay the
+    # dispatcher import before send_stop (base imported it eagerly here too).
+    import src.spot.robot.dispatcher  # noqa: F401
     return _r
 
 
@@ -351,6 +334,12 @@ def _start_features(args, bus, robot, tuning) -> bool:
     from src.spot.features import REGISTRY
     from src.spot.features.enabled import ENABLED
     failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
+    if isinstance(robot.mouth_handlers, robot._NoMouth):
+        # The core bound the no-op stand-in at import (mouth import failed
+        # then): even if the retry above loaded the real handlers, the core
+        # and the feature would be split. Same loud C6 path.
+        failures.append(("mouth (core binding)", ImportError(robot.mouth_handlers.error),
+                         "src.spot.robot bound the _NoMouth stand-in at import\n"))
     ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
               nav=robot.NAV, bus=bus, tuning=tuning)
     for feature in REGISTRY.features:
@@ -454,7 +443,7 @@ def _start_audio(args, tuning):
     # In dry-run it only warns; then safety needs a transcript (wake first).
     safety_detector = None
     try:
-        from src.voice_control.wake.safety_kws import make_safety_detector
+        from src.spot.safety.kws import make_safety_detector
         safety_detector = make_safety_detector()
         if not safety_detector.is_available():
             print("[SafetyKWS] UNAVAILABLE — spoken stop/freeze/estop only work via ASR "
@@ -526,10 +515,14 @@ def _close_session_if_up() -> bool:
     raised) leaves a live session: sit + power it off now, since dry-run
     cleanup never closes the session. True when no session is left; False
     (after a loud line) when the robot is still up. Never raises."""
-    import src.spot.robot as _r
+    # Never import here: with the SDK missing the robot package cannot load
+    # (and then there is no session to close).
+    _r = sys.modules.get("src.spot.robot")
+    if _r is None:
+        return True
     try:
         if _r.CONNECTION._session is not None:
-            from src.voice_control.spot_dispatch import close_spot_session
+            from src.spot.robot.connection import close_spot_session
             close_spot_session()
     except Exception as e:  # noqa: BLE001
         print(f"[Spot] closing the half-up session failed: {e}")
@@ -565,11 +558,13 @@ def _bring_up_robot(args, audio) -> bool:
         if args.map:
             print(f"\n[Spot] Eager session init with map: {args.map}")
             try:
-                from src.voice_control.spot_dispatch import ensure_spot_session
+                from src.spot.robot.connection import ensure_spot_session
                 ensure_spot_session(map_path=args.map)
                 print("[Spot] Map loaded; session standing.")
             except ModuleNotFoundError as e:
                 print(f"[Spot] SDK not installed ({e}); auto-enabling dry-run.")
+                if not _close_session_if_up():  # same guard as below
+                    return False
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
             except Exception as e:
@@ -617,8 +612,8 @@ def _start_conversation(args, C, audio, services, tuning):
     if os.environ.get("SPOT_DRY_RUN") == "1":
         C._state_leds = None
     else:
-        from src.voice_control.spot_leds import StateLeds
-        import src.voice_control.spot_dispatch as _spot_dispatch
+        from src.spot.mic.spot_leds import StateLeds
+        import src.spot.robot as _r
 
         def _led_robot():
             # Return the ALREADY-established Spot session's robot, or None.
@@ -628,7 +623,7 @@ def _start_conversation(args, C, audio, services, tuning):
             # LEDs stay off until a real command brings the session up, then
             # activate on the next state change.
             try:
-                sess = getattr(_spot_dispatch, "_spot_session", None)
+                sess = getattr(_r.CONNECTION, "_session", None)
                 return sess["robot"] if sess else None
             except Exception:
                 return None
@@ -680,7 +675,7 @@ def _start_conversation(args, C, audio, services, tuning):
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
-            from src.voice_control.spot_dispatch import set_auto_arm
+            from src.spot.features.mouth.handlers import set_auto_arm
             set_auto_arm(_auto)
         except Exception as e:
             print(f"[client_mic] auto arm setup failed: {e}")
@@ -704,12 +699,16 @@ class _ShutdownOnce:
     def __call__(self) -> None:
         if self.done:
             return
-        self.done = True
+        # done only once it returned: a Ctrl-C inside it (e.g. during
+        # LISTENER.stop's join) leaves it retryable, so main's except path
+        # still sits + powers off the robot. Every step is idempotent.
         _shutdown_runtime()
+        self.done = True
 
 
 def _close_quietly(ctl_srv, stream) -> None:
-    """What run()'s finally closes, for an exit before run() started."""
+    """What run()'s finally closes, for an exit before run()'s try (or
+    again after it: both stops are idempotent)."""
     if ctl_srv is not None:
         try:
             ctl_srv.stop()
@@ -746,7 +745,6 @@ def main(argv: list[str] | None = None):
     # shuts the runtime down exactly once (run() does it on its own exit).
     shutdown = _ShutdownOnce()
     stream = ctl_srv = None
-    in_run = False
     try:
         # 5. Audio capture, ring, wake, safety listener
         audio = _start_audio(args, tuning)
@@ -764,14 +762,14 @@ def main(argv: list[str] | None = None):
         # 8. Control server
         ctl_q, ctl_srv = _start_control_server()
         # 9. Run the conversation loop until shutdown
-        in_run = True
         C.run(args=args, stub=services.stt.stub, brain=services.brain, tts=services.tts,
               vad=audio.vad, wake_detector=audio.wake_detector,
               use_wake_word=audio.use_wake_word, floor=audio.floor,
               utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
               shutdown=shutdown, ctl_q=ctl_q, ctl_srv=ctl_srv)
     except BaseException:
-        if not in_run:  # run()'s finally closes these itself
-            _close_quietly(ctl_srv, stream)
+        # Unconditional: run()'s own try starts after some setup, so a raise
+        # in between would leak these. Both stops are idempotent.
+        _close_quietly(ctl_srv, stream)
         shutdown()
         raise

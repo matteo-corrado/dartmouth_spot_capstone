@@ -123,7 +123,7 @@ def dispatch_safety(intent, brain=None, speak=None):
                  then_stand=(was_emote and name == "freeze" and _state.is_standing(sess)))
     if name == "estop":
         _r.ARM.set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
-        _r.legacy_features()._cancel_auto_arm()  # ... and any pending automatic fold (until a stand)
+        _r.mouth_handlers._cancel_auto_arm()  # ... and any pending automatic fold (until a stand)
     elif was_talk:
         _r.ARM.set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
@@ -287,7 +287,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     # A navigate_to / visual-nav move sent while the join ran
                     # lands after the first stop: stop again (as stop/freeze do).
                     _motion.send_stop(cmd_client)
-            return _r.legacy_features()._handle_disable_mouth(params, session)
+            return _r.mouth_handlers._handle_disable_mouth(params, session)
 
         if name == "stop":
             # Stop current movement/action
@@ -330,7 +330,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Stand command sent")
                 _ev.publish("robot_stood")
-                _r.legacy_features()._auto_arm_after_stand()
+                _r.mouth_handlers._auto_arm_after_stand()
                 return True
             except Exception as e:
                 if "BehaviorFault" in str(e):
@@ -348,7 +348,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                         cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
                         print("[Spot] ✓ Faults cleared, standing")
                         _ev.publish("robot_stood")
-                        _r.legacy_features()._auto_arm_after_stand()
+                        _r.mouth_handlers._auto_arm_after_stand()
                         return True
                     except Exception as e2:
                         print(f"[Spot] ✗ Recovery failed: {e2}")
@@ -361,7 +361,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             print("[Spot] Sitting down...")
             _motion.send_stop(cmd_client)  # stop first, then stow, then sit
             _r.ARM.set_talk_resume(False)
-            _r.legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
+            _r.mouth_handlers._cancel_auto_arm()  # only an explicit stand folds the arm again
             _r.NAV.cancel()
             _r.ARM._pose_before_walk = None
             if _r.ARM._pose != "stowed":
@@ -409,7 +409,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             print("[Spot] Initiating safe power off...")
             _motion.send_stop(cmd_client)  # stop first, then stow, then power off
             _r.ARM.set_talk_resume(False)
-            _r.legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
+            _r.mouth_handlers._cancel_auto_arm()  # only an explicit stand folds the arm again
             _r.ARM.close_mouth()
             _r.NAV.cancel()
             try:

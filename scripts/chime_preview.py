@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Play each voice-pipeline chime once, slowly, with what it means.
 
-Uses the real tones from src/voice_control/audio_feedback.py, so what you hear
+Uses the real tones from src/spot/audio/chimes.py, so what you hear
 is what the robot plays. Also plays the louder/longer listen_cue option under
 consideration so the two can be compared.
 

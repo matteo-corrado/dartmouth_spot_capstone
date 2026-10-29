@@ -62,7 +62,7 @@ class Connection:
                 )
                 self._session = self._context.__enter__()
                 print("[Spot] Connected and standing ready for voice commands.")
-                sd = _legacy()
+                sd = _r.mouth_handlers
                 sd.start_auto_arm(_r.SAFETY_GEN.current(), wait_s=sd.AUTO_ARM_STAND_WAIT_S)  # waits for this dispatch
             except Exception as e:
                 print(f"[Spot] Failed to establish session: {e}")
@@ -81,7 +81,7 @@ class Connection:
         self._closing = True
         _r.SAFETY_GEN.bump()  # abort any locomotion still being set up
         try:  # nothing fallible may block the send_stop below (R18)
-            _legacy()._cancel_auto_arm()
+            _r.mouth_handlers._cancel_auto_arm()
         except Exception as e:
             print(f"[Spot] ⚠️  auto-arm cancel failed during close: {e}")
 
@@ -104,10 +104,6 @@ class Connection:
             self._session = None
             self._context = None
             print("[Spot] Session closed.")
-
-
-def _legacy():
-    return _r.legacy_features()
 
 
 def _conn():

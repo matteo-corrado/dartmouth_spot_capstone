@@ -1,5 +1,5 @@
 import time
-from src.voice_control.chatbot.session_state import SessionState
+from src.spot.conversation.session_state import SessionState
 
 
 def test_defaults():

@@ -3,14 +3,16 @@ import time
 
 import pytest
 
-import src.session as session_mod
+import src.spot.robot.session as session_mod
 import src.spot.robot as robot_pkg
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.dispatcher as dispatcher
 import src.spot.robot.motion as motion
-import src.voice_control.spot_dispatch as d
+import src.spot.nav.runner as nav_runner
+import src.spot.robot as robot_pkg
+import src.spot.robot.dispatcher as dispatcher
 import src.spot.features.mouth.handlers as mouth_h
-import src.voice_control.spot_tts as tts_mod
+import src.spot.tts.speaker as tts_mod
 from src.spot.core.registry import ActionSpec
 from src.spot.features import REGISTRY
 from src.spot.robot import ARM, CONNECTION, NAV, SAFETY_GEN
@@ -48,7 +50,7 @@ def test_rebinding_nav_reaches_every_path(monkeypatch):
     motion.abort_motion(cmd, "walk")                               # abort path cancels nav
     motion.start_restore_watch(cmd, 1, time.time() + 1)            # watch registers on nav
     assert fake.calls == ["cancel", "cancel", ("spawn", "walk")]
-    assert d.is_navigating() is False and d._nav_mode == "fake-mode"
+    assert nav_runner.is_navigating() is False and robot_pkg.NAV._mode == "fake-mode"
     assert NAV is not fake  # the real runner was never touched
 
 
@@ -75,7 +77,7 @@ def walk_env(monkeypatch):
 
 def _walk(cmd):
     n = len(cmd.sent)
-    ok = d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
+    ok = dispatcher.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
     return ok, cmd.kinds()[n:], ARM._pose, ARM._pose_before_walk, ARM._pose_during_walk
 
 
@@ -109,7 +111,7 @@ def test_close_still_stops_when_auto_arm_cancel_raises(monkeypatch):
         def power_off(self, **k):
             pass
     cmd = FakeCmd()
-    monkeypatch.setattr(d, "_cancel_auto_arm", boom)
+    monkeypatch.setattr(mouth_h, "_cancel_auto_arm", boom)
     monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
     monkeypatch.setattr(time, "sleep", lambda s: None)
     monkeypatch.setattr(ARM, "close_mouth", lambda: None)

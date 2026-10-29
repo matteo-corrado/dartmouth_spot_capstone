@@ -1,4 +1,8 @@
-"""Script shim: moved to src/spot/stt/server.py. Removed in Task 19."""
+"""Launch stub: ``python src/voice_control/server.py`` runs the ASR gRPC
+server, src.spot.stt.server.serve(). Kept because scripts/run_voice_control.py
+launches this path and checks it with ``pgrep -f voice_control/server.py``.
+It holds no state and re-exports nothing.
+"""
 import pathlib
 import sys
 

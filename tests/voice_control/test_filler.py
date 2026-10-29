@@ -1,5 +1,5 @@
 """B11: filler-only utterances are ignored before the LLM call."""
-from src.voice_control.intent import is_filler_only
+from src.spot.brain.intent import is_filler_only
 import src.spot.conversation.loop as _loop
 import src.spot.safety.listener as _sl
 import src.spot.stt.client as _stt
@@ -27,7 +27,7 @@ def test_okay_is_an_answer_mid_conversation():
 
 def test_bare_okay_reply_reaches_the_brain(monkeypatch):
     import numpy as np
-    import src.voice_control.client_mic as cm
+    import src.spot.conversation.loop as cm
     sent = []
     monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "Okay.")
     monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)

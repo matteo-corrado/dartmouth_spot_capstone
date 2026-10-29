@@ -27,7 +27,7 @@ def handle_turn(params, ctx):
     from bosdyn.client.robot_command import RobotCommandBuilder
     from bosdyn.client.frame_helpers import ODOM_FRAME_NAME, get_odom_tform_body
     from bosdyn.client.math_helpers import SE2Pose
-    from src.graph_nav_utils import capped_mobility_params
+    from src.spot.nav.graph_nav_utils import capped_mobility_params
     session = _session()
     cmd_client = session["cmd"]
 
@@ -74,7 +74,7 @@ def handle_walk(params, ctx):
     import time
     import src.spot.robot as _r
     from bosdyn.client.robot_command import RobotCommandBuilder
-    from src.graph_nav_utils import capped_mobility_params, walk_speed_cap
+    from src.spot.nav.graph_nav_utils import capped_mobility_params, walk_speed_cap
     session = _session()
     cmd_client = session["cmd"]
 
@@ -116,7 +116,7 @@ def handle_strafe(params, ctx):
     import time
     import src.spot.robot as _r
     from bosdyn.client.robot_command import RobotCommandBuilder
-    from src.graph_nav_utils import capped_mobility_params, walk_speed_cap
+    from src.spot.nav.graph_nav_utils import capped_mobility_params, walk_speed_cap
     session = _session()
     cmd_client = session["cmd"]
 

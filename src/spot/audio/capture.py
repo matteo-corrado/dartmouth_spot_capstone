@@ -1,7 +1,7 @@
 """Mic input: device lookup, frame helpers, stream open/retry, the PortAudio
 audio callback, chime mask, queue drain and noise-floor calibration.
 
-Moved from src/voice_control/client_mic.py (Task 10). The state that used to
+Moved from the old client_mic.py (Task 10). The state that used to
 be client_mic module globals lives on the AudioCapture owner, CAPTURE,
 created once at import. Other modules reach it (and every other moved name)
 through this module at call time (``_cap.CAPTURE``), never by binding it.
@@ -273,7 +273,7 @@ def _mic_speech_degs(t0: float, t1: float) -> list:
 def _open_mic_array():
     """Open the XVF3800 control interface + start the DoA poller. Never raises."""
     try:
-        from src.voice_control.mic_array import MicArray
+        from src.spot.mic.xvf3800 import MicArray
         mic = MicArray.open()
     except Exception as e:
         print(f"[MicArray] unavailable: {type(e).__name__}: {e}")

@@ -1,5 +1,5 @@
 """Emotes / dances (Task 15): the `emote` action. Moved from
-src/voice_control/spot_dispatch.py (Task 11), behaviour unchanged.
+the old spot_dispatch.py (Task 11), behaviour unchanged.
 
 The clearance scan stays in perception (obstacle_query.clearance_scan); this
 feature only calls it. The arm stow/restore and the stop plumbing stay in the

@@ -1,6 +1,6 @@
 # tests/voice_control/tts/test_chunker.py
 """Stage 2F P1 chunker TDD: abbreviation-safe split + suppress/describe path."""
-from src.voice_control.text_segment import split_sentences
+from src.spot.tts.text_segment import split_sentences
 
 
 def test_simple_two_sentences():
@@ -73,7 +73,7 @@ def test_abbrev_then_real_end():
     assert not any(c.strip() == "Mr." for c in complete)
 
 
-from src.voice_control.spot_tts import TTSChunker
+from src.spot.tts.speaker import TTSChunker
 
 
 class _FakeTTS:

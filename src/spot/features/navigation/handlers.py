@@ -188,7 +188,7 @@ def handle_save_location(params, ctx):
     print(f"[Spot] Saving current position as '{location_name}'...")
     try:
         from bosdyn.client.graph_nav import GraphNavClient
-        from src.location_manager import save_location
+        from src.spot.nav.location_manager import save_location
 
         # Get current localization state to find waypoint
         graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
@@ -222,7 +222,7 @@ def handle_go_to(params, ctx):
     print(f"[Spot] Navigating to '{location_name}'...")
     try:
         from bosdyn.client.graph_nav import GraphNavClient
-        from src.location_manager import load_location, list_locations
+        from src.spot.nav.location_manager import load_location, list_locations
 
         waypoint_id = load_location(location_name)
         if not waypoint_id:
@@ -263,8 +263,8 @@ def handle_tour(params, ctx):
     print("[Spot] Starting tour...")
     try:
         from bosdyn.client.graph_nav import GraphNavClient
-        from src.location_manager import load_location, list_locations
-        from src.graph_nav_utils import get_graph_waypoint_order
+        from src.spot.nav.location_manager import load_location, list_locations
+        from src.spot.nav.graph_nav_utils import get_graph_waypoint_order
 
         graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 
@@ -338,8 +338,8 @@ def handle_patrol(params, ctx):
     print("[Spot] Starting patrol...")
     try:
         from bosdyn.client.graph_nav import GraphNavClient
-        from src.location_manager import load_location, list_locations
-        from src.graph_nav_utils import get_graph_waypoint_order
+        from src.spot.nav.location_manager import load_location, list_locations
+        from src.spot.nav.graph_nav_utils import get_graph_waypoint_order
 
         graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 

@@ -16,7 +16,7 @@ to v2 on first read:
                   }
 
 The "current map" namespace is read from <project_root>/maps/.last_used via
-src.map_loader.read_last_used(). If that file is absent, the slice key is
+src.spot.nav.map_loader.read_last_used(). If that file is absent, the slice key is
 "_legacy" — the legacy flat data lands there on migration so it can still be
 recovered after the user runs wakespot for the first time.
 

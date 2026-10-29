@@ -1,6 +1,6 @@
 """gRPC ASR client: stream one utterance's PCM to the ASR server.
 
-Moved from src/voice_control/client_mic.py (Task 10), unchanged.
+Moved from the old client_mic.py (Task 10), unchanged.
 """
 import src.spot.audio.capture as _cap
 from src.spot.stt.asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk

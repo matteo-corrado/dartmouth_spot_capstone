@@ -2,8 +2,8 @@
 """Stage 2F P2 barge-in asserts (spec Component 2 + C1)."""
 import numpy as np
 
-from src.voice_control.barge_in import should_reset_after_player, DetectorState
-from src.voice_control.client_mic import check_safety_command
+from src.spot.audio.barge_in import should_reset_after_player, DetectorState
+from src.spot.brain.intent import check_safety_command
 
 
 def test_no_reset_on_wake_beep_edge():

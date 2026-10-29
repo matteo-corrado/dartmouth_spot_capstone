@@ -9,7 +9,6 @@ import time
 
 from bosdyn.client.frame_helpers import get_odom_tform_body
 
-import src.spot.robot as _r
 from src.spot.nav.graph_nav_utils import capped_travel_params
 
 
@@ -324,3 +323,10 @@ def _navigate_waypoint_sequence(graph_nav_client, waypoint_ids, location_names,
 
 def _start_nav_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
     return _nav().start_thread(graph_nav_client, waypoint_ids, location_names, repeat)
+
+
+# At the bottom, not the top: src.spot.robot's __init__ imports NavRunner from
+# here, so importing this module first (cleanup_spot, the conversation loop)
+# must define NavRunner before it pulls in the robot package. _r is only read
+# at call time.
+import src.spot.robot as _r  # noqa: E402

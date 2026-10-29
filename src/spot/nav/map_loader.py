@@ -8,8 +8,8 @@ This module is the single source of truth for:
 
 It is consumed by:
   - scripts/wakespot.py            (orchestrator: resolves --map at startup)
-  - src/voice_control/spot_dispatch.py  (voice load_map handler)
-  - src/location_manager.py       (reads current map for namespacing)
+  - src/spot/features/navigation/handlers.py  (voice load_map handler)
+  - src/spot/nav/location_manager.py  (reads current map for namespacing)
 """
 from __future__ import annotations
 

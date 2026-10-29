@@ -1,5 +1,5 @@
 """Gaze toward the locked speaker (Task 19, operator decision 4). Moved from
-src/voice_control/spot_dispatch.py (Task 11), behaviour unchanged.
+the old spot_dispatch.py (Task 11), behaviour unchanged.
 
 The gaze worker thread stays in client_mic (Task 10 owns it). The arm poses,
 the gaze hold and the stop/stow plumbing stay in the robot core (spec 7.1b);

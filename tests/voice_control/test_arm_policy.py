@@ -5,15 +5,21 @@ import time
 import pytest
 from bosdyn.api import robot_command_pb2
 
-import src.session as session_mod
-import src.voice_control.spot_dispatch as d
+import src.spot.robot.session as session_mod
+import src.spot.nav.runner as nav_runner
+import src.spot.robot as robot_pkg
+import src.spot.robot.arm as arm_mod
+import src.spot.robot.connection as conn_mod
+import src.spot.robot.dispatcher as dispatcher
+import src.spot.robot.motion as motion
+import time
 import src.spot.features.mouth.handlers as mouth_h
 from src.spot.robot import ARM, CONNECTION
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.connection as connection_mod
 import src.spot.robot.state as state_mod
-from src.graph_nav_utils import capped_mobility_params, capped_travel_params
-from src.voice_control.spot_dispatch import arm_policy_for
+from src.spot.nav.graph_nav_utils import capped_mobility_params, capped_travel_params
+from src.spot.robot.arm import arm_policy_for
 
 
 # ---------------------------------------------------------------- pure policy
@@ -137,26 +143,26 @@ def fake(monkeypatch):
     monkeypatch.setattr(mouth_h, "_auto_arm_pending", False)
     monkeypatch.setattr(ARM, "_last_brain", None)
     yield cmd
-    d._cancel_nav()
+    nav_runner._cancel_nav()
 
 
 def _join_nav():
-    t = d._nav_thread
+    t = robot_pkg.NAV._thread
     if t is not None:
         t.join(timeout=5)
 
 
 # ---------------------------------------------------------------- dispatcher
 def test_stop_sends_motion_stop_first_then_stows(fake):
-    assert d.dispatch_intent({"intent": "stop", "params": {}}) is True
+    assert dispatcher.dispatch_intent({"intent": "stop", "params": {}}) is True
     # stop FIRST (before any join), original branch's stop, then no-wait stow
     assert fake.kinds() == ["stop", "stop", "gripper", "arm_stow"]
-    assert d.get_arm_pose() == "stowed"
+    assert arm_mod.get_arm_pose() == "stowed"
 
 
 @pytest.mark.parametrize("name", ["freeze", "estop"])
 def test_freeze_estop_stop_first(fake, name):
-    d.dispatch_intent({"intent": name, "params": {}})
+    dispatcher.dispatch_intent({"intent": name, "params": {}})
     k = fake.kinds()
     assert k[0] == "stop"
     assert k[-2:] == ["gripper", "arm_stow"]
@@ -167,11 +173,11 @@ def test_stow_after_stop_never_waits(fake, monkeypatch):
     def boom(*a):
         raise AssertionError("safety stow must not wait for arrival")
     monkeypatch.setattr(arm_mod, "block_until_arm_arrives", boom)
-    assert d.dispatch_intent({"intent": "stop", "params": {}}) is True
+    assert dispatcher.dispatch_intent({"intent": "stop", "params": {}}) is True
 
 
 def test_walk_from_joints_sends_no_arm_command(fake):
-    assert d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
+    assert dispatcher.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
     _join_nav()
     assert fake.kinds() == ["mobility"]   # folded pose kept: no tuck, no restore
     mob = fake.sent[0][1].synchronized_command.mobility_command
@@ -179,15 +185,15 @@ def test_walk_from_joints_sends_no_arm_command(fake):
     params = spot_cmd.MobilityParams()
     mob.params.Unpack(params)
     assert params.vel_limit.max_vel.linear.x == pytest.approx(0.5)
-    assert d.get_arm_pose() == "talk"
-    assert d._pose_before_walk is None
+    assert arm_mod.get_arm_pose() == "talk"
+    assert robot_pkg.ARM._pose_before_walk is None
 
 
 def test_walk_recentres_a_gaze_yaw_without_waiting(fake, monkeypatch):
     monkeypatch.setattr(ARM, "_gaze_deg", 30.0)
     monkeypatch.setattr(arm_mod, "block_until_arm_arrives",
                         lambda *a: pytest.fail("re-centre must not wait"))
-    d.dispatch_intent({"intent": "turn", "params": {"direction": "left"}})
+    dispatcher.dispatch_intent({"intent": "turn", "params": {"direction": "left"}})
     k = fake.kinds()
     assert k[0] == "arm_joints" and "gripper" not in k and "arm_stow" not in k
     pt = fake.sent[0][1].synchronized_command.arm_command.arm_joint_move_command.trajectory.points[0]
@@ -195,7 +201,7 @@ def test_walk_recentres_a_gaze_yaw_without_waiting(fake, monkeypatch):
 
 
 def test_walk_tucks_moves_capped_then_restores(fake, stow_walk):
-    assert d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
+    assert dispatcher.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
     _join_nav()
     k = fake.kinds()
     # walk pose "stow": claw closed, stow, THEN the mobility command
@@ -206,33 +212,33 @@ def test_walk_tucks_moves_capped_then_restores(fake, stow_walk):
     params = spot_cmd.MobilityParams()
     mob.params.Unpack(params)
     assert params.vel_limit.max_vel.linear.x == pytest.approx(0.5)
-    assert d.get_arm_pose() == "talk"
+    assert arm_mod.get_arm_pose() == "talk"
 
 
 def test_stop_mid_walk_stows_and_never_restores(fake):
     fake.at_goal = False
-    d.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
-    assert d.is_navigating()
-    d.dispatch_intent({"intent": "stop", "params": {}})
+    dispatcher.dispatch_intent({"intent": "walk", "params": {"direction": "forward", "distance": 1}})
+    assert nav_runner.is_navigating()
+    dispatcher.dispatch_intent({"intent": "stop", "params": {}})
     time.sleep(0.6)
     k = fake.kinds()
     i = k.index("stop")
     assert k[i:] == ["stop", "stop", "gripper", "arm_stow"]
     assert "arm_joints" not in k
-    assert d.get_arm_pose() == "stowed"
+    assert arm_mod.get_arm_pose() == "stowed"
 
 
 def test_tuck_failure_refuses_to_move(fake, monkeypatch, stow_walk):
     monkeypatch.setattr(arm_mod, "block_until_arm_arrives", lambda c, i, t: False)
     said = []
-    assert d.dispatch_intent({"intent": "walk", "params": {}}, speak=said.append) is False
+    assert dispatcher.dispatch_intent({"intent": "walk", "params": {}}, speak=said.append) is False
     assert "mobility" not in fake.kinds()
     assert said
 
 
 def test_walk_with_stowed_arm_moves_arm_never(fake, monkeypatch):
     monkeypatch.setattr(ARM, "_pose", "stowed")
-    d.dispatch_intent({"intent": "strafe", "params": {"direction": "left", "distance": 0.5}})
+    dispatcher.dispatch_intent({"intent": "strafe", "params": {"direction": "left", "distance": 0.5}})
     _join_nav()
     assert fake.kinds() == ["mobility"]
 
@@ -240,9 +246,9 @@ def test_walk_with_stowed_arm_moves_arm_never(fake, monkeypatch):
 def test_enable_mouth_refused_while_walking(fake, monkeypatch):
     fake.at_goal = False
     monkeypatch.setattr(ARM, "_pose", "stowed")
-    d.dispatch_intent({"intent": "walk", "params": {}})
-    assert d.is_navigating()
-    import src.voice_control.spot_tts as tts_mod
+    dispatcher.dispatch_intent({"intent": "walk", "params": {}})
+    assert nav_runner.is_navigating()
+    import src.spot.tts.speaker as tts_mod
 
     class T:
         mouth = None
@@ -251,18 +257,18 @@ def test_enable_mouth_refused_while_walking(fake, monkeypatch):
     class R:
         def has_arm(self): return True
         def is_powered_on(self): return True
-    d._spot_session["robot"] = R()
-    assert d.dispatch_intent({"intent": "enable_mouth"}) is False
+    robot_pkg.CONNECTION._session["robot"] = R()
+    assert dispatcher.dispatch_intent({"intent": "enable_mouth"}) is False
     assert "arm_joints" not in fake.kinds()
 
 
 def test_brain_session_state_mirrors_pose(fake):
-    from src.voice_control.chatbot.session_state import SessionState
+    from src.spot.conversation.session_state import SessionState
 
     class B:
         session_state = SessionState()
     b = B()
-    d.dispatch_intent({"intent": "stop", "params": {}}, brain=b)
+    dispatcher.dispatch_intent({"intent": "stop", "params": {}}, brain=b)
     assert b.session_state.arm_pose == "stowed"
     assert SessionState().as_dict()["arm_pose"] == "stowed"
 
@@ -307,7 +313,7 @@ def test_speed_cap_params():
 
 
 def test_visual_nav_velocity_clamped(monkeypatch):
-    from src.voice_control import visual_nav
+    from src.spot.features.visual_nav import navigator as visual_nav
     c = FakeCmd()
     visual_nav._send_velocity({"cmd": c}, 2.0, -2.0, 0.0)
     mob = c.sent[0][1].synchronized_command.mobility_command
@@ -317,15 +323,15 @@ def test_visual_nav_velocity_clamped(monkeypatch):
 
 def test_stop_when_stowed_sends_only_stop(fake, monkeypatch):
     monkeypatch.setattr(ARM, "_pose", "stowed")
-    d.dispatch_intent({"intent": "stop", "params": {}})
+    dispatcher.dispatch_intent({"intent": "stop", "params": {}})
     assert fake.kinds() == ["stop", "stop"]
 
 
 def test_sit_stows_before_sitting(fake):
     assert arm_policy_for("sit", "talk") == ("stowed", "stowed")
-    d.dispatch_intent({"intent": "sit", "params": {}})
+    dispatcher.dispatch_intent({"intent": "sit", "params": {}})
     assert fake.kinds() == ["stop", "gripper", "arm_stow", "mobility"]
-    assert d.get_arm_pose() == "stowed"
+    assert arm_mod.get_arm_pose() == "stowed"
 
 
 def test_stop_without_session_never_connects(monkeypatch):
@@ -333,17 +339,17 @@ def test_stop_without_session_never_connects(monkeypatch):
     monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     monkeypatch.setattr(ARM, "close_mouth", lambda: None)
     for n in ("stop", "freeze", "estop"):
-        assert d.dispatch_intent({"intent": n, "params": {}}) is False
+        assert dispatcher.dispatch_intent({"intent": n, "params": {}}) is False
 
 
 def test_unfinished_trajectory_stops_and_keeps_tuck(fake, monkeypatch):
     fake.at_goal = False
     monkeypatch.setattr(ARM, "_pose", "walk")
     monkeypatch.setattr(ARM, "_pose_before_walk", "talk")
-    d._start_restore_watch(fake, 1, time.time() + 0.4)
+    motion.start_restore_watch(fake, 1, time.time() + 0.4)
     _join_nav()
     assert fake.kinds() == ["stop"]       # stopped, no restore
-    assert d.get_arm_pose() == "walk"
+    assert arm_mod.get_arm_pose() == "walk"
 
 
 def test_unknown_body_status_not_trusted():
@@ -354,7 +360,7 @@ def test_unknown_body_status_not_trusted():
                 .se2_trajectory_feedback.body_movement_status = 0
             return fb
     ev = threading.Event()
-    assert d._wait_trajectory_done(Unknown(), 1, time.time() + 0.3, ev) is False
+    assert motion.wait_trajectory_done(Unknown(), 1, time.time() + 0.3, ev) is False
 
 
 def test_stop_during_tuck_aborts_walk(fake, monkeypatch, stow_walk):
@@ -363,14 +369,14 @@ def test_stop_during_tuck_aborts_walk(fake, monkeypatch, stow_walk):
     def arrive_after_stop(c, i, t):
         if calls["n"] == 0:  # another thread says "stop" while we tuck
             calls["n"] += 1
-            d.dispatch_intent({"intent": "stop", "params": {}})
+            dispatcher.dispatch_intent({"intent": "stop", "params": {}})
         return True
     monkeypatch.setattr(arm_mod, "block_until_arm_arrives", arrive_after_stop)
-    assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
+    assert dispatcher.dispatch_intent({"intent": "walk", "params": {}}) is False
     k = fake.kinds()
     assert "mobility" not in k and "arm_joints" not in k
     assert k[-2:] == ["gripper", "arm_stow"]   # re-stowed
-    assert d.get_arm_pose() == "stowed"
+    assert arm_mod.get_arm_pose() == "stowed"
 
 
 class _Mouth:
@@ -389,65 +395,65 @@ class _Mouth:
 
 def test_mouth_stays_on_while_walking_in_joints(fake, monkeypatch):
     m = _Mouth()
-    import src.voice_control.spot_tts as tts_mod
+    import src.spot.tts.speaker as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
     monkeypatch.setattr(ARM, "_mouth_resume", False)
     fake.at_goal = False
-    d.dispatch_intent({"intent": "walk", "params": {}})
-    assert d.is_navigating() and m.log == [] and m.enabled   # mouth keeps talking
+    dispatcher.dispatch_intent({"intent": "walk", "params": {}})
+    assert nav_runner.is_navigating() and m.log == [] and m.enabled   # mouth keeps talking
     fake.at_goal = True
     _join_nav()
-    assert m.log == [] and m.enabled and d.get_arm_pose() == "talk"
+    assert m.log == [] and m.enabled and arm_mod.get_arm_pose() == "talk"
     assert [k for k in fake.kinds() if k != "mobility"] == []
 
 
 def test_stop_mid_joints_walk_stows_mouth_off_and_arms_resume(fake, monkeypatch):
     m = _Mouth()
-    import src.voice_control.spot_tts as tts_mod
+    import src.spot.tts.speaker as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
     monkeypatch.setattr(ARM, "close_mouth", m.disable)
     monkeypatch.setattr(ARM, "_talk_resume", False)
     fake.at_goal = False
-    d.dispatch_intent({"intent": "walk", "params": {}})
-    d.dispatch_intent({"intent": "stop", "params": {}})
+    dispatcher.dispatch_intent({"intent": "walk", "params": {}})
+    dispatcher.dispatch_intent({"intent": "stop", "params": {}})
     time.sleep(0.6)
     k = fake.kinds()
     assert k[k.index("stop"):] == ["stop", "stop", "gripper", "arm_stow"]
-    assert not m.enabled and d.get_arm_pose() == "stowed"
-    assert d._talk_resume is True       # the next turn brings the folded pose back
+    assert not m.enabled and arm_mod.get_arm_pose() == "stowed"
+    assert robot_pkg.ARM._talk_resume is True       # the next turn brings the folded pose back
 
 
 def test_disable_mouth_mid_joints_walk_stows_after(fake, monkeypatch):
     m = _Mouth()
-    import src.voice_control.spot_tts as tts_mod
+    import src.spot.tts.speaker as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
     fake.at_goal = False
-    d.dispatch_intent({"intent": "walk", "params": {}})
-    d.dispatch_intent({"intent": "disable_mouth", "params": {}})
+    dispatcher.dispatch_intent({"intent": "walk", "params": {}})
+    dispatcher.dispatch_intent({"intent": "disable_mouth", "params": {}})
     assert "arm_stow" not in fake.kinds()   # not while walking
     fake.at_goal = True
     _join_nav()
     assert fake.kinds()[-2:] == ["gripper", "arm_stow"]
-    assert d.get_arm_pose() == "stowed"
+    assert arm_mod.get_arm_pose() == "stowed"
 
 
 def test_mouth_latched_off_while_walking_and_restored(fake, monkeypatch, stow_walk):
     m = _Mouth()
-    import src.voice_control.spot_tts as tts_mod
+    import src.spot.tts.speaker as tts_mod
     monkeypatch.setattr(tts_mod, "get_tts", lambda: type("T", (), {"mouth": m})())
     monkeypatch.setattr(ARM, "_mouth_resume", False)
     fake.at_goal = False
-    d.dispatch_intent({"intent": "walk", "params": {}})
+    dispatcher.dispatch_intent({"intent": "walk", "params": {}})
     assert m.log == ["off"] and not m.enabled   # claw still while walking
     fake.at_goal = True
     _join_nav()
-    assert m.log == ["off", "on"] and d.get_arm_pose() == "talk"
+    assert m.log == ["off", "on"] and arm_mod.get_arm_pose() == "talk"
 
 
 def test_sit_bumps_safety_gen(fake):
-    g = d._safety_gen
-    d.dispatch_intent({"intent": "sit", "params": {}})
-    assert d._safety_gen == g + 1
+    g = robot_pkg.SAFETY_GEN._gen
+    dispatcher.dispatch_intent({"intent": "sit", "params": {}})
+    assert robot_pkg.SAFETY_GEN._gen == g + 1
 
 
 def test_travel_params_keep_arrival_thresholds():
@@ -457,13 +463,13 @@ def test_travel_params_keep_arrival_thresholds():
 
 def test_freeze_never_stands_a_sitting_robot(fake):
     # FakeState reports behavior_state UNKNOWN (not standing)
-    d.dispatch_intent({"intent": "freeze", "params": {}})
+    dispatcher.dispatch_intent({"intent": "freeze", "params": {}})
     assert "mobility" not in fake.kinds()
 
 
 def test_freeze_holds_stand_when_standing(fake, monkeypatch):
     monkeypatch.setattr(state_mod, "is_standing", lambda s: True)
-    d.dispatch_intent({"intent": "freeze", "params": {}})
+    dispatcher.dispatch_intent({"intent": "freeze", "params": {}})
     assert fake.kinds()[:3] == ["stop", "stop", "mobility"]
 
 
@@ -471,7 +477,7 @@ def test_freeze_holds_stand_when_standing(fake, monkeypatch):
 def test_no_session_shutdown_intents_never_connect(monkeypatch, name):
     monkeypatch.setattr(CONNECTION, "_session", None)
     monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
-    assert d.dispatch_intent({"intent": name, "params": {}}) is False
+    assert dispatcher.dispatch_intent({"intent": name, "params": {}}) is False
 
 
 def test_stand_fault_recovery_never_self_rights(fake):
@@ -486,8 +492,8 @@ def test_stand_fault_recovery_never_self_rights(fake):
 
         def clear_behavior_fault(self, behavior_fault_id):
             pass
-    d._spot_session["cmd"] = Faulty()
-    assert d.dispatch_intent({"intent": "stand", "params": {}}) is True
+    robot_pkg.CONNECTION._session["cmd"] = Faulty()
+    assert dispatcher.dispatch_intent({"intent": "stand", "params": {}}) is True
     # selfright is a full-body command; only synchro stands are allowed here
     assert calls == ["mobility", "mobility"]
 
@@ -496,7 +502,7 @@ def test_stand_fault_recovery_never_self_rights(fake):
 def test_safety_and_aborting_intents_use_held_session(fake, monkeypatch):
     monkeypatch.setattr(CONNECTION, "ensure", lambda *a, **k: pytest.fail("no bring-up"))
     for n in ("stop", "freeze", "estop", "sit", "stow"):
-        d.dispatch_intent({"intent": n, "params": {}})
+        dispatcher.dispatch_intent({"intent": n, "params": {}})
 
 
 def test_closing_refuses_bring_up(monkeypatch):
@@ -504,14 +510,14 @@ def test_closing_refuses_bring_up(monkeypatch):
     monkeypatch.setattr(CONNECTION, "_closing", True)
     monkeypatch.setattr(connection_mod, "spot_session", lambda **k: pytest.fail("no bring-up"))
     with pytest.raises(RuntimeError):
-        d.ensure_spot_session()
-    assert d.dispatch_intent({"intent": "walk", "params": {}}) is False
+        conn_mod.ensure_spot_session()
+    assert dispatcher.dispatch_intent({"intent": "walk", "params": {}}) is False
 
 
 def test_close_session_sets_closing_and_aborts(fake, monkeypatch):
     import bosdyn.client.robot_command as rc
     monkeypatch.setattr(rc, "blocking_sit", lambda c, timeout_sec=15: None)
-    monkeypatch.setattr(d.time, "sleep", lambda s: None)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
     monkeypatch.setattr(CONNECTION, "_closing", False)
 
     class Ctx:
@@ -521,17 +527,17 @@ def test_close_session_sets_closing_and_aborts(fake, monkeypatch):
     class R:
         def power_off(self, **k):
             pass
-    d._spot_session["robot"] = R()
+    robot_pkg.CONNECTION._session["robot"] = R()
     monkeypatch.setattr(CONNECTION, "_context", Ctx())
-    g = d._safety_gen
-    d.close_spot_session()
-    assert d._closing is True and d._safety_gen == g + 1
+    g = robot_pkg.SAFETY_GEN._gen
+    conn_mod.close_spot_session()
+    assert robot_pkg.CONNECTION._closing is True and robot_pkg.SAFETY_GEN._gen == g + 1
     assert fake.kinds()[0] == "stop"
-    assert d._spot_session is None
+    assert robot_pkg.CONNECTION._session is None
 
 
 def test_spawn_nav_refuses_after_stop():
     started = []
-    gen = d._safety_gen - 1  # a stop arrived since this dispatch began
-    assert d._spawn_nav(lambda ev: started.append(1), gen=gen) is False
-    assert started == [] and not d.is_navigating()
+    gen = robot_pkg.SAFETY_GEN._gen - 1  # a stop arrived since this dispatch began
+    assert nav_runner._spawn_nav(lambda ev: started.append(1), gen=gen) is False
+    assert started == [] and not nav_runner.is_navigating()

@@ -13,9 +13,9 @@ from bosdyn.api import robot_state_pb2
 
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.dispatcher as dispatcher
-import src.voice_control.spot_dispatch as d
+import src.spot.features.mouth.handlers as d
 import src.spot.features.mouth.handlers as mouth_h
-import src.voice_control.spot_tts as tts_mod
+import src.spot.tts.speaker as tts_mod
 from src.spot.core.events import EventBus
 from src.spot.core.registry import ActionSpec
 from src.spot.features import REGISTRY
@@ -380,24 +380,3 @@ def test_unregistered_falls_through_to_legacy(monkeypatch):
                         calls.append(name) or True)
     assert dispatcher.dispatch_intent({"intent": "set_speed", "params": {}}) is True
     assert calls == ["set_speed"]
-
-
-def test_spot_dispatch_forwards_moved_state_reads(monkeypatch):
-    monkeypatch.setattr(ARM, "_talk_resume", True)
-    monkeypatch.setattr(NAV, "_mode", "follow")
-    monkeypatch.setattr(SAFETY_GEN, "_gen", 41)
-    sentinel = {"cmd": None}
-    monkeypatch.setattr(CONNECTION, "_session", sentinel)
-    assert d._talk_resume is True and d._nav_mode == "follow" and d._safety_gen == 41
-    assert d._spot_session is sentinel
-    for name in d._FORWARDS:
-        assert name not in vars(d), f"stale module global {name} shadows the owner"
-    with pytest.raises(AttributeError):
-        d._no_such_global
-
-
-def test_spot_dispatch_reexports_are_the_core_objects():
-    assert d.dispatch_intent is dispatcher.dispatch_intent
-    assert d.arm_policy_for is arm_mod.arm_policy_for
-    assert d._dispatch_lock is dispatcher._dispatch_lock
-    assert d.ABORTING_INTENTS is dispatcher.ABORTING_INTENTS

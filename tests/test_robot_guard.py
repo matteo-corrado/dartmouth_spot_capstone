@@ -40,7 +40,7 @@ def test_guard_not_swallowed_by_dispatch_catch_all(expect_hits, monkeypatch):
     """A registered intent with no fake session reaches the real ensure():
     the block escapes dispatch's `except Exception` instead of looking like a
     normal failure."""
-    import src.voice_control.spot_dispatch as d
+    import src.spot.robot.dispatcher as d
     monkeypatch.setattr(CONNECTION, "_session", None)
     monkeypatch.setattr(CONNECTION, "_context", None)
     monkeypatch.setattr(CONNECTION, "_closing", False)

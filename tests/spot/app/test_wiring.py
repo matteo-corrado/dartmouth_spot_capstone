@@ -15,7 +15,7 @@ import src.spot.core.events as _ev
 import src.spot.mic.ring_control as _ring
 import src.spot.operator.control as _ctl
 import src.spot.safety.listener as _sl
-import src.voice_control.wake.safety_kws as _skws
+import src.spot.safety.kws as _skws
 from src.spot.core.events import EventBus
 from src.spot.features import REGISTRY
 from src.spot.perception.vision import NullVision
@@ -311,7 +311,7 @@ def _patch_robot_close(monkeypatch, log):
 def test_ctrl_c_after_map_stand_sits_and_powers_off(monkeypatch):
     """Ctrl-C after the --map bring-up stood the robot, before run(): the
     shutdown runs once and the robot is sat and powered off."""
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.robot.connection as sd
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)
@@ -334,7 +334,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
     """connection.ensure: a step after the stand raises (auto-arm start). The
     session stays closable; main closes it BEFORE degrading to dry-run."""
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)
@@ -343,7 +343,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
 
     def boom(*a, **k):
         raise RuntimeError("auto-arm failed")
-    monkeypatch.setattr(sd, "start_auto_arm", boom)
+    monkeypatch.setattr(mouth_h, "start_auto_arm", boom)
     _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
     assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
     assert os.environ["SPOT_DRY_RUN"] == "1"
@@ -352,7 +352,7 @@ def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
 
 def test_ensure_keeps_live_session_closable(monkeypatch):
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     log = []
     _r = _patch_robot_close(monkeypatch, log)
     monkeypatch.setattr(_r.CONNECTION, "_closing", False)
@@ -360,7 +360,7 @@ def test_ensure_keeps_live_session_closable(monkeypatch):
     monkeypatch.setattr(_r.CONNECTION, "_context", None)
     fake = _FakeRobotSession(log)
     monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
-    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(mouth_h, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     with pytest.raises(RuntimeError):
         _r.CONNECTION.ensure()
     assert _r.CONNECTION._session is fake.session and _r.CONNECTION._context is fake
@@ -388,13 +388,13 @@ def test_failed_close_refuses_instead_of_dry_run(monkeypatch, capsys):
     """The half-up close raises partway (send_stop, once): the robot is still
     up, so main refuses (no dry-run degrade) and its shutdown retries the close."""
     import src.spot.robot.connection as _conn
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.features.mouth.handlers as mouth_h
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)
     fake = _FakeRobotSession(log)
     monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
-    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    monkeypatch.setattr(mouth_h, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
     fails = [1]
 
     def send_stop(cmd):
@@ -412,3 +412,176 @@ def test_failed_close_refuses_instead_of_dry_run(monkeypatch, capsys):
     assert calls == [1] and "run" not in seen
     assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]  # closed by the shutdown retry
     assert _r.CONNECTION._session is None
+
+
+# ---- Wave 5 safety-gate warnings (main.py shutdown / bring-up / pre-try) ----
+
+def test_ctrl_c_inside_first_shutdown_is_retried_and_powers_off(monkeypatch):
+    """A Ctrl-C lands inside the first (pre-run) shutdown, in LISTENER.stop:
+    the guard is not spent, so main's except path retries and the --map robot
+    is sat and powered off."""
+    import src.spot.robot.connection as _conn
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
+
+    def no_stream(dev):
+        raise OSError("no input device")
+    monkeypatch.setattr(_cap.CAPTURE, "open", no_stream)  # step 7 refuses -> shutdown()
+    hits = [1]
+
+    def stop():
+        if hits:
+            hits.pop()
+            raise KeyboardInterrupt  # first Ctrl-C, during the join
+    monkeypatch.setattr(_sl.LISTENER, "stop", stop)
+    calls = _count_shutdown(monkeypatch, real=True)
+    with pytest.raises(KeyboardInterrupt):
+        _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert calls == [1, 1]  # interrupted once, retried once
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert _r.CONNECTION._session is None and "run" not in seen
+
+
+def test_sdk_missing_after_stand_closes_robot_before_dry_run(monkeypatch):
+    """ensure() stood the robot, then a ModuleNotFoundError: main closes the
+    half-up session before degrading to dry-run (like any other failure)."""
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+
+    def ensure(map_path=None):
+        _r.CONNECTION._context = fake
+        _r.CONNECTION._session = fake.__enter__()
+        raise ModuleNotFoundError("No module named 'bosdyn.x'")
+    monkeypatch.setattr(_r.CONNECTION, "ensure", ensure)
+    _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert os.environ["SPOT_DRY_RUN"] == "1"
+    assert seen[-1] == "run"
+
+
+def test_raise_before_run_try_closes_control_server_and_stream(monkeypatch):
+    """C.run raises before its own try: main still stops the control server
+    and the input stream, and shuts the runtime down once."""
+    seen, closed = [], []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_cap.CAPTURE, "open", lambda dev: SimpleNamespace(
+        start=lambda: None, stop=lambda: closed.append("stream.stop"),
+        close=lambda: closed.append("stream.close")))
+    monkeypatch.setattr(_ctl, "_start_control_server", lambda q: SimpleNamespace(
+        stop=lambda: closed.append("ctl.stop")))
+
+    def run(**k):
+        raise RuntimeError("before run()'s try")
+    monkeypatch.setattr(_loop.CONVERSATION, "run", run)
+    calls = _count_shutdown(monkeypatch)
+    with pytest.raises(RuntimeError):
+        _app.main(ARGS)
+    assert closed == ["ctl.stop", "stream.stop", "stream.close"]
+    assert calls == [1]
+
+
+def test_startup_preloads_dispatcher_before_conversation():
+    """Fix round 1: the robot-owners step (3) imports the dispatcher, so the
+    first stop does not cold-import it before send_stop. Fresh interpreter,
+    dry-run, nothing opened."""
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    code = ("import sys, src.spot.app.main as m; "
+            "before = 'src.spot.robot.dispatcher' in sys.modules; "
+            "m._robot_owners(); "
+            "print('PRELOAD', before, 'src.spot.robot.dispatcher' in sys.modules)")
+    out = subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True,
+                         text=True, timeout=120, env=dict(os.environ, SPOT_DRY_RUN="1"))
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "PRELOAD False True" in out.stdout
+
+
+def test_robot_owners_step_runs_before_conversation(monkeypatch):
+    import sys
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    loaded = []
+    monkeypatch.setattr(_ul, "UtteranceLog",
+                        lambda *a, **k: loaded.append("src.spot.robot.dispatcher" in sys.modules))
+    _app.main(ARGS)
+    assert loaded == [True]
+
+
+def _fresh(code, **env):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    return subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True,
+                          text=True, timeout=120, env=dict(os.environ, **env))
+
+
+def test_cleanup_cancel_nav_in_fresh_process():
+    """Fix round 1: cleanup_spot's cancel step (from src.spot.nav.runner import
+    _cancel_nav) in a process where only src.spot.app.main was imported (a
+    Ctrl-C during startup): no circular-import error, the cancel runs."""
+    out = _fresh("import sys, src.spot.app.main as m; "
+                 "assert 'src.spot.robot' not in sys.modules; "
+                 "from src.spot.nav.runner import _cancel_nav, is_navigating; "
+                 "_cancel_nav(); print('CANCEL_OK', is_navigating())", SPOT_DRY_RUN="1")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CANCEL_OK False" in out.stdout
+    assert "partially initialized" not in out.stdout + out.stderr
+
+
+def test_cleanup_spot_cancel_step_in_fresh_process():
+    out = _fresh("import src.spot.app.main as m; m.cleanup_spot(); print('CLEANUP_DONE')",
+                 SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CLEANUP_DONE" in out.stdout
+    assert "cancel_nav error" not in out.stdout
+
+
+def test_no_sdk_degrades_to_dry_run_in_fresh_process():
+    """Fix round 1: with bosdyn missing, _bring_up_robot's --map branch hits
+    ModuleNotFoundError and _close_session_if_up never imports the robot
+    package (never raises), so the branch degrades to dry-run. This exercises
+    that branch in isolation only: a full main() without bosdyn dies earlier,
+    at step 3 (_robot_owners imports src.spot.robot)."""
+    code = ("import sys; sys.modules['bosdyn'] = None; "
+            "import os, src.spot.app.main as m; from types import SimpleNamespace as N; "
+            "print('CLOSE', m._close_session_if_up()); "
+            "a = N(map='m', dry_run=False, allow_no_safety_kws=False); "
+            "ok = m._bring_up_robot(a, N(have_safety_kws=True)); "
+            "print('BRINGUP', ok, a.dry_run, os.environ['SPOT_DRY_RUN'])")
+    out = _fresh(code, SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CLOSE True" in out.stdout
+    assert "SDK not installed" in out.stdout
+    assert "BRINGUP True True 1" in out.stdout
+
+
+def test_mouth_stand_in_refuses_robot_start(monkeypatch, capsys):
+    """Fix round 2 (W2): the core bound _NoMouth at import; even if the
+    registry retry loads the real mouth, robot mode refuses (C6)."""
+    import src.spot.robot as _r
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_r, "mouth_handlers", _r._NoMouth("ImportError: boom"))
+    _app.main(["--device", "0", "--output-device", "0"])
+    out = capsys.readouterr().out
+    assert "[Features] FAILED: mouth (core binding)" in out
+    assert "refusing to start on the robot" in out
+    assert seen == ["tuning", "bus", "robot", "features"]
+
+
+def test_mouth_stand_in_only_warns_in_dry_run(monkeypatch, capsys):
+    import src.spot.robot as _r
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_r, "mouth_handlers", _r._NoMouth("ImportError: boom"))
+    _app.main(ARGS)
+    assert "WARNING: --dry-run continues" in capsys.readouterr().out
+    assert seen == STEPS

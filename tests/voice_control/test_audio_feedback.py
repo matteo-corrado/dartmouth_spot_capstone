@@ -1,7 +1,7 @@
 # tests/voice_control/test_audio_feedback.py
 """Unit tests for audio feedback tone generation (Stage 2F P6)."""
 import numpy as np
-from src.voice_control.audio_feedback import AudioFeedback, _tone
+from src.spot.audio.chimes import AudioFeedback, _tone
 
 
 class RecordingPlayer:

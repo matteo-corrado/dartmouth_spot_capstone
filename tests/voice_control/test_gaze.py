@@ -1,7 +1,7 @@
 """Unit tests for gripper-gaze bearing math (Task 19)."""
 import pytest
 
-from src.voice_control.gaze import gaze_target, should_regaze
+from src.spot.features.gaze.math import gaze_target, should_regaze
 
 
 def test_gaze_front_and_side():

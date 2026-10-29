@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import src.spot.features.settings.handlers as settings_h
-import src.voice_control.spot_dispatch as d
+import src.spot.robot.dispatcher as d
 from src.spot.features import REGISTRY
 from src.spot.features.settings import FEATURE
 from tests.spot.features._legacy_sets import LLM_PROMPT_SOURCE, declared_flags, legacy_flags
@@ -24,12 +24,6 @@ def test_registered_and_prompt_lines_verbatim():
         assert spec.prompt_line in prompt
         assert spec.grammar_params is None
     assert FEATURE.intent_rules == ()
-
-
-def test_spot_dispatch_reexports():
-    for name in ("_handle_set_volume", "_handle_set_backend", "do_set_persona",
-                 "do_add_persona", "KOKORO_GENDER_FALLBACK", "PROMPT_PREFIX_TEMPLATE"):
-        assert getattr(d, name) is getattr(settings_h, name)
 
 
 def test_settings_never_bring_up_a_session(monkeypatch):

@@ -1,7 +1,7 @@
 """WakeWordDetector gain modes, using stubs (no model)."""
 import numpy as np
 
-from src.voice_control.wake.sherpa_onnx import WakeWordDetector
+from src.spot.wake.sherpa_onnx import WakeWordDetector
 
 
 class _Stream:

@@ -1,4 +1,4 @@
-# src/voice_control/voice_state.py
+# src/spot/core/voice_state.py
 """Shared VoiceState enum for the voice pipeline.
 
 Lives in its own leaf module so state_feedback / spot_leds can import it

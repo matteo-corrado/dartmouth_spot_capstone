@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src.voice_control.control_server import (
+from src.spot.operator.control_server import (
     COMMANDS, ControlServer, drain, parse_command,
 )
 

@@ -3,7 +3,7 @@ locked speaker while LISTENING. Writes are throttled to Tuning.ring_max_hz; a
 throttled update is marked pending and flushed from the main loop. Every
 device call is isolated — a missing/dead mic only means no ring.
 
-Moved from src/voice_control/client_mic.py (Task 10). The ring state that
+Moved from the old client_mic.py (Task 10). The ring state that
 used to be client_mic module globals lives on the Ring owner, RING, created
 once at import and reached through this module at call time.
 """
@@ -39,7 +39,7 @@ class RingThrottle:
 
 def _make_ring_animator(mic):
     """RingAnimator(mic, max_hz=Tuning.ring_max_hz); None -> direct writes."""
-    from src.voice_control.ring_animator import RingAnimator
+    from src.spot.mic.ring_animator import RingAnimator
     try:
         return RingAnimator(mic, max_hz=_tuning.ring_max_hz)
     except Exception as e:

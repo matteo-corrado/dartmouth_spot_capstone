@@ -1,18 +1,21 @@
 """Review fixes: chime mask, hush silences the reply, transcript privacy."""
 from collections import deque
 
-import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.filler as filler
+import src.spot.conversation.loop as _loop
+import src.spot.core.voice_state as voice_state
 import src.spot.audio.capture as _cap
 import src.spot.conversation.loop as _loop
-from src.voice_control.audio_frontend import Endpointer
+from src.spot.audio.frontend import Endpointer
 
 
 def _simulate(frames, tail_s=0.15):
     """Mirror of the loop's per-frame path: (t, is_speech, chime_busy)
     -> list of utterances (each a list of frame ids incl. pre-roll)."""
-    mask = cm.ChimeMask(tail_s)
+    mask = _cap.ChimeMask(tail_s)
     ep = Endpointer(3, 10, 600)
-    pre = deque(maxlen=cm.PREROLL_FRAMES + 3)
+    pre = deque(maxlen=_loop.PREROLL_FRAMES + 3)
     utts, cur, in_utt = [], None, False
     for i, (t, sp, chime) in enumerate(frames):
         masked, _ended = mask.update(chime, t)
@@ -66,8 +69,8 @@ def test_one_breath_wake_keeps_command_onset_under_listen_cue():
     # "hey spot" (0..9) -> wake at 9, listen_cue + tail mask the next frames
     # while the user keeps going: "stand up" starts at frame 10, under the cue.
     tail_s, cue_frames = 0.15, 5           # listen_cue 140 ms ~ 5 frames
-    mask, vad = cm.ChimeMask(tail_s), _LagVAD()
-    pre = deque(maxlen=cm.PREROLL_FRAMES + 3)
+    mask, vad = _cap.ChimeMask(tail_s), _LagVAD()
+    pre = deque(maxlen=_loop.PREROLL_FRAMES + 3)
     ep, utt, in_utt = None, None, False
     for i in range(70):
         t = i * 0.03
@@ -89,16 +92,16 @@ def test_one_breath_wake_keeps_command_onset_under_listen_cue():
         if ev == "start":
             in_utt, utt = True, list(pre)
     assert utt is not None and 10 in utt   # the "stand" onset survived
-    assert cm.PREROLL_FRAMES * cm.FRAME_S >= 0.14 + tail_s + 0.25  # cue + tail + Silero lag
+    assert _loop.PREROLL_FRAMES * _cap.FRAME_S >= 0.14 + tail_s + 0.25  # cue + tail + Silero lag
 
 
 def test_vad_reset_after_idle_chime_but_not_mid_speech():
-    m = cm.ChimeMask(0.15)
+    m = _cap.ChimeMask(0.15)
     m.update(False, 0.0, False)
     m.update(True, 0.03, False)
     _, ended = m.update(False, 0.3, False)
     assert m.should_reset_vad(ended, in_utt=False) is True   # idle: clear hangover
-    m = cm.ChimeMask(0.15)
+    m = _cap.ChimeMask(0.15)
     m.update(False, 0.0, True)                               # user already talking
     m.update(True, 0.03, True)
     _, ended = m.update(False, 0.3, True)
@@ -106,7 +109,7 @@ def test_vad_reset_after_idle_chime_but_not_mid_speech():
 
 
 def test_chime_mask_edges():
-    m = cm.ChimeMask(0.15)
+    m = _cap.ChimeMask(0.15)
     assert m.update(False, 0.0) == (False, False)
     assert m.update(True, 1.0) == (True, False)
     assert m.update(False, 1.1) == (True, False)    # within tail
@@ -131,15 +134,15 @@ class _Filler:
 
 def test_hush_mid_stream_suppresses_rest_of_reply():
     c, f = _Chunker(), _Filler()
-    w = cm._TokenWatch(c, f)
+    w = filler._TokenWatch(c, f)
     w('{"actions": [], "response": "Hello')
     assert c.suppressed is False
-    cm._abort_chain.set()
+    _loop.CONVERSATION._abort_chain.set()
     try:
         w(' there."}')
         assert c.suppressed is True and f.cancelled
     finally:
-        cm._abort_chain.clear()
+        _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_say_guarded_by_abort():
@@ -149,24 +152,24 @@ def test_say_guarded_by_abort():
         def speak(self, text, voice=None):
             said.append(text)
 
-    cm._abort_chain.clear()
-    cm._say(T(), "one")
-    cm._abort_chain.set()
-    cm._say(T(), "two")
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
+    _loop._say(T(), "one")
+    _loop.CONVERSATION._abort_chain.set()
+    _loop._say(T(), "two")
+    _loop.CONVERSATION._abort_chain.clear()
     assert said == ["one"]
 
 
 def test_heard_redacts_without_transcript_log(monkeypatch):
     monkeypatch.setattr(_loop.CONVERSATION, "_store_transcript", True)
-    assert cm._heard("go to the lab") == '"go to the lab"'
+    assert _loop._heard("go to the lab") == '"go to the lab"'
     monkeypatch.setattr(_loop.CONVERSATION, "_store_transcript", False)
-    assert cm._heard("go to the lab") == "<heard 4 words>"
+    assert _loop._heard("go to the lab") == "<heard 4 words>"
 
 
 def test_enter_state_updates_status(monkeypatch):
     monkeypatch.setattr(_cap.CAPTURE, "_mic", None)
     monkeypatch.setattr(_loop.CONVERSATION, "_state_leds", None)
     monkeypatch.setattr(_loop, "chime_for", lambda s: None)
-    cm._enter_state(cm.VoiceState.THINKING)
-    assert cm._status["state"] == "THINKING"
+    _loop._enter_state(voice_state.VoiceState.THINKING)
+    assert _loop.CONVERSATION._status["state"] == "THINKING"

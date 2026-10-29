@@ -1,6 +1,6 @@
 import pytest
 
-from src.voice_control.speaker_lock import (
+from src.spot.conversation.speaker_lock import (
     SpeakerLock, ang_diff, circular_median_deg, mic_to_body_deg)
 
 

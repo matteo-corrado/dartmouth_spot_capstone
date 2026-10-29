@@ -63,7 +63,7 @@ def envelope(samples: np.ndarray, rate: int, fps: int = MOUTH_FPS,
 def _max_open() -> float:
     """Tuning mouth_max_open clamped to [0.05, 1.0]; 1.0 if tuning is unavailable."""
     try:
-        from src.voice_control.tuning import get_tuning
+        from src.spot.core.tuning import get_tuning
         return float(max(0.05, min(1.0, get_tuning().mouth_max_open)))
     except Exception:
         return 1.0

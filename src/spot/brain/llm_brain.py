@@ -188,7 +188,7 @@ def _emote_prompt_parts(grammar_text: str, section: Optional[str], registry=None
 
 def _load_emote_section() -> Optional[str]:
     try:
-        from src.voice_control.emotes import prompt_section
+        from src.spot.features.dance.emotes import prompt_section
         return prompt_section()
     except ImportError:
         return None
@@ -568,7 +568,7 @@ class LLMBrain:
         self.session_state.turn_index += 1
 
         try:
-            from src.voice_control.tts import get_active_backend_name
+            from src.spot.tts import get_active_backend_name
             backend_name = get_active_backend_name()
             persona_obj = get_persona(self.session_state.current_persona, self._persona_registry)
             voice_id = persona_obj.voices.get(

@@ -5,10 +5,11 @@ from types import SimpleNamespace
 import pytest
 from bosdyn.api import robot_state_pb2
 
-import src.voice_control.spot_dispatch as d
+import src.spot.robot.dispatcher as dispatcher
+import src.spot.robot.state as state_mod
 import src.spot.features.navigation.handlers as nav_h
 from src.spot.robot import CONNECTION
-import src.voice_control.perception.obstacle_query as oq
+import src.spot.perception.obstacle_query as oq
 
 
 class FakeStateClient:
@@ -31,7 +32,7 @@ def sess(monkeypatch):
 
 def _run(name, params=None):
     said = []
-    ok = d.dispatch_intent({"intent": name, "params": params or {}}, speak=said.append)
+    ok = dispatcher.dispatch_intent({"intent": name, "params": params or {}}, speak=said.append)
     return ok, said
 
 
@@ -99,11 +100,11 @@ def test_graceful_line_without_robot(monkeypatch):
 
 
 def test_speak_none_prints(sess, capsys):
-    assert d.dispatch_intent({"intent": "battery_status", "params": {}}) is True
+    assert dispatcher.dispatch_intent({"intent": "battery_status", "params": {}}) is True
     assert "My battery is at 73 percent" in capsys.readouterr().out
 
 
 def test_state_dict_has_no_volatile_keys(monkeypatch):
     monkeypatch.setattr(CONNECTION, "_session", None)
-    st = d.get_robot_state_dict()
+    st = state_mod.get_robot_state_dict()
     assert "uptime_s" not in st and "process_pid" not in st

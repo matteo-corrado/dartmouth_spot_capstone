@@ -1,7 +1,7 @@
 """Per-utterance / idle metrics records and the append-only JSONL log
 (logs/utterances/<date>.jsonl).
 
-Moved from src/voice_control/client_mic.py (Task 10), unchanged.
+Moved from the old client_mic.py (Task 10), unchanged.
 """
 import json
 import pathlib

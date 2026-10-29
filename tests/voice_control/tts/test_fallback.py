@@ -3,8 +3,8 @@ import time
 
 import pytest
 
-import src.voice_control.tts as tts_mod
-from src.voice_control.tts import synthesize_with_fallback
+import src.spot.tts as tts_mod
+from src.spot.tts import synthesize_with_fallback
 
 
 @pytest.fixture(autouse=True)

@@ -1,6 +1,6 @@
 """Always-on spoken stop listener (stop/freeze/estop) + transcript safety path.
 
-Moved from src/voice_control/client_mic.py (Task 10), logic unchanged.
+Moved from the old client_mic.py (Task 10), logic unchanged.
 
 The audio callback feeds the listener's queue with every frame before any
 mute/gate check; a daemon thread is the ONLY owner of the safety detector
@@ -305,7 +305,7 @@ def _hush():
             print(f"[Control] hush: player reset failed: {e}")
     if os.environ.get("SPOT_DRY_RUN") != "1":
         try:
-            from src.voice_control.spot_dispatch import _close_mouth
+            from src.spot.robot.arm import _close_mouth
             _close_mouth()
         except Exception as e:
             print(f"[Control] hush: close mouth failed: {e}")

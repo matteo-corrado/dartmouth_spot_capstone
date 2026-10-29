@@ -1,5 +1,5 @@
 """Settings feature handlers: persona, volume and TTS backend. Moved verbatim
-from src/voice_control/spot_dispatch.py. None of these need a Spot session.
+from the old spot_dispatch.py. None of these need a Spot session.
 
 _current_tts_volume_percent stays in src/spot/robot/state.py: the status
 snapshot reads it, so it is not only a settings helper.
@@ -26,8 +26,8 @@ def _handle_set_volume(params):
         pct = max(1.0, min(100.0, pct))
         gain = pct / 100.0
 
-        from src.voice_control.spot_tts import get_tts
-        from src.voice_control.audio_feedback import beep
+        from src.spot.tts.speaker import get_tts
+        from src.spot.audio.chimes import beep
         tts = get_tts()
         if tts is None:
             # The voice pipeline hasn't registered the TTS singleton yet.
@@ -61,7 +61,7 @@ def _handle_set_backend(params):
         return False
     os.environ["SPOT_TTS_BACKEND"] = name
     try:
-        from src.voice_control.tts import get_backend, get_active_backend_name
+        from src.spot.tts import get_backend, get_active_backend_name
         get_backend()  # lazy init / cache warm
         active = get_active_backend_name()
         print(f"[Spot] ✓ TTS backend switched to '{active}'")
@@ -91,12 +91,12 @@ def do_set_persona(params: dict, brain) -> dict:
         print(f"[Dispatch] Unknown persona '{name}' — auto-upgrading to add_persona")
         description = brain.describe_persona(name) if hasattr(brain, "describe_persona") else f"{name} character voice"
         return do_add_persona({"name": name, "description": description}, brain)
-    from src.voice_control.chatbot.persona import get_persona
+    from src.spot.brain.persona import get_persona
     persona = get_persona(name, brain._persona_registry)
     brain.session_state.current_persona = persona.name
     # Stage 2E.2: scale gripper-mouth swing to this persona.
     try:
-        from src.voice_control.spot_tts import get_tts
+        from src.spot.tts.speaker import get_tts
         _t = get_tts()
         if _t is not None and _t.mouth is not None:
             _t.mouth.intensity = getattr(persona, "mouth_intensity", 1.0)
@@ -130,9 +130,9 @@ def do_add_persona(params: dict, brain) -> dict:
         brain.session_state.current_persona = name
         return {"ok": True, "persona": name, "cached": True}
 
-    from src.voice_control.chatbot.persona import get_persona, Persona
-    from src.voice_control.chatbot.voice_discovery import find_and_claim
-    from src.voice_control.spot_tts import get_tts
+    from src.spot.brain.persona import get_persona, Persona
+    from src.spot.brain.voice_discovery import find_and_claim
+    from src.spot.tts.speaker import get_tts
 
     outgoing = get_persona(brain.session_state.current_persona, brain._persona_registry)
     spoken = name.replace("_", " ")
