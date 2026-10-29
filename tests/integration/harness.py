@@ -7,6 +7,7 @@ audio and returns what it decided, as ordered event records:
     {"kind": "dispatch", "intent": ..., "params": ..., "via": ...}
     {"kind": "state", "to": ...}
     {"kind": "say", "text": ...}
+    {"kind": "asr", "n_bytes": ..., "sha1": ...}   the PCM handed to ASR
 
 Every record also carries "clip" (the clip being fed when it happened; None
 at startup). The real wake KWS, safety KWS, Silero VAD, FloorTracker,
@@ -50,6 +51,7 @@ tests/audio/replay_demo.py does). Never zeros: FloorTracker would fall to
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import queue
@@ -129,11 +131,12 @@ def default_clips() -> list[str]:
     (wake, wake-pause, quick reply, overlap)."""
     lab = ["adv_hey_dog", "adv_hey_stop", "adv_hot_spot",
            "battery_status", "come_here", "describe_surroundings", "find_a_chair",
-           "go_to_the_kitchen",
+           "follow_me", "go_to_the_kitchen",
            "hey_spot_close", "hey_spot_far", "hey_spot_mid", "hey_spot_stand_up",
            "hey_spot_walk_forward",
            "idle_01", "idle_03", "idle_05",
-           "sit_down", "stand_up", "stop", "turn_left_90", "walk_forward_1m"]
+           "sit_down", "stand_up", "stop", "tell_me_about_dartmouth_hall", "turn_around",
+           "turn_left_90", "walk_forward_1m", "walk_forward_two_meters", "what_do_you_see"]
     safety = sorted(f"safety/{p.name}" for p in (demo_root() / "safety").glob("*.wav"))
     fan = ["fan/wake_hey_spot_front.wav", "fan/pause_hey_spot.wav",
            "fan/quick_reply_1.wav", "fan/overlap_1.wav"]
@@ -255,6 +258,8 @@ class _H:
     plan: list = []
     meta: dict = {}
     error = None
+    hits = {"vclock": 0, "asr": 0, "drain": 0, "enter_state": 0}
+    forbidden: list = []
 
     @classmethod
     def add(cls, rec: dict) -> None:
@@ -398,16 +403,18 @@ class LockstepQueue(queue.Queue):
         super().__init__(maxsize)
         self.puts = 0
 
-    def put_nowait(self, item):
-        super().put_nowait(item)
+    def put(self, item, block=True, timeout=None):  # put_nowait calls put
+        super().put(item, block, timeout)
         self.puts += 1
 
     def get(self, block=True, timeout=None):
         if not block:  # _drain_audio_queue's get_nowait: plain behaviour
             return super().get(block, timeout)
+        # The loop's 0.2 s timeout is ignored: it blocks until a frame or a
+        # _TICK, so a slow feeder (CPU stall) never adds a loop iteration.
         _H.waiting = True
         try:
-            item = super().get(block, timeout)
+            item = super().get(True, None)
         finally:
             _H.waiting = False
         _H.gets += 1
@@ -454,7 +461,7 @@ def _one_iteration(q, action):
     before_gets, before_puts = _H.gets, q.puts
     action()
     if q.puts == before_puts:  # frame dropped (gated / muted) or no frame
-        queue.Queue.put_nowait(q, _TICK)
+        queue.Queue.put(q, _TICK, False)  # bypasses the put counter
     _wait(lambda: _H.gets > before_gets and _H.waiting and q.empty(), 30.0,
           "main loop iteration")
 
@@ -516,6 +523,7 @@ def _feed_main(cm, cb):
                 fd.frame(pad[extra * FRAME:(extra + 1) * FRAME])
                 extra += 1
             _H.meta.setdefault("extra_tail_frames", {})[key] = extra
+            _H.hits.setdefault("audio_queue_puts_first_clip", cm.audio_queue.puts)
             fd.control("reset", "WAKE_WORD")
         with _H.lock:
             _H.clip = None
@@ -526,7 +534,7 @@ def _feed_main(cm, cb):
     finally:
         _H.done.set()
         try:
-            queue.Queue.put_nowait(cm.audio_queue, _TICK)  # wake the loop to exit
+            queue.Queue.put(cm.audio_queue, _TICK, False)  # wake the loop to exit
         except Exception:
             pass
 
@@ -577,6 +585,7 @@ class _VirtualTime:
     """client_mic's `time` module with monotonic() replaced by the feeder's clock."""
 
     def monotonic(self):
+        _H.hits["vclock"] += 1
         return _H.vnow
 
     def __getattr__(self, name):
@@ -584,7 +593,20 @@ class _VirtualTime:
 
 
 def _forbidden(*a, **k):
-    raise RuntimeError("golden harness: real audio/mic hardware must not be opened")
+    # Recorded as well as raised: client_mic swallows some of these errors
+    # (send_to_asr, _start_control_server), which would otherwise hide a
+    # moved function that bypassed its fake.
+    _H.forbidden.append("".join(__import__("traceback").format_stack(limit=4)))
+    raise RuntimeError("golden harness: real hardware / ASR / control port must not be used")
+
+
+class _ForbiddenStub:
+    """ASRStub stand-in: any call to the real gRPC ASR (localhost:50055) fails."""
+
+    def __init__(self, channel):
+        pass
+
+    StreamingRecognize = staticmethod(_forbidden)
 
 
 def _child(out_path: str, clip_paths: list[str]) -> int:
@@ -605,6 +627,11 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
 
         import src.voice_control.client_mic as cm
         import src.voice_control.control_server as control_server
+        # Live ASR and the control port: never reachable, even by code that
+        # moves out from under the fakes below.
+        mp.setattr(cm, "grpc", SimpleNamespace(insecure_channel=lambda addr: None))
+        mp.setattr(cm, "ASRStub", _ForbiddenStub)
+        mp.setattr(control_server.ControlServer, "start", _forbidden)
 
         # client_mic loads the project's dotenv file at import: pin the env after it.
         mp.setenv("SPOT_DRY_RUN", "1")
@@ -653,6 +680,9 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         mp.setattr(cm, "safety_kws_loop", safety_loop)
 
         def fake_asr(stub, pcm_bytes, timeout=None):
+            _H.hits["asr"] += 1
+            _H.add({"kind": "asr", "n_bytes": len(pcm_bytes),
+                    "sha1": hashlib.sha1(pcm_bytes).hexdigest()[:12]})
             return _H.transcripts.get(_H.clip, "") if _H.clip else ""
         mp.setattr(cm, "send_to_asr", fake_asr)
 
@@ -676,6 +706,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         real_enter_state = cm._enter_state
 
         def enter_state(new_state):
+            _H.hits["enter_state"] += 1
             _H.add({"kind": "state", "to": new_state.name})
             return real_enter_state(new_state)
         mp.setattr(cm, "_enter_state", enter_state)
@@ -694,6 +725,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             # First statement of every main-loop iteration (main() imports
             # drain locally, so it is patched on control_server).
             _H.ctl_q = q
+            _H.hits["drain"] += 1
             if _H.done.is_set():
                 raise KeyboardInterrupt  # main()'s own shutdown path
             return real_drain(q, handler)
@@ -706,6 +738,16 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
     if _H.error is not None or not _H.done.is_set():
         print(f"harness: feeder failed: {_H.error!r}")
         return 1
+    # Every fake must have been used: after a client_mic split a patched name
+    # that is no longer looked up would otherwise pass silently.
+    dead = [k for k in ("vclock", "asr", "drain", "enter_state", "audio_queue_puts_first_clip")
+            if not _H.hits.get(k)]
+    if dead or _H.forbidden:
+        print(f"harness: fakes not hit {dead}; forbidden calls {len(_H.forbidden)}:")
+        for f in _H.forbidden:
+            print(f)
+        return 1
+    _H.meta["hits"] = dict(_H.hits)
     Path(out_path).write_text(json.dumps({"records": _H.events, "meta": _H.meta}, indent=1))
     print(f"harness: {len(_H.events)} records, meta={_H.meta}")
     return 0
