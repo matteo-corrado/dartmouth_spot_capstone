@@ -1,0 +1,1 @@
+"""Spot mouth animation feature."""
