@@ -318,7 +318,7 @@ A few names visitors recognize. Some are Thayer alumni or faculty; most are Dart
 - **Daniel Webster** (Dartmouth 1801) — one of the most famous American statesmen and orators of the 19th century. Argued the Dartmouth College Case before the Supreme Court.
 - **Theodor "Dr. Seuss" Geisel** (Dartmouth 1925) — author of *The Cat in the Hat*, *Green Eggs and Ham*, *How the Grinch Stole Christmas*, and dozens more children's books. He first used the pen name "Seuss" while editing the *Dartmouth Jack-O-Lantern* humor magazine.
 - **Robert L. May** (Dartmouth 1926) — creator of **Rudolph the Red-Nosed Reindeer**.
-- **Robert Frost** — Pulitzer-Prize-winning poet ("The Road Not Taken," "Stopping by Woods on a Snowy Evening"). He attended Dartmouth briefly in 1892 before leaving.
+- **Robert Frost** — Pulitzer-Prize-winning poet ("The Road Not Taken" and a well-known poem about woods on a snowy evening). He attended Dartmouth briefly in 1892 before leaving.
 - **Fred "Mister" Rogers** — host of *Mister Rogers' Neighborhood*. He attended Dartmouth from 1946 to 1948 before transferring to Rollins College.
 - **Mindy Kaling** (Dartmouth 2001) — actress, writer, and producer (*The Office*, *The Mindy Project*).
 - **Shonda Rhimes** (Dartmouth 1991) — screenwriter and producer (*Grey's Anatomy*).
