@@ -3,7 +3,7 @@ import pathlib
 
 from bosdyn.client.image import ImageClient
 
-import src.spot.robot as _robot
+import src.spot.robot as _r
 from src.spot.nav.location_manager import list_locations as _list_saved_locations
 from src.spot.nav.map_loader import list_available_maps, read_last_used
 
@@ -71,12 +71,12 @@ def get_robot_state_dict() -> dict:
     except OSError as e:
         print(f"[Spot] WARN: map state unavailable: {e}")
 
-    if _robot.CONNECTION._session is None:
+    if _r.CONNECTION._session is None:
         state["session"] = "not connected"
         return state
 
     try:
-        state_client = _robot.CONNECTION._session["state"]
+        state_client = _r.CONNECTION._session["state"]
         robot_state = state_client.get_robot_state()
 
         # Battery
@@ -117,7 +117,7 @@ def get_robot_state_dict() -> dict:
     try:
         from bosdyn.client.graph_nav import GraphNavClient
 
-        gn = _robot.CONNECTION._session["robot"].ensure_client(
+        gn = _r.CONNECTION._session["robot"].ensure_client(
             GraphNavClient.default_service_name
         )
         loc = gn.get_localization_state()
@@ -149,7 +149,7 @@ def capture_frame(camera: str = "front") -> bytes:
     """
     source_name = CAMERA_SOURCES.get(camera, CAMERA_SOURCES["front"])
     try:
-        session = _robot.CONNECTION.ensure()
+        session = _r.CONNECTION.ensure()
         image_client = session["robot"].ensure_client(ImageClient.default_service_name)
 
         image_responses = image_client.get_image_from_sources([source_name])

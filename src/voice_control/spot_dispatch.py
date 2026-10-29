@@ -43,7 +43,7 @@ from src.graph_nav_utils import (  # noqa: F401
 # ---------------------------------------------------------------------------
 # Robot core (moved in Task 9): owners + re-exported functions and constants
 # ---------------------------------------------------------------------------
-from src.spot.robot import SAFETY_GEN, CONNECTION, ARM, NAV
+import src.spot.robot as _r
 from src.spot.robot import motion as _motion
 from src.spot.robot import state as _state
 from src.spot.robot import dispatcher as _dispatcher
@@ -112,27 +112,27 @@ from src.spot.robot.dispatcher import (  # noqa: F401
 
 # Old module-global name -> (owner, attribute). Reads only (PEP 562).
 _FORWARDS = {
-    "_spot_session": (CONNECTION, "_session"),
-    "_session_context": (CONNECTION, "_context"),
-    "_session_lock": (CONNECTION, "_lock"),
-    "_closing": (CONNECTION, "_closing"),
-    "_arm_pose": (ARM, "_pose"),
-    "_pose_before_walk": (ARM, "_pose_before_walk"),
-    "_pose_during_walk": (ARM, "_pose_during_walk"),
-    "_arm_lock": (ARM, "_lock"),
-    "_arm_settle_until": (ARM, "_settle_until"),
-    "_last_traj": (ARM, "_last_traj"),
-    "_mouth_resume": (ARM, "_mouth_resume"),
-    "_talk_resume": (ARM, "_talk_resume"),
-    "_gaze_deg": (ARM, "_gaze_deg"),
-    "_last_brain": (ARM, "_last_brain"),
-    "_safety_gen": (SAFETY_GEN, "_gen"),
-    "_dispatch_gen": (SAFETY_GEN, "_dispatch_gen"),
-    "_nav_thread": (NAV, "_thread"),
-    "_nav_stop_event": (NAV, "_stop_event"),
-    "_nav_mode": (NAV, "_mode"),
-    "_nav_lock": (NAV, "_lock"),
-    "_home_waypoint": (NAV, "_home_waypoint"),
+    "_spot_session": ("CONNECTION", "_session"),
+    "_session_context": ("CONNECTION", "_context"),
+    "_session_lock": ("CONNECTION", "_lock"),
+    "_closing": ("CONNECTION", "_closing"),
+    "_arm_pose": ("ARM", "_pose"),
+    "_pose_before_walk": ("ARM", "_pose_before_walk"),
+    "_pose_during_walk": ("ARM", "_pose_during_walk"),
+    "_arm_lock": ("ARM", "_lock"),
+    "_arm_settle_until": ("ARM", "_settle_until"),
+    "_last_traj": ("ARM", "_last_traj"),
+    "_mouth_resume": ("ARM", "_mouth_resume"),
+    "_talk_resume": ("ARM", "_talk_resume"),
+    "_gaze_deg": ("ARM", "_gaze_deg"),
+    "_last_brain": ("ARM", "_last_brain"),
+    "_safety_gen": ("SAFETY_GEN", "_gen"),
+    "_dispatch_gen": ("SAFETY_GEN", "_dispatch_gen"),
+    "_nav_thread": ("NAV", "_thread"),
+    "_nav_stop_event": ("NAV", "_stop_event"),
+    "_nav_mode": ("NAV", "_mode"),
+    "_nav_lock": ("NAV", "_lock"),
+    "_home_waypoint": ("NAV", "_home_waypoint"),
 }
 
 
@@ -141,7 +141,7 @@ def __getattr__(name):
         owner, attr = _FORWARDS[name]
     except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    return getattr(owner, attr)
+    return getattr(getattr(_r, owner), attr)  # owner looked up at call time
 
 
 # Feature state that stays here until Wave 4 (mouth auto-arm, gaze timing).
@@ -237,7 +237,7 @@ def _handle_enable_mouth(params, gen=None):
         if tts is None:
             print("[Spot] enable_mouth: TTS not initialized")
             return False
-        session = CONNECTION.ensure()
+        session = _r.CONNECTION.ensure()
         robot = session["robot"]
         if not robot.has_arm():
             print("[Spot] enable_mouth: no arm installed")
@@ -251,21 +251,21 @@ def _handle_enable_mouth(params, gen=None):
         if not _state.standing_and_powered(session):
             print("[Spot] enable_mouth: not standing — refusing arm deploy")
             return False
-        if NAV.is_navigating():
+        if _r.NAV.is_navigating():
             print("[Spot] enable_mouth: moving — not deploying the arm while walking")
             return False
-        if not ARM.send(session["cmd"], "talk", timeout_s=5.0, gen=gen):
+        if not _r.ARM.send(session["cmd"], "talk", timeout_s=5.0, gen=gen):
             print("[Spot] enable_mouth: arm did not reach the talk pose — not enabling")
             return False
-        ARM._pose_before_walk = None
-        ARM._mouth_resume = False
-        ARM.set_talk_resume(False)
+        _r.ARM._pose_before_walk = None
+        _r.ARM._mouth_resume = False
+        _r.ARM.set_talk_resume(False)
         _auto_arm = True  # keep folding back in after a sit/stand this session
         _auto_arm_pending = False
         if tts.mouth is None:
             tts.mouth = MouthDriver(cmd_client=session["cmd"])
-        with ARM._lock:  # a stop since the send wins: the claw stays shut
-            if SAFETY_GEN.aborted(gen) or ARM._pose != "talk":
+        with _r.ARM._lock:  # a stop since the send wins: the claw stays shut
+            if _r.SAFETY_GEN.aborted(gen) or _r.ARM._pose != "talk":
                 print("[Spot] enable_mouth: stopped while raising — mouth stays off")
                 return False
             tts.mouth.enable()
@@ -280,22 +280,22 @@ def _handle_disable_mouth(params, session=None):
     """Disable mouth animation, close the gripper, and stow the arm (Stage 2E.2).
     Also opts out of the automatic fold for the rest of the session."""
     global _auto_arm, _auto_arm_pending
-    ARM._mouth_resume = False
+    _r.ARM._mouth_resume = False
     _auto_arm = False
     _auto_arm_pending = False
-    ARM.set_talk_resume(False)
+    _r.ARM.set_talk_resume(False)
     try:
         from src.voice_control.spot_tts import get_tts
         tts = get_tts()
         if tts is not None and tts.mouth is not None:
             tts.mouth.disable()
         if session is None:
-            session = CONNECTION.ensure()
-        if NAV.is_navigating():
+            session = _r.CONNECTION.ensure()
+        if _r.NAV.is_navigating():
             # Arm is tucked for walking; stow when the walk ends instead.
-            ARM._pose_before_walk = "stowed"
+            _r.ARM._pose_before_walk = "stowed"
         else:
-            ARM.send(session["cmd"], "stowed", timeout_s=5.0)
+            _r.ARM.send(session["cmd"], "stowed", timeout_s=5.0)
         print("[Spot] ✓ Mouth disabled (arm stowed)")
         return True
     except Exception as e:
@@ -458,8 +458,8 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
     never raises.
     """
     global _gaze_t
-    sess = CONNECTION._session
-    if sess is None or CONNECTION._closing or ARM._pose != "talk" or NAV.is_navigating():
+    sess = _r.CONNECTION._session
+    if sess is None or _r.CONNECTION._closing or _r.ARM._pose != "talk" or _r.NAV.is_navigating():
         return False
     try:
         import math
@@ -469,14 +469,14 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         if max_deg <= 0:
             return False
         if gen is None:
-            gen = SAFETY_GEN.current()
+            gen = _r.SAFETY_GEN.current()
         target = 0.0 if body_deg is None else gaze_sh0_deg(body_deg, max_deg)
         if target is None:
             return False
         now = time.monotonic()
-        if now < ARM._settle_until:
+        if now < _r.ARM._settle_until:
             return False  # the arm is still folding / re-centring
-        last = ARM._gaze_deg
+        last = _r.ARM._gaze_deg
         if last is not None:
             if abs(target - last) <= GAZE_MIN_CHANGE_DEG and not (target == 0.0 and last != 0.0):
                 return False
@@ -485,12 +485,12 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         if not _state.standing_and_powered(sess):
             return False
         sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
-        with ARM._lock:
-            if (SAFETY_GEN.aborted(gen) or CONNECTION._closing or ARM._pose != "talk" or NAV.is_navigating()
-                    or time.monotonic() < ARM._settle_until):
+        with _r.ARM._lock:
+            if (_r.SAFETY_GEN.aborted(gen) or _r.CONNECTION._closing or _r.ARM._pose != "talk" or _r.NAV.is_navigating()
+                    or time.monotonic() < _r.ARM._settle_until):
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
-            ARM._gaze_deg, _gaze_t = target, now
+            _r.ARM._gaze_deg, _gaze_t = target, now
         bearing = "centre" if body_deg is None else f"{((float(body_deg) + 180) % 360) - 180:+.0f} deg (body, +left)"
         print(f"[Spot] gaze: speaker {bearing} -> shoulder yaw {target:+.0f} deg (limit {max_deg:.0f})")
         return True
@@ -511,8 +511,8 @@ def set_auto_arm(on: bool):
     global _auto_arm, _auto_arm_pending
     _auto_arm = bool(on)
     _auto_arm_pending = bool(on)
-    if on and CONNECTION._session is not None:  # e.g. --map brought it up at launch
-        start_auto_arm(SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
+    if on and _r.CONNECTION._session is not None:  # e.g. --map brought it up at launch
+        start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
 
 
 def _cancel_auto_arm():
@@ -526,24 +526,24 @@ def auto_arm_if_ready(gen, wait_s: float = 0.0) -> bool:
     for up to wait_s), no motion, the arm stowed and no stop since `gen`.
     Serialised with motion dispatches via _dispatch_lock. Never raises."""
     global _auto_arm_pending
-    if not _auto_arm_pending or CONNECTION._closing or gen is None or SAFETY_GEN.aborted(gen):
+    if not _auto_arm_pending or _r.CONNECTION._closing or gen is None or _r.SAFETY_GEN.aborted(gen):
         return False
-    sess = CONNECTION._session
+    sess = _r.CONNECTION._session
     if sess is None:
         return False
     try:
         deadline = time.monotonic() + wait_s
         while not _state.standing_and_powered(sess):
-            if time.monotonic() >= deadline or SAFETY_GEN.aborted(gen) or CONNECTION._closing:
+            if time.monotonic() >= deadline or _r.SAFETY_GEN.aborted(gen) or _r.CONNECTION._closing:
                 return False
             time.sleep(0.25)
         with _dispatch_lock:
-            if not _auto_arm_pending or CONNECTION._closing or SAFETY_GEN.aborted(gen):
+            if not _auto_arm_pending or _r.CONNECTION._closing or _r.SAFETY_GEN.aborted(gen):
                 return False
-            if ARM._pose != "stowed":
+            if _r.ARM._pose != "stowed":
                 _auto_arm_pending = False  # already folded (e.g. enable_mouth)
                 return False
-            if NAV.is_navigating() or ARM._talk_resume:
+            if _r.NAV.is_navigating() or _r.ARM._talk_resume:
                 return False  # moving, or the halt resume owns the arm: retry later
             print("[Spot] Standing: folding the arm and turning the mouth on")
             ok = _handle_enable_mouth({}, gen=gen)
@@ -559,7 +559,7 @@ def start_auto_arm(gen, wait_s: float = 0.0):
     """auto_arm_if_ready on a daemon thread (one at a time). Returns the
     thread, or None when nothing is owed."""
     global _auto_arm_thread
-    if not _auto_arm_pending or CONNECTION._session is None:
+    if not _auto_arm_pending or _r.CONNECTION._session is None:
         return None
     t = _auto_arm_thread
     if t is not None and t.is_alive():
@@ -577,7 +577,7 @@ def _auto_arm_after_stand():
     if not _auto_arm:
         return
     _auto_arm_pending = True
-    start_auto_arm(SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
+    start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +626,9 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
     outcome = "aborted"  # "done" | "timeout" | "abnormal" | "aborted"
     started = False
     try:
-        ARM.mouth_suspend()  # the claw never moves during a routine
+        _r.ARM.mouth_suspend()  # the claw never moves during a routine
         if prev_pose != "stowed":
-            if not ARM.send(cmd, "stowed", stop_event, timeout_s=5.0):
+            if not _r.ARM.send(cmd, "stowed", stop_event, timeout_s=5.0):
                 print("[Spot] emote: arm did not stow — not dancing")
                 outcome = "done"  # restore the previous pose explicitly
                 return
@@ -638,8 +638,8 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
             outcome = "done"  # nothing ran; put the arm back
             return
         choreo = session["robot"].ensure_client(ChoreographyClient.default_service_name)
-        with ARM._lock:
-            if stop_event.is_set() or SAFETY_GEN.aborted(gen):
+        with _r.ARM._lock:
+            if stop_event.is_set() or _r.SAFETY_GEN.aborted(gen):
                 return
             started = True
             choreo.execute_choreography(routine, client_start_time=time.time() + 1.0,
@@ -680,8 +680,8 @@ def _emote_routine(session, routine, prev_pose, stop_event, speak=None, gen=None
                 _motion.send_stop(cmd)
             if outcome in ("done", "timeout") and prev_pose != "stowed":
                 # also covers a failed stow: put the arm back in a known pose
-                ARM.send(cmd, prev_pose, stop_event, timeout_s=5.0)
-            ARM.mouth_restore()
+                _r.ARM.send(cmd, prev_pose, stop_event, timeout_s=5.0)
+            _r.ARM.mouth_restore()
         except Exception as e:
             print(f"[Spot] ⚠️  Arm restore after emote failed: {e}")
 
@@ -691,10 +691,10 @@ def _handle_emote(params, session, speak=None):
     the routine on a background thread registered as the nav thread (so stop
     cancels it)."""
     from src.voice_control.emotes import resolve_routine
-    if NAV._mode == "emote" and NAV.is_navigating():
+    if _r.NAV._mode == "emote" and _r.NAV.is_navigating():
         _say(speak, "One dance at a time!")
         return False
-    if NAV.is_navigating() or ARM._pose == "walk":
+    if _r.NAV.is_navigating() or _r.ARM._pose == "walk":
         _say(speak, "I can't dance while I'm on the move.")
         return False
     try:
@@ -712,12 +712,12 @@ def _handle_emote(params, session, speak=None):
     if refusal is not None:
         _say(speak, refusal)
         return False
-    gen = SAFETY_GEN.dispatch_current()
-    if SAFETY_GEN.aborted(gen):
+    gen = _r.SAFETY_GEN.dispatch_current()
+    if _r.SAFETY_GEN.aborted(gen):
         return False
-    NAV.cancel()
-    prev = ARM._pose
-    if not NAV.spawn(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
+    _r.NAV.cancel()
+    prev = _r.ARM._pose
+    if not _r.NAV.spawn(lambda ev: _emote_routine(session, routine, prev, ev, speak, gen),
                       mode="emote", gen=gen):
         return False
     print(f"[Spot] emote: running '{routine}'")
@@ -807,11 +807,11 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
     try:
         if session is None:  # safety/aborting callers pass the session they hold
-            session = CONNECTION.ensure()
+            session = _r.CONNECTION.ensure()
         cmd_client = session["cmd"]
         
         if name == "enable_mouth":
-            return _handle_enable_mouth(params, gen=SAFETY_GEN.dispatch_current())
+            return _handle_enable_mouth(params, gen=_r.SAFETY_GEN.dispatch_current())
         if name == "disable_mouth":
             return _handle_disable_mouth(params)
         if name == "emote":
@@ -832,7 +832,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     params=capped_mobility_params(),
                 )
                 cmd_id = cmd_client.robot_command(cmd, end_time_secs=None)
-                ARM._last_traj = (cmd_id, time.time() + 30.0)
+                _r.ARM._last_traj = (cmd_id, time.time() + 30.0)
                 return True
             else:
                 print(f"[Spot] Invalid relative position: {relative}")
@@ -873,7 +873,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Send command with timeout to allow execution
             end_t = time.time() + 5.0
             cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
-            ARM._last_traj = (cmd_id, end_t + 1.0)
+            _r.ARM._last_traj = (cmd_id, end_t + 1.0)
             print(f"[Spot] ✓ Turn command sent")
             return True
             
@@ -904,7 +904,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 # Speed cap: allow enough time to cover the distance at the cap.
                 end_t = time.time() + max(10.0, distance / walk_speed_cap() + 3.0)
                 cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
-                ARM._last_traj = (cmd_id, end_t + 1.0)
+                _r.ARM._last_traj = (cmd_id, end_t + 1.0)
                 print(f"[Spot] ✓ Walk {direction} command sent")
                 return True
             except Exception as e:
@@ -937,7 +937,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 )
                 end_t = time.time() + max(10.0, distance / walk_speed_cap() + 3.0)
                 cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
-                ARM._last_traj = (cmd_id, end_t + 1.0)
+                _r.ARM._last_traj = (cmd_id, end_t + 1.0)
                 print(f"[Spot] ✓ Strafe {direction} command sent")
                 return True
             except Exception as e:
@@ -1072,7 +1072,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     )
                     end_t = time.time() + 15.0
                     cmd_id = cmd_client.robot_command(cmd, end_time_secs=end_t)
-                    ARM._last_traj = (cmd_id, end_t + 1.0)
+                    _r.ARM._last_traj = (cmd_id, end_t + 1.0)
                     print(f"[Spot] ✓ SE2 trajectory sent toward {target.source}")
                     return True
                 except Exception as e:
@@ -1097,10 +1097,10 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 except Exception as e:
                     print(f"[Spot] ✗ Visual nav failed: {e}")
 
-            NAV.cancel()
-            return NAV.spawn(
+            _r.NAV.cancel()
+            return _r.NAV.spawn(
                 lambda ev: _motion.thread_then_restore(lambda: _visual_nav_thread(ev), ev),
-                mode="visual_nav", gen=SAFETY_GEN.dispatch_current())
+                mode="visual_nav", gen=_r.SAFETY_GEN.dispatch_current())
 
         elif name == "check_obstacles":
             # Query Spot's native LocalGrid obstacle field via the
@@ -1178,10 +1178,10 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 except Exception as e:
                     print(f"[Spot] ✗ Follow failed: {e}")
 
-            NAV.cancel()
-            return NAV.spawn(
+            _r.NAV.cancel()
+            return _r.NAV.spawn(
                 lambda ev: _motion.thread_then_restore(lambda: _follow_thread(ev), ev),
-                mode="follow", gen=SAFETY_GEN.dispatch_current())
+                mode="follow", gen=_r.SAFETY_GEN.dispatch_current())
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)
@@ -1213,8 +1213,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 return False
 
             try:
-                NAV.cancel()
-                robot = CONNECTION.ensure()["robot"]
+                _r.NAV.cancel()
+                robot = _r.CONNECTION.ensure()["robot"]
 
                 print(f"[Spot] Loading map: {map_path.name}")
                 if not upload_graph_and_snapshots(robot, str(map_path)):
@@ -1299,12 +1299,12 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
                 graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 
-                if not NAV.ensure_localized(graph_nav_client, session):
+                if not _r.NAV.ensure_localized(graph_nav_client, session):
                     print("[Spot]   Please run 'python scripts/setup_map.py --waypoint-init' to localize.")
                     return False
 
-                NAV.save_home_waypoint(graph_nav_client)
-                if not NAV.start_thread(graph_nav_client, [waypoint_id], [location_name]):
+                _r.NAV.save_home_waypoint(graph_nav_client)
+                if not _r.NAV.start_thread(graph_nav_client, [waypoint_id], [location_name]):
                     return False
 
                 print(f"[Spot] Navigation started to '{location_name}'")
@@ -1326,7 +1326,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
                 graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 
-                if not NAV.ensure_localized(graph_nav_client, session):
+                if not _r.NAV.ensure_localized(graph_nav_client, session):
                     print("[Spot]   Please localize first.")
                     return False
 
@@ -1372,8 +1372,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     print("[Spot] No valid locations to visit.")
                     return False
 
-                NAV.save_home_waypoint(graph_nav_client)
-                if not NAV.start_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
+                _r.NAV.save_home_waypoint(graph_nav_client)
+                if not _r.NAV.start_thread(graph_nav_client, waypoint_ids, location_names, repeat=False):
                     return False
 
                 print(f"[Spot] Tour started: {', '.join(location_names)}")
@@ -1398,7 +1398,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
                 graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 
-                if not NAV.ensure_localized(graph_nav_client, session):
+                if not _r.NAV.ensure_localized(graph_nav_client, session):
                     print("[Spot]   Please localize first.")
                     return False
 
@@ -1442,8 +1442,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                     print("[Spot] No valid locations to patrol.")
                     return False
 
-                NAV.save_home_waypoint(graph_nav_client)
-                if not NAV.start_thread(graph_nav_client, waypoint_ids, location_names, repeat=True):
+                _r.NAV.save_home_waypoint(graph_nav_client)
+                if not _r.NAV.start_thread(graph_nav_client, waypoint_ids, location_names, repeat=True):
                     return False
 
                 print(f"[Spot] Patrol started: {', '.join(location_names)}")
@@ -1458,22 +1458,22 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Return to position before last navigation
             print("[Spot] Heading back...")
             try:
-                if not NAV._home_waypoint:
+                if not _r.NAV._home_waypoint:
                     print("[Spot] No departure point saved. Navigate somewhere first.")
                     return False
 
                 from bosdyn.client.graph_nav import GraphNavClient
                 graph_nav_client = session["robot"].ensure_client(GraphNavClient.default_service_name)
 
-                if not NAV.ensure_localized(graph_nav_client, session):
+                if not _r.NAV.ensure_localized(graph_nav_client, session):
                     print("[Spot]   Please localize first.")
                     return False
 
                 # Reverse-lookup name for display
                 locs = _list_saved_locations()
-                home_name = next((n for n, wid in locs.items() if wid == NAV._home_waypoint), NAV._home_waypoint[:12])
+                home_name = next((n for n, wid in locs.items() if wid == _r.NAV._home_waypoint), _r.NAV._home_waypoint[:12])
 
-                if not NAV.start_thread(graph_nav_client, [NAV._home_waypoint], [home_name]):
+                if not _r.NAV.start_thread(graph_nav_client, [_r.NAV._home_waypoint], [home_name]):
                     return False
 
                 print(f"[Spot] Heading back to '{home_name}'")

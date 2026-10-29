@@ -12,7 +12,7 @@ import time
 
 from bosdyn.client.robot_command import RobotCommandBuilder
 
-from src.spot.robot import SAFETY_GEN, CONNECTION, ARM, NAV, legacy_features
+import src.spot.robot as _r
 from src.spot.robot import motion as _motion
 from src.spot.robot import state as _state
 from src.spot.robot.arm import (  # noqa: F401  (re-exported constant sets)
@@ -76,26 +76,26 @@ def dispatch_intent(intent, brain=None, speak=None):
     if not intent:
         return False
     if brain is not None:
-        ARM._last_brain = brain
+        _r.ARM._last_brain = brain
         try:
-            brain.session_state.arm_pose = ARM._pose
+            brain.session_state.arm_pose = _r.ARM._pose
         except Exception:
             pass
     name = intent.get("intent")
 
     if name in ABORTING_INTENTS:
-        SAFETY_GEN.bump()
-        ARM.hold_gaze()  # no gaze captures the post-stop gen before the stow lands
+        _r.SAFETY_GEN.bump()
+        _r.ARM.hold_gaze()  # no gaze captures the post-stop gen before the stow lands
     if name in SAFETY_INTENTS:
         return dispatch_safety(intent, brain, speak)
     if name in _UNLOCKED_INTENTS:
         return _dispatch_core(intent, brain, speak)
-    held = CONNECTION._session
+    held = _r.CONNECTION._session
     if name in ABORTING_INTENTS and held is None:
         print(f"[Spot] {name}: no robot session — not connecting just to {name}")
         return False
     with _dispatch_lock:
-        outer = SAFETY_GEN.dispatch_bump()
+        outer = _r.SAFETY_GEN.dispatch_bump()
         try:
             if name in LOCOMOTION_INTENTS:
                 return _dispatch_locomotion(intent, brain, speak)
@@ -103,29 +103,29 @@ def dispatch_intent(intent, brain=None, speak=None):
                 return _dispatch_core(intent, brain, speak, session=held)
             return _dispatch_core(intent, brain, speak)
         finally:
-            SAFETY_GEN.dispatch_restore(outer)
+            _r.SAFETY_GEN.dispatch_restore(outer)
 
 
 def dispatch_safety(intent, brain=None, speak=None):
     name = intent.get("intent")
-    sess = CONNECTION._session
+    sess = _r.CONNECTION._session
     if sess is None:
         print(f"[Spot] {name}: no robot session — nothing to stop (not connecting)")
-        ARM.close_mouth()
-        NAV.cancel()
+        _r.ARM.close_mouth()
+        _r.NAV.cancel()
         return False
     cmd_client = sess["cmd"]
-    was_emote = NAV._mode == "emote"
+    was_emote = _r.NAV._mode == "emote"
     _motion.send_stop(cmd_client)  # FIRST, before any thread join
-    was_talk = ARM.in_talk_mode()  # read-only; before the stop branch latches the mouth
+    was_talk = _r.ARM.in_talk_mode()  # read-only; before the stop branch latches the mouth
     ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
-    ARM.stow_now(cmd_client, resend_stop=was_emote,
+    _r.ARM.stow_now(cmd_client, resend_stop=was_emote,
                  then_stand=(was_emote and name == "freeze" and _state.is_standing(sess)))
     if name == "estop":
-        ARM.set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
-        legacy_features()._cancel_auto_arm()  # ... and any pending automatic fold (until a stand)
+        _r.ARM.set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
+        _r.legacy_features()._cancel_auto_arm()  # ... and any pending automatic fold (until a stand)
     elif was_talk:
-        ARM.set_talk_resume(True)  # the next motion-allowed turn brings the arm back
+        _r.ARM.set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
 
 
@@ -134,71 +134,71 @@ _dispatch_safety = dispatch_safety  # old spot_dispatch name
 
 def current_safety_gen() -> int:
     """Snapshot for resume_talk_after_halt(gen): any stop after it wins."""
-    return SAFETY_GEN.current()
+    return _r.SAFETY_GEN.current()
 
 
 def _aborted(gen) -> bool:
     """True if an aborting intent arrived since generation `gen` was taken."""
-    return SAFETY_GEN.aborted(gen)
+    return _r.SAFETY_GEN.aborted(gen)
 
 
 def resume_talk_after_halt(gen):
     """Bring the talk pose back after a safety halt (see Arm.resume_talk_after_halt)."""
-    return ARM.resume_talk_after_halt(gen)
+    return _r.ARM.resume_talk_after_halt(gen)
 
 
 def _dispatch_locomotion(intent, brain=None, speak=None):
     """Tuck, move, and (via the motion thread) restore after a natural finish."""
     name = intent.get("intent")
     try:
-        session = CONNECTION.ensure()
+        session = _r.CONNECTION.ensure()
     except Exception as e:
         print(f"[Spot] Error executing intent '{name}': {e}")
         return False
     cmd_client = session["cmd"]
-    gen = SAFETY_GEN.dispatch_current()
-    ARM.hold_gaze()  # no gaze may land while this walk starts (incl. the join below)
-    NAV.cancel()  # a new motion supersedes the old one (its restore is skipped)
-    current = ARM._pose
+    gen = _r.SAFETY_GEN.dispatch_current()
+    _r.ARM.hold_gaze()  # no gaze may land while this walk starts (incl. the join below)
+    _r.NAV.cancel()  # a new motion supersedes the old one (its restore is skipped)
+    current = _r.ARM._pose
     before, after = arm_policy_for(name, current)
     if current != "stowed":
-        if ARM._pose_before_walk is not None and current == (ARM._pose_during_walk or "walk"):
-            after = ARM._pose_before_walk  # superseded walk: keep its pending restore
-        ARM._pose_before_walk = after if after != "walk" else "stowed"
-        ARM._pose_during_walk = before
-        if current == before == "talk" and ARM._gaze_deg not in (None, 0.0):
+        if _r.ARM._pose_before_walk is not None and current == (_r.ARM._pose_during_walk or "walk"):
+            after = _r.ARM._pose_before_walk  # superseded walk: keep its pending restore
+        _r.ARM._pose_before_walk = after if after != "walk" else "stowed"
+        _r.ARM._pose_during_walk = before
+        if current == before == "talk" and _r.ARM._gaze_deg not in (None, 0.0):
             # Folded pose kept for the walk; just re-centre a gaze yaw (no wait).
             try:
-                ARM.send(cmd_client, "talk", timeout_s=0, require_pose="talk", gen=gen)
+                _r.ARM.send(cmd_client, "talk", timeout_s=0, require_pose="talk", gen=gen)
             except Exception as e:
                 print(f"[Spot] gaze re-centre before walking failed: {e}")
         if current != before:
-            ARM.mouth_suspend()  # claw closed and still for the whole walk
+            _r.ARM.mouth_suspend()  # claw closed and still for the whole walk
             try:
-                tucked = ARM.send(cmd_client, before, timeout_s=5.0)
+                tucked = _r.ARM.send(cmd_client, before, timeout_s=5.0)
             except Exception as e:
                 print(f"[Spot] Arm tuck failed: {e}")
                 tucked = False
-            if SAFETY_GEN.aborted(gen):
+            if _r.SAFETY_GEN.aborted(gen):
                 return _motion.abort_motion(cmd_client, name)
             if not tucked:
                 _say(speak, "I couldn't tuck my arm in, so I'll stay put.")
-                ARM.restore_after_motion()
+                _r.ARM.restore_after_motion()
                 return False
-    if SAFETY_GEN.aborted(gen):
+    if _r.SAFETY_GEN.aborted(gen):
         return _motion.abort_motion(cmd_client, name)
-    ARM._last_traj = None
-    ARM.hold_gaze()
+    _r.ARM._last_traj = None
+    _r.ARM.hold_gaze()
     ok = _dispatch_core(intent, brain, speak)
-    if SAFETY_GEN.aborted(gen):
+    if _r.SAFETY_GEN.aborted(gen):
         return _motion.abort_motion(cmd_client, name)
-    if NAV.is_navigating():
+    if _r.NAV.is_navigating():
         return ok  # the nav thread restores the arm after a natural finish
-    if ok and ARM._last_traj is not None:
-        if not _motion.start_restore_watch(cmd_client, *ARM._last_traj, gen=gen):
+    if ok and _r.ARM._last_traj is not None:
+        if not _motion.start_restore_watch(cmd_client, *_r.ARM._last_traj, gen=gen):
             return _motion.abort_motion(cmd_client, name)
     else:
-        ARM.restore_after_motion()  # nothing moved
+        _r.ARM.restore_after_motion()  # nothing moved
     return ok
 
 
@@ -217,7 +217,7 @@ def registry_dispatch(name, params, ctx):
 def LEGACY_FEATURE_DISPATCH(intent, brain=None, speak=None, session=None):
     """Feature branches still in spot_dispatch. Task 16 deletes this hook once
     Wave 4 has emptied it."""
-    return legacy_features()._dispatch_core(intent, brain, speak, session=session)
+    return _r.legacy_features()._dispatch_core(intent, brain, speak, session=session)
 
 
 def _dispatch_feature(intent, brain=None, speak=None, session=None):
@@ -226,7 +226,7 @@ def _dispatch_feature(intent, brain=None, speak=None, session=None):
     if REGISTRY.action(name) is not None:  # never true until Wave 4 registers features
         from src.spot.core.tuning import get_tuning
         from src.spot.features.ctx import Ctx
-        ctx = Ctx(connection=CONNECTION, arm=ARM, safety=SAFETY_GEN, nav=NAV,
+        ctx = Ctx(connection=_r.CONNECTION, arm=_r.ARM, safety=_r.SAFETY_GEN, nav=_r.NAV,
                   speak=speak, brain=brain, bus=None, tuning=get_tuning())
         return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
     return LEGACY_FEATURE_DISPATCH(intent, brain, speak, session=session)
@@ -247,32 +247,32 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
     try:
         if session is None:  # safety/aborting callers pass the session they hold
-            session = CONNECTION.ensure()
+            session = _r.CONNECTION.ensure()
         cmd_client = session["cmd"]
 
         if name == "stow":  # spotctl stow: mouth off, arm stowed
             # NOTE: stow also interrupts a running walk/patrol/tour/follow/emote
             # (it is an ABORTING_INTENT): the robot is stopped first, then the
             # nav cancelled, then the arm stowed. Fails safe.
-            if NAV.is_navigating():
-                was_emote = NAV._mode == "emote"
+            if _r.NAV.is_navigating():
+                was_emote = _r.NAV._mode == "emote"
                 _motion.send_stop(cmd_client)
-                NAV.cancel()
+                _r.NAV.cancel()
                 if was_emote:
                     # Re-stop under the arm lock so a choreography request already
                     # in flight can't start after this stop.
-                    ARM.stow_now(cmd_client, resend_stop=True)
+                    _r.ARM.stow_now(cmd_client, resend_stop=True)
                 else:
                     # A navigate_to / visual-nav move sent while the join ran
                     # lands after the first stop: stop again (as stop/freeze do).
                     _motion.send_stop(cmd_client)
-            return legacy_features()._handle_disable_mouth(params, session)
+            return _r.legacy_features()._handle_disable_mouth(params, session)
 
         if name == "stop":
             # Stop current movement/action
             print("[Spot] Stopping current action...")
-            ARM.close_mouth()
-            NAV.cancel()
+            _r.ARM.close_mouth()
+            _r.NAV.cancel()
             try:
                 # RPC timeout: a stalled link must not wedge the safety thread (M2)
                 cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
@@ -285,8 +285,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
         elif name == "freeze":
             # Freeze robot - stop all movement and hold current position
             print("[Spot] Freezing robot in place...")
-            ARM.close_mouth()
-            NAV.cancel()
+            _r.ARM.close_mouth()
+            _r.NAV.cancel()
             try:
                 # First stop any current movement
                 cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
@@ -308,7 +308,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 cmd = RobotCommandBuilder.synchro_stand_command()
                 cmd_client.robot_command(cmd)
                 print("[Spot] ✓ Stand command sent")
-                legacy_features()._auto_arm_after_stand()
+                _r.legacy_features()._auto_arm_after_stand()
                 return True
             except Exception as e:
                 if "BehaviorFault" in str(e):
@@ -325,7 +325,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                         # No self-right here: that is its own explicit intent.
                         cmd_client.robot_command(RobotCommandBuilder.synchro_stand_command())
                         print("[Spot] ✓ Faults cleared, standing")
-                        legacy_features()._auto_arm_after_stand()
+                        _r.legacy_features()._auto_arm_after_stand()
                         return True
                     except Exception as e2:
                         print(f"[Spot] ✗ Recovery failed: {e2}")
@@ -337,13 +337,13 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Sit the robot down
             print("[Spot] Sitting down...")
             _motion.send_stop(cmd_client)  # stop first, then stow, then sit
-            ARM.set_talk_resume(False)
-            legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
-            NAV.cancel()
-            ARM._pose_before_walk = None
-            if ARM._pose != "stowed":
+            _r.ARM.set_talk_resume(False)
+            _r.legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
+            _r.NAV.cancel()
+            _r.ARM._pose_before_walk = None
+            if _r.ARM._pose != "stowed":
                 try:
-                    ARM.send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
+                    _r.ARM.send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
                 except Exception as e:
                     print(f"[Spot] ⚠️  Arm stow before sit failed: {e}")
             try:
@@ -384,12 +384,12 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # Safe power off
             print("[Spot] Initiating safe power off...")
             _motion.send_stop(cmd_client)  # stop first, then stow, then power off
-            ARM.set_talk_resume(False)
-            legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
-            ARM.close_mouth()
-            NAV.cancel()
+            _r.ARM.set_talk_resume(False)
+            _r.legacy_features()._cancel_auto_arm()  # only an explicit stand folds the arm again
+            _r.ARM.close_mouth()
+            _r.NAV.cancel()
             try:
-                ARM.send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
+                _r.ARM.send(cmd_client, "stowed", timeout_s=3.0)  # stow BEFORE sitting
             except Exception as e:
                 print(f"[Spot] ⚠️  Arm stow before power off failed: {e}")
             try:
@@ -405,8 +405,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
         elif name == "estop":
             # Emergency stop (software e-stop)
             print("[Spot] ⚠️  EMERGENCY STOP triggered!")
-            ARM.close_mouth()
-            NAV.cancel()
+            _r.ARM.close_mouth()
+            _r.NAV.cancel()
             try:
                 cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Emergency stop executed")

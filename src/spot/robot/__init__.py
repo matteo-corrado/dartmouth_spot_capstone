@@ -6,8 +6,9 @@ passes them on and tests patch attributes on them. This is a deliberate,
 temporary exception to spec section 5 ("no singletons reached by import"):
 about 260 test monkeypatch sites depend on one shared object per state.
 
-Function modules (motion, state, dispatcher) reach the singletons through
-``src.spot.robot.<NAME>`` at call time, so importing them here is not needed.
+Every module (the owner classes included) reaches the singletons ONLY through
+the module at call time (``import src.spot.robot as _r``; ``_r.NAV``), never
+by binding them at import or storing peers, so a rebind can never split them.
 """
 from src.spot.safety.gen import SafetyGen
 from src.spot.robot.connection import Connection
@@ -15,11 +16,9 @@ from src.spot.robot.arm import Arm
 from src.spot.nav.runner import NavRunner
 
 SAFETY_GEN = SafetyGen()
-CONNECTION = Connection(SAFETY_GEN)
-ARM = Arm(SAFETY_GEN, CONNECTION)
-NAV = NavRunner(SAFETY_GEN, CONNECTION)
-CONNECTION.bind(arm=ARM, nav=NAV)
-ARM.bind(nav=NAV)
+CONNECTION = Connection()
+ARM = Arm()
+NAV = NavRunner()
 
 
 def legacy_features():

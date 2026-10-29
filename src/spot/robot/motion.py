@@ -3,7 +3,7 @@ import time
 
 from bosdyn.client.robot_command import RobotCommandBuilder
 
-import src.spot.robot as _robot
+import src.spot.robot as _r
 from src.spot.robot.arm import RPC_TIMEOUT_S
 
 
@@ -23,11 +23,11 @@ def finish_motion(natural: bool, stop_event):
     if stop_event is not None and stop_event.is_set():
         return
     if natural:
-        _robot.ARM.restore_after_motion(stop_event)
+        _r.ARM.restore_after_motion(stop_event)
         return
     print("[Spot] Motion did not finish cleanly — stopping; arm stays tucked")
-    if _robot.CONNECTION._session is not None:
-        send_stop(_robot.CONNECTION._session["cmd"])
+    if _r.CONNECTION._session is not None:
+        send_stop(_r.CONNECTION._session["cmd"])
 
 
 def thread_then_restore(fn, stop_event):
@@ -58,7 +58,7 @@ def wait_trajectory_done(cmd_client, cmd_id, deadline, stop_event):
 def start_restore_watch(cmd_client, cmd_id, deadline, gen=None):
     """Register a watcher as the nav thread: waits for the trajectory, then
     restores the arm. is_navigating() is True meanwhile (gaze/emote gate)."""
-    return _robot.NAV.spawn(
+    return _r.NAV.spawn(
         lambda ev: thread_then_restore(
             lambda: wait_trajectory_done(cmd_client, cmd_id, deadline, ev), ev),
         mode="walk", gen=gen)
@@ -67,7 +67,7 @@ def start_restore_watch(cmd_client, cmd_id, deadline, gen=None):
 def abort_motion(cmd_client, name):
     """A stop/sit/stow arrived while this locomotion was being set up."""
     print(f"[Spot] '{name}' cancelled by a stop")
-    _robot.NAV.cancel()
+    _r.NAV.cancel()
     send_stop(cmd_client)
-    _robot.ARM.stow_now(cmd_client, force=True)
+    _r.ARM.stow_now(cmd_client, force=True)
     return False

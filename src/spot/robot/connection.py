@@ -4,22 +4,16 @@ import threading
 import time
 
 from src.spot.robot.session import spot_session
+import src.spot.robot as _r
 from src.spot.robot import motion as _motion
 
 
 class Connection:
-    def __init__(self, safety):
-        self._safety = safety
+    def __init__(self):
         self._session = None    # dict of live clients (robot, lease_client, cmd, power, state)
         self._context = None    # the spot_session() context manager
         self._lock = threading.Lock()  # guards ensure() bring-up
         self._closing = False   # set by close(): no new bring-up after that
-        self._arm = None
-        self._nav = None
-
-    def bind(self, arm, nav):
-        self._arm = arm
-        self._nav = nav
 
     @property
     def session(self):
@@ -69,7 +63,7 @@ class Connection:
                 self._session = self._context.__enter__()
                 print("[Spot] Connected and standing ready for voice commands.")
                 sd = _legacy()
-                sd.start_auto_arm(self._safety.current(), wait_s=sd.AUTO_ARM_STAND_WAIT_S)  # waits for this dispatch
+                sd.start_auto_arm(_r.SAFETY_GEN.current(), wait_s=sd.AUTO_ARM_STAND_WAIT_S)  # waits for this dispatch
             except Exception as e:
                 print(f"[Spot] Failed to establish session: {e}")
                 # Clear the context so we can retry
@@ -82,14 +76,14 @@ class Connection:
         """Close the Spot session (sit and power off). After this no command can
         bring a new session up (ensure() raises while closing)."""
         self._closing = True
-        self._safety.bump()  # abort any locomotion still being set up
+        _r.SAFETY_GEN.bump()  # abort any locomotion still being set up
         _legacy()._cancel_auto_arm()
 
         if self._session is not None and self._context is not None:
             _motion.send_stop(self._session["cmd"])  # stop first, then stow, then sit
-            self._arm.close_mouth()
-            self._nav.cancel()
-            self._arm.stow_now(self._session["cmd"], force=True)
+            _r.ARM.close_mouth()
+            _r.NAV.cancel()
+            _r.ARM.stow_now(self._session["cmd"], force=True)
             time.sleep(1.5)  # let the stow finish before sitting
             try:
                 from bosdyn.client.robot_command import blocking_sit
@@ -107,13 +101,11 @@ class Connection:
 
 
 def _legacy():
-    from src.spot.robot import legacy_features
-    return legacy_features()
+    return _r.legacy_features()
 
 
 def _conn():
-    import src.spot.robot as robot
-    return robot.CONNECTION
+    return _r.CONNECTION
 
 
 def ensure_spot_session(map_path=None):

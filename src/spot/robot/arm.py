@@ -13,6 +13,7 @@ from bosdyn.client.robot_command import RobotCommandBuilder, block_until_arm_arr
 
 import src.spot.robot.session as _poses
 from src.spot.robot.session import send_arm_pose
+import src.spot.robot as _r
 from src.spot.robot import state as _state
 
 # ---------------------------------------------------------------------------
@@ -55,10 +56,7 @@ def _talk_is_walk_pose() -> bool:
 
 
 class Arm:
-    def __init__(self, safety, connection):
-        self._safety = safety
-        self._conn = connection
-        self._nav = None
+    def __init__(self):
         self._pose = "stowed"            # live arm pose: "stowed" | "talk" | "walk"
         self._pose_before_walk = None    # pose to restore once the current locomotion ends
         self._pose_during_walk = None    # live arm pose while that locomotion runs ("walk" | "talk")
@@ -69,9 +67,6 @@ class Arm:
         self._talk_resume = False        # a safety halt stowed the talk pose: restore on the next turn
         self._gaze_deg = None            # sh0 (deg) last commanded in the talk pose; None = unknown
         self._last_brain = None          # brain whose session_state mirrors the arm pose
-
-    def bind(self, nav):
-        self._nav = nav
 
     # ------------------------------------------------------------ pose
     def pose(self) -> str:
@@ -149,7 +144,7 @@ class Arm:
         with self._lock:
             if stop_event is not None and stop_event.is_set():
                 return False
-            if self._safety.aborted(gen):
+            if _r.SAFETY_GEN.aborted(gen):
                 return False
             if require_pose is not None and self._pose != require_pose:
                 return False
@@ -198,7 +193,7 @@ class Arm:
         """Return the arm to its pre-walk pose (only after a natural finish, or
         when the motion never started)."""
         target = self._pose_before_walk
-        if target is None or self._conn._session is None:
+        if target is None or _r.CONNECTION._session is None:
             return
         if stop_event is not None and stop_event.is_set():
             return
@@ -206,7 +201,7 @@ class Arm:
             # Only from the pose the walk ran in: after a stop's stow it is
             # "stowed", so no restore can follow a stop.
             during = self._pose_during_walk or "walk"
-            if self._pose != target and self.send(self._conn._session["cmd"], target, stop_event,
+            if self._pose != target and self.send(_r.CONNECTION._session["cmd"], target, stop_event,
                                                   timeout_s=5.0, require_pose=during):
                 print(f"[Spot] Arm restored to '{target}'")
             if self._pose == target:
@@ -231,10 +226,10 @@ class Arm:
         mouth once it arrives. Needs a standing, powered, idle robot; otherwise the
         flag stays for a later turn. `gen` is current_safety_gen() taken at the
         start of the turn; any stop since then wins. Returns the thread or False."""
-        if not self._talk_resume or self._conn._closing or gen is None or self._safety.aborted(gen):
+        if not self._talk_resume or _r.CONNECTION._closing or gen is None or _r.SAFETY_GEN.aborted(gen):
             return False
-        sess = self._conn._session
-        if sess is None or self._nav.is_navigating() or self._pose != "stowed":
+        sess = _r.CONNECTION._session
+        if sess is None or _r.NAV.is_navigating() or self._pose != "stowed":
             return False
         try:
             if not _state.standing_and_powered(sess):
@@ -247,7 +242,7 @@ class Arm:
                 return False
             cmd = sess["cmd"]
             with self._lock:
-                if self._safety.aborted(gen) or self._pose != "stowed":
+                if _r.SAFETY_GEN.aborted(gen) or self._pose != "stowed":
                     return False
                 cmd_id = send_arm_pose(cmd, "talk", rpc_timeout=RPC_TIMEOUT_S)
                 self.set_pose("talk")
@@ -260,7 +255,7 @@ class Arm:
                         print("[Spot] talk pose not reached after the halt — mouth stays off")
                         return
                     with self._lock:  # a stop since the send wins
-                        if self._safety.aborted(gen) or self._pose != "talk":
+                        if _r.SAFETY_GEN.aborted(gen) or self._pose != "talk":
                             return
                         tts.mouth.enable()
                     print("[Spot] Arm back in talk pose after the halt")
@@ -277,8 +272,7 @@ class Arm:
 
 # ---------------------------------------------------------------- old names
 def _arm():
-    import src.spot.robot as robot
-    return robot.ARM
+    return _r.ARM
 
 
 def get_arm_pose() -> str:

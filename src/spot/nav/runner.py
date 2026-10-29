@@ -9,13 +9,12 @@ import time
 
 from bosdyn.client.frame_helpers import get_odom_tform_body
 
+import src.spot.robot as _r
 from src.spot.nav.graph_nav_utils import capped_travel_params
 
 
 class NavRunner:
-    def __init__(self, safety, connection):
-        self._safety = safety
-        self._conn = connection
+    def __init__(self):
         self._thread = None
         self._stop_event = None
         self._mode = None  # "follow", "graphnav", "visual_nav", "walk", "emote", or None
@@ -29,7 +28,7 @@ class NavRunner:
         registered (and then cancelled by the stop) or never started: no
         orphan can keep moving."""
         with self._lock:
-            if self._safety.aborted(gen):
+            if _r.SAFETY_GEN.aborted(gen):
                 print("[Spot] Motion not started: a stop arrived")
                 return False
             ev = threading.Event()
@@ -178,7 +177,7 @@ class NavRunner:
                     waypoint_reached = False
 
                     while not stop_event.is_set():
-                        if self._safety.aborted(gen):
+                        if _r.SAFETY_GEN.aborted(gen):
                             print("[Spot] Navigation aborted by a stop")
                             return False
                         try:
@@ -222,7 +221,7 @@ class NavRunner:
                             elif feedback.status == graph_nav_pb2.NavigationFeedbackResponse.STATUS_LOST:
                                 print(f"[Spot] Robot lost during navigation to '{name}'")
                                 try:
-                                    if self._conn._session and self.ensure_localized(graph_nav_client, self._conn._session):
+                                    if _r.CONNECTION._session and self.ensure_localized(graph_nav_client, _r.CONNECTION._session):
                                         print(f"[Spot] Re-localized, retrying navigation to '{name}'")
                                         nav_to_cmd_id = None
                                         continue
@@ -274,7 +273,7 @@ class NavRunner:
         Returns False (and starts nothing) if a stop arrived since this dispatch began."""
         from src.spot.robot import motion as _motion
         self.cancel()
-        gen = self._safety.dispatch_current()
+        gen = _r.SAFETY_GEN.dispatch_current()
         return self.spawn(
             lambda ev: _motion.thread_then_restore(
                 lambda: self.navigate_sequence(
@@ -284,8 +283,7 @@ class NavRunner:
 
 # ---------------------------------------------------------------- old names
 def _nav():
-    import src.spot.robot as robot
-    return robot.NAV
+    return _r.NAV
 
 
 def is_navigating() -> bool:
