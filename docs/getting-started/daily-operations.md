@@ -18,10 +18,10 @@ Work through these in order on the Jetson (`ssh spotdog@<tailscale-ip>`, then `c
 | 3 | Mic plugged in | `arecord -l \| grep -i xvf` | The reSpeaker XVF3800 shows up. USB control also works: `spot-env/bin/python scripts/xvf_probe.py live` prints direction numbers while you talk (Ctrl+C) |
 | 4 | Speaker plugged in | `aplay -l \| grep -i uac` | `UACDemoV1.0` listed |
 | 5 | E-Stop reachable | Hardware button / tablet in hand | You can press it |
-| 6 | Event knowledge filled in | Open `src/voice_control/knowledge/event_knowledge.md` | No `[FILL IN]` left on lines you care about (lines still containing it are silently dropped, which is safe: Spot says it does not know) |
+| 6 | Event knowledge filled in | Open `src/spot/brain/knowledge/event_knowledge.md` | No `[FILL IN]` left on lines you care about (lines still containing it are silently dropped, which is safe: Spot says it does not know) |
 | 7 | Battery and space | Robot battery above about 50 %; `df -h /mnt/ssd` has room | |
 | 8 | Wi-Fi decision | Primary voice is ElevenLabs (cloud). Venue Wi-Fi bad? Plan to launch with `--tts-backend kokoro` | See section 6 |
-| 9 | Arm pose | Decided 2026-10-28: the folded **joints** pose (`WALK_JOINTS` in `src/session.py`) is used for both talking and walking (`WALK_POSE = "joints"`). Re-test with `scripts/try_walk_pose.py` only if you change it (stop voice control first; it takes the lease) | Claw opens/closes without hitting the body |
+| 9 | Arm pose | Decided 2026-10-28: the folded **joints** pose (`WALK_JOINTS` in `src/spot/robot/session.py`) is used for both talking and walking (`WALK_POSE = "joints"`). Re-test with `scripts/try_walk_pose.py` only if you change it (stop voice control first; it takes the lease) | Claw opens/closes without hitting the body |
 | 10 | Clear floor | About 1.5 m of free floor around Spot if you want it to dance | Dance refuses otherwise |
 
 Also keep the **map decision** in mind (section 2): with a map the robot powers on and stands *at launch*; without one it stands on the first command that needs it.

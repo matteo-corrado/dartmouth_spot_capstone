@@ -153,7 +153,7 @@ ollama list
 # Should show qwen2.5:7b and qwen2.5vl:7b
 
 # 4. TTS
-python src/voice_control/spot_tts.py
+python -m src.spot.tts.speaker
 # Should speak a test sentence
 
 # 5. Wake word

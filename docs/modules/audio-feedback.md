@@ -1,6 +1,6 @@
 # audio_feedback.py
 
-`src/voice_control/audio_feedback.py` -- Audio tone feedback.
+`src/spot/audio/chimes.py` -- Audio tone feedback.
 
 Short beeps and chimes (60-250ms) that give the user instant audio feedback
 for voice control events. Uses numpy-generated sine waves played through
@@ -83,7 +83,7 @@ beep.error()           # Low buzz
 
 ```bash
 # Play all tones sequentially
-python src/voice_control/audio_feedback.py
+python -m src.spot.audio.chimes
 ```
 
 ## Dependencies

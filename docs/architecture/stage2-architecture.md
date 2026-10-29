@@ -121,7 +121,7 @@ YOLOE26-S (paper Feb 2026) is the open-vocabulary variant. +11.4 LVIS AP over YO
 
 Boston Dynamics' `ImageSource` proto carries three distortion models (`pinhole`, `pinhole_brown_conrady`, `kannala_brandt`). The SDK ships the parameters but NOT the undistortion code — wire cv2 yourself.
 
-The existing `src/voice_control/perception/camera_intrinsics.py` (160 LOC, already shipped) caches per-robot intrinsics. Stage 2C.0.5 adds a `_undistort_for_source` helper that precomputes `cv2.initUndistortRectifyMap` per camera at startup, then applies `cv2.remap` per frame (~3-5 ms CPU on Orin).
+The existing `src/spot/perception/camera_intrinsics.py` (160 LOC, already shipped) caches per-robot intrinsics. Stage 2C.0.5 adds a `_undistort_for_source` helper that precomputes `cv2.initUndistortRectifyMap` per camera at startup, then applies `cv2.remap` per frame (~3-5 ms CPU on Orin).
 
 Pipeline order: `capture → rotate (Stage 0) → undistort (Stage 0.5) → output Frame` → downstream YOLO/VLM consume rectified pinhole-equivalent frames. Removes the "no fisheye-trained YOLO checkpoint exists" concern.
 
@@ -232,7 +232,7 @@ journalctl -t voice_control -f | grep Brain-timing
 ```bash
 # Smoke transcribe a test WAV
 python -c "
-from src.voice_control.asr.parakeet import ParakeetBackend
+from src.spot.stt.backends.parakeet import ParakeetBackend
 b = ParakeetBackend()
 with open('tests/audio/walk_forward_1m.wav', 'rb') as f:
     print(b.transcribe(f.read()))

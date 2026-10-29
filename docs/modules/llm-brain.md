@@ -1,6 +1,6 @@
 # llm_brain.py
 
-`src/voice_control/llm_brain.py` -- LLM decision engine (Ollama structured JSON).
+`src/spot/brain/llm_brain.py` -- LLM decision engine (Ollama structured JSON).
 
 Takes a user transcript and robot state, sends them to a local Ollama model,
 and receives back a structured JSON object containing actions to execute and
@@ -134,8 +134,8 @@ if brain.is_available():
 
 ```bash
 # Interactive CLI test
-python src/voice_control/llm_brain.py
-python src/voice_control/llm_brain.py qwen2.5:14b
+python -m src.spot.brain.llm_brain
+python -m src.spot.brain.llm_brain qwen2.5:14b
 ```
 
 ## Dependencies

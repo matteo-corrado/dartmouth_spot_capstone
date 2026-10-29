@@ -1,6 +1,6 @@
 # audio_player
 
-`src/voice_control/audio_player.py`
+`src/spot/audio/player.py`
 
 ## Purpose
 
@@ -50,7 +50,7 @@ Two locks coordinate them:
 ## API
 
 ```python
-from src.voice_control.audio_player import AudioPlayer
+from src.spot.audio.player import AudioPlayer
 
 player = AudioPlayer(output_device=3)
 
@@ -91,6 +91,6 @@ gates, not a leak.
 
 ## Related files
 
-- `src/voice_control/spot_tts.py` — renderer-only, submits via `enqueue_render`
-- `src/voice_control/audio_feedback.py` — sample generator, submits via `enqueue_raw`
+- `src/spot/tts/speaker.py` — renderer-only, submits via `enqueue_render`
+- `src/spot/audio/chimes.py` — sample generator, submits via `enqueue_raw`
 - `src/voice_control/client_mic.py` — owns the singleton, wires the mic-mute interlock

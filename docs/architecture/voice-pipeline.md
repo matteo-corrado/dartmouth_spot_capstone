@@ -1,5 +1,7 @@
 # Voice Pipeline Deep Dive
 
+> **Being split.** `client_mic.py` is being broken up (conversation, audio capture, app wiring); see [package-map.md](package-map.md).
+
 The voice pipeline in `src/voice_control/client_mic.py` handles the full path
 from raw microphone audio to executed robot commands. This document covers the
 state machine, audio processing, and timing characteristics.
