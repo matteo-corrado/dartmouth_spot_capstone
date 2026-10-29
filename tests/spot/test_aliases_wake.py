@@ -26,3 +26,11 @@ def test_path_constants_unchanged():
     assert sherpa._PROJECT_ROOT == ROOT
     assert kws._PROJECT_ROOT == ROOT
     assert phrases._PHRASES_FILE == ROOT / "config" / "wake_phrases.txt"
+
+
+def test_safety_kws_attribute_and_import_forms():
+    from src.voice_control.wake import safety_kws
+    import src.voice_control.wake.safety_kws as m
+    new = importlib.import_module("src.spot.safety.kws")
+    assert safety_kws is new
+    assert m is new
