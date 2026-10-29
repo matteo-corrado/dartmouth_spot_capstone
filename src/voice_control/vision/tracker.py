@@ -125,25 +125,41 @@ def _has_dist(d: Detection) -> bool:
     return d.distance_m is not None and math.isfinite(d.distance_m) and d.distance_m >= 0
 
 
+UNRANGED_MAX_DEG = 15.0   # hand-off from an unranged sighting: bearing limit ...
+UNRANGED_MAX_DM = 1.5     # ... and the candidate's range within this of the last known range
+
+
+def gate(last: Detection, c: Detection, max_dist: float = 1.0, max_bearing: float = 30.0,
+         last_range: float | None = None) -> float | None:
+    """Score (lower = closer) if ``c`` may be the same person as ``last``, else None.
+
+    Ranged ``last``: ``c`` needs a range, within ``max_bearing`` deg and ``max_dist`` m
+    (body-frame xy). Unranged ``last``: ``c`` needs a range within ``UNRANGED_MAX_DM``
+    of ``last_range`` (the last measured range) and a bearing within
+    ``min(max_bearing, UNRANGED_MAX_DEG)``; with no ``last_range`` nothing passes."""
+    if not _has_dist(c):
+        return None
+    db = abs(_wrap_deg(c.bearing_deg - last.bearing_deg))
+    if _has_dist(last):
+        if db > max_bearing:
+            return None
+        (lx, ly), (cx, cy) = _xy(last), _xy(c)
+        dist = math.hypot(cx - lx, cy - ly)
+        return dist if dist <= max_dist else None
+    if last_range is None or not math.isfinite(last_range):
+        return None
+    if db > min(max_bearing, UNRANGED_MAX_DEG) or abs(c.distance_m - last_range) > UNRANGED_MAX_DM:
+        return None
+    return db
+
+
 def handoff(last: Detection, candidates: list[Detection], max_dist: float = 1.0,
-            max_bearing: float = 30.0) -> Detection | None:
-    """The candidate nearest ``last`` in the body frame, within ``max_dist`` m and
-    ``max_bearing`` deg, else None. Candidates without a distance are skipped;
-    if ``last`` has no distance, the nearest bearing within ``max_bearing`` wins."""
+            max_bearing: float = 30.0, last_range: float | None = None) -> Detection | None:
+    """The candidate nearest ``last`` that passes ``gate`` (body-frame position from
+    bearing + distance), else None."""
     best = None
     for c in candidates:
-        db = abs(_wrap_deg(c.bearing_deg - last.bearing_deg))
-        if db > max_bearing:
-            continue
-        if _has_dist(last):
-            if not _has_dist(c):
-                continue
-            (lx, ly), (cx, cy) = _xy(last), _xy(c)
-            score = math.hypot(cx - lx, cy - ly)
-            if score > max_dist:
-                continue
-        else:
-            score = db
-        if best is None or score < best[0]:
+        score = gate(last, c, max_dist, max_bearing, last_range)
+        if score is not None and (best is None or score < best[0]):
             best = (score, c)
     return best[1] if best else None

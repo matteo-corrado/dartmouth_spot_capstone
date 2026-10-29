@@ -83,10 +83,19 @@ def test_handoff_candidate_without_distance_skipped():
     assert handoff(last, [_det((0, 0, 1, 1), bearing=1.0, dist=None)]) is None
 
 
-def test_handoff_last_without_distance_matches_on_bearing_only():
+def test_handoff_last_without_distance_needs_last_range_and_tight_bearing():
     last = _det((0, 0, 1, 1), bearing=10.0, dist=None)
-    a = _det((0, 0, 1, 1), bearing=25.0, dist=5.0)
-    b = _det((0, 0, 1, 1), bearing=14.0, dist=None)
-    c = _det((0, 0, 1, 1), bearing=60.0, dist=2.0)
-    assert handoff(last, [a, b, c]) is b
-    assert handoff(last, [c]) is None
+    a = _det((0, 0, 1, 1), bearing=20.0, dist=3.5)     # 10 deg, 0.5 m off: ok
+    b = _det((0, 0, 1, 1), bearing=12.0, dist=None)    # no range of its own
+    c = _det((0, 0, 1, 1), bearing=30.0, dist=3.0)     # 20 deg > 15
+    far = _det((0, 0, 1, 1), bearing=11.0, dist=5.0)   # 2 m off the last range
+    assert handoff(last, [a, b, c, far], last_range=3.0) is a
+    assert handoff(last, [b, c, far], last_range=3.0) is None
+    assert handoff(last, [a], last_range=None) is None  # no known range: no hand-off
+
+
+def test_handoff_bystander_at_25_deg_4m_further_not_adopted():
+    last = _det((0, 0, 1, 1), bearing=0.0, dist=3.0)
+    assert handoff(last, [_det((0, 0, 1, 1), bearing=25.0, dist=7.0)]) is None
+    unranged = _det((0, 0, 1, 1), bearing=0.0, dist=None)
+    assert handoff(unranged, [_det((0, 0, 1, 1), bearing=25.0, dist=7.0)], last_range=3.0) is None
