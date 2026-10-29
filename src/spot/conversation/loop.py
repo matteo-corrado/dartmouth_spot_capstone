@@ -36,6 +36,7 @@ from src.spot.brain.intent import parse_intent, is_filler_only, short_utterance_
 from src.spot.brain.persona import get_persona, voice_id_for
 from src.spot.conversation.speaker_lock import SpeakerLock, circular_median_deg
 from src.spot.conversation.voiceprint import VoiceprintGate
+from src.spot.core.core_intents import intent_names
 from src.spot.core.latency import get_recorder
 from src.spot.core.tuning import get_tuning
 from src.spot.core.voice_state import VoiceState
@@ -80,15 +81,12 @@ _DESCRIBE_ACKS = (
     "Checking my camera...",
 )
 
-_PERSONA_INTENTS = ("set_persona", "add_persona")
-# Actions still allowed in a turn whose utterance overlapped a safety halt
-# (final-review I1): nothing that moves the body or the arm. Mirrors
-# spot_dispatch._UNLOCKED_INTENTS (not imported: bosdyn) plus the camera.
-_MOTION_FREE_INTENTS = frozenset({
-    "describe", "stop", "freeze", "estop",
-    "set_persona", "add_persona", "set_volume", "set_backend",
-    "battery_status", "status", "check_obstacles", "list_locations", "list_maps",
-})
+# Intent sets generated from core_intents + the enabled features, read at call
+# time (Task 16):
+# - "persona": set_persona / add_persona, run before the response is spoken.
+# - "motion_free": still allowed in a turn whose utterance overlapped a safety
+#   halt (final-review I1): nothing that moves the body or the arm.
+# - "state_only": see execute_on_spot.
 
 MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
 
@@ -100,7 +98,6 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 # dispatch_intent handles them BEFORE ensure_spot_session(), so they must run
 # even in dry-run mode (Spot off). Otherwise "switch to pirate" no-ops and
 # every subsequent voice_id resolves to the prior persona's voice.
-_STATE_ONLY_INTENTS = {"set_persona", "add_persona", "set_volume", "set_backend"}
 
 
 def execute_on_spot(intent: dict, brain=None, speak=None) -> bool:
@@ -111,7 +108,7 @@ def execute_on_spot(intent: dict, brain=None, speak=None) -> bool:
     fallback paths leave it None — those intents never touch brain state.
     """
     intent_name = intent.get("intent", "")
-    if os.environ.get("SPOT_DRY_RUN") == "1" and intent_name not in _STATE_ONLY_INTENTS:
+    if os.environ.get("SPOT_DRY_RUN") == "1" and intent_name not in intent_names("state_only"):
         shown = intent if CONVERSATION._store_transcript else {k: v for k, v in intent.items() if k != "raw"}
         print(f"[dry-run] would dispatch: {shown}")
         return True
@@ -1089,11 +1086,12 @@ class Conversation:
 
                 # B6: run persona switches BEFORE speaking so the announcing reply
                 # uses the new voice (the chunker held it back — _TokenWatch).
-                persona_actions = [a for a in actions if a.get("intent") in _PERSONA_INTENTS]
+                persona_names = intent_names("persona")
+                persona_actions = [a for a in actions if a.get("intent") in persona_names]
                 if persona_actions:
                     for a in persona_actions:
                         execute_on_spot(a, brain=brain)
-                    actions = [a for a in actions if a.get("intent") not in _PERSONA_INTENTS]
+                    actions = [a for a in actions if a.get("intent") not in persona_names]
                     voice_id = _resolve_voice(brain)
                     if tts and response:
                         _say(tts, response, voice_id)
@@ -1127,7 +1125,7 @@ class Conversation:
                             break
                         cmd = intent["intent"]
                         params = intent.get("params", {})
-                        if motion_blocked and cmd not in _MOTION_FREE_INTENTS:
+                        if motion_blocked and cmd not in intent_names("motion_free"):
                             print(f"[Dispatch] skipped {cmd}: safety halt during this utterance")
                             continue
 

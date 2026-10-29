@@ -1,9 +1,10 @@
-"""Spot command dispatcher for voice intents (legacy feature half).
+"""Old home of the Spot command dispatcher: now re-exports only.
 
 The robot core (connection, arm, motion, state, nav runner, dispatcher) moved
-to src/spot/robot and src/spot/nav/runner.py (Task 9). This module keeps the
-feature handler functions and the feature branches of _dispatch_core until
-Wave 4 moves them into src/spot/features, and re-exports every moved name.
+to src/spot/robot and src/spot/nav/runner.py (Task 9), the feature branches to
+src/spot/features (Wave 4), and status / battery_status to the core dispatcher
+(Task 16). The robot core still reaches the mouth callbacks through this module
+(src.spot.robot.legacy_features) so a test patch here is seen.
 
 State that moved into the owner objects (CONNECTION, ARM, NAV, SAFETY_GEN) is
 NOT a module global here any more: reads of the old names are forwarded by
@@ -58,7 +59,6 @@ from src.spot.robot.state import (  # noqa: F401
 from src.spot.robot.state import is_standing as _is_standing  # noqa: F401
 from src.spot.robot.state import standing_and_powered as _standing_and_powered  # noqa: F401
 from src.spot.robot.arm import (  # noqa: F401
-    LOCOMOTION_INTENTS,
     SAFETY_INTENTS,
     SHUTDOWN_INTENTS,
     ABORTING_INTENTS,
@@ -98,8 +98,8 @@ from src.spot.nav.runner import (  # noqa: F401
     _start_nav_thread,
 )
 from src.spot.robot.dispatcher import (  # noqa: F401
-    _UNLOCKED_INTENTS,
-    INFO_INTENTS,
+    _ESTOP_SPOKEN,
+    _dispatch_core,
     _dispatch_lock,
     _say,
     dispatch_intent,
@@ -187,106 +187,3 @@ from src.spot.features.settings.handlers import do_set_persona  # noqa: F401,E40
 from src.spot.features.settings.handlers import do_add_persona  # noqa: F401,E402
 from src.spot.features.settings.handlers import KOKORO_GENDER_FALLBACK  # noqa: F401,E402
 from src.spot.features.settings.handlers import PROMPT_PREFIX_TEMPLATE  # noqa: F401,E402
-
-
-
-# Spoken lines never contain stop/halt/freeze/e-stop: the always-on safety
-# KWS hears Spot's own voice and would halt it.
-_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in a soft hold"}
-
-
-def _dispatch_core(intent, brain=None, speak=None, session=None):
-    """The per-intent branches. Called only through dispatch_intent (which
-    applies the arm policy) or for nested re-dispatch."""
-    if not intent:
-        return False
-
-    name = intent["intent"]
-    params = intent.get("params", {})
-
-    if name in _dispatcher.CORE_INTENTS:  # core branches moved to src/spot/robot/dispatcher.py
-        return _dispatcher._dispatch_core(intent, brain, speak, session=session)
-
-    try:
-        if session is None:  # safety/aborting callers pass the session they hold
-            session = _r.CONNECTION.ensure()
-        cmd_client = session["cmd"]
-        
-        if name == "battery_status":
-            # Report battery status
-            print("[Spot] Checking battery status...")
-            try:
-                state_client = session["state"]
-                robot_state = state_client.get_robot_state()
-                battery = robot_state.power_state.locomotion_charge_percentage.value
-                runtime_est = robot_state.power_state.locomotion_estimated_runtime.seconds
-
-                # Format runtime
-                mins = runtime_est // 60
-                hours = mins // 60
-                mins = mins % 60
-
-                print(f"[Spot] ✓ Battery: {battery:.0f}%")
-                if hours > 0:
-                    print(f"[Spot]   Estimated runtime: {hours}h {mins}m")
-                else:
-                    print(f"[Spot]   Estimated runtime: {mins}m")
-                parts = []
-                if hours > 0:
-                    parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
-                if mins > 0:
-                    parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
-                line = f"My battery is at {battery:.0f} percent"
-                if parts:
-                    line += f", with about {' and '.join(parts)} of walking left"
-                _say(speak, line + ".")
-                return True
-            except Exception as e:
-                print(f"[Spot] ✗ Battery status failed: {e}")
-                _say(speak, "I couldn't read my battery just now.")
-                return False
-
-        elif name == "status":
-            # Report overall robot status
-            print("[Spot] Checking robot status...")
-            try:
-                state_client = session["state"]
-                robot_state = state_client.get_robot_state()
-
-                # Battery
-                battery = robot_state.power_state.locomotion_charge_percentage.value
-
-                # E-stop status (uses module-level _ESTOP_STATE_NAMES)
-                estop = _ESTOP_STATE_NAMES.get(
-                    robot_state.estop_states[0].state if robot_state.estop_states else 0,
-                    "unknown",
-                )
-
-                print(f"[Spot] ✓ Status Report:")
-                print(f"[Spot]   Battery: {battery:.0f}%")
-                print(f"[Spot]   E-Stop: {estop}")
-                motors = "on" if (robot_state.power_state.motor_power_state
-                                  == robot_state.power_state.STATE_ON) else "off"
-                estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
-                ok_word = "All good. " if (motors == "on" and estop == "not_cut") else ""
-                _say(speak, f"{ok_word}My battery is at {battery:.0f} percent, "
-                            f"my motors are {motors}, and my safety switch is {estop_words}.")
-                return True
-            except Exception as e:
-                print(f"[Spot] ✗ Status check failed: {e}")
-                _say(speak, "I couldn't check my status just now.")
-                return False
-
-            return True
-
-        else:
-            print(f"[Spot] Unknown intent: {name}")
-            return False
-            
-    except Exception as e:
-        print(f"[Spot] Error executing intent '{name}': {e}")
-        if name in INFO_INTENTS:
-            _say(speak, "I can't reach my sensors right now.")
-        import traceback
-        traceback.print_exc()
-        return False

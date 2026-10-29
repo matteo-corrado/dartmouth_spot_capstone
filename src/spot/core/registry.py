@@ -26,6 +26,11 @@ class ActionSpec:
     persona: bool = False
     arm_policy: tuple[str, str] | None = None
     needs_session: bool = True
+    # Position in the generated GBNF action-name rule and in the LLM prompt's
+    # action list (src/spot/brain/grammar/generate.py). The two orders differ
+    # at base; ties keep core-then-registration order.
+    grammar_rank: int = 10_000
+    prompt_rank: int = 10_000
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,9 @@ class Registry:
 
     def action(self, name: str) -> ActionSpec | None:
         return self._actions.get(name)
+
+    def actions(self) -> list[ActionSpec]:
+        return list(self._actions.values())
 
     def names(self, flag: str) -> frozenset[str]:
         return frozenset(n for n, a in self._actions.items() if getattr(a, flag))

@@ -3,12 +3,14 @@ rows and prompt lines they replace."""
 import pathlib
 import re
 
-from src.spot.brain.intent import COMMANDS, COMMAND_PATTERNS, parse_intent
+from src.spot.brain.intent import parse_intent
+from tests.spot.golden.legacy_literals import COMMANDS  # base table (generated since Task 16)
 from src.spot.features.navigation import FEATURE
 from tests.spot.features._legacy_sets_nav import (
     grammar_action_names, legacy_flags, prompt_action_lines, spec_flags)
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
+COMMAND_PATTERNS = [(re.compile(p, re.IGNORECASE), n, t) for p, n, t in COMMANDS]
 NAMES = {"walk_to", "go_to", "tour", "patrol", "come_back", "load_map",
          "save_location", "list_maps", "list_locations"}
 

@@ -15,6 +15,7 @@ FEATURE = Feature(
             prompt_line='- set_persona: Switch the robot\'s personality. Params: {"name": "<persona_name>"}. Available personas: see KNOWN PERSONAS at the end of this prompt. Emit when the user says "be a pirate", "switch to butler", "act like a butler", "be yourself" (resets to default), etc. The persona controls speaking style AND voice. After emitting, your "response" field will be spoken in the NEW voice — write it in-character.',
             persona=True,
             **_FLAGS,
+            grammar_rank=270, prompt_rank=270,
         ),
         ActionSpec(
             name="add_persona",
@@ -26,6 +27,7 @@ FEATURE = Feature(
                 '  Use set_persona for known personas (listed in the set_persona bullet above); add_persona only for new ones.'),
             persona=True,
             **_FLAGS,
+            grammar_rank=280, prompt_rank=320,
         ),
         ActionSpec(
             name="set_volume",
@@ -33,13 +35,15 @@ FEATURE = Feature(
             grammar_params=None,
             prompt_line='- set_volume: Set your speaking volume. Params: {"level": <1-100>} as a percentage where 100=full, 50=half, 10=quiet. For "louder"/"quieter" without a number, pick a sensible delta from current (e.g. +20).',
             **_FLAGS,
+            grammar_rank=110, prompt_rank=110,
         ),
         ActionSpec(
             name="set_backend",
             handler=_h.set_backend_action,
             grammar_params=None,
-            prompt_line='- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".',  # llm_brain prefixes this line with {{EMOTE_ACTION}} (dance's)
+            prompt_line='- set_backend: Switch the TTS engine. Params: {"name": "kokoro"|"elevenlabs"}. "kokoro" is local/offline (lower quality), "elevenlabs" is cloud/premium. Emit for "switch to local voice", "go offline", "use kokoro", "switch to premium", "use elevenlabs".',  # emote's bullet comes straight before this one (prompt_rank 300 < 310)
             **_FLAGS,
+            grammar_rank=290, prompt_rank=310,
         ),
     ),
     intent_rules=(),  # intent.py has no regex rule for these intents

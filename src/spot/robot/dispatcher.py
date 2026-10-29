@@ -1,11 +1,12 @@
 """Spot command dispatcher: the arm policy around every intent, the safety
 path, and the core branches (stop, freeze, estop, stand, sit, power_off,
-stow, selfright).
+stow, selfright, status, battery_status).
 
-Feature intents go to registry_dispatch() first; an unregistered one falls
-through to LEGACY_FEATURE_DISPATCH (spot_dispatch._dispatch_core, whose
-feature branches Wave 4 moves into src/spot/features). The safety path never
-looks at the registry or the event bus.
+Feature intents go to registry_dispatch(); an unregistered (or disabled) one
+gets a session, prints "Unknown intent" and returns False, as the old
+spot_dispatch fall-through did. The intent sets other than the safety family
+are generated from core_intents + the enabled features at call time. The
+safety path never looks at the registry or the event bus.
 """
 import threading
 import time
@@ -15,9 +16,10 @@ from bosdyn.client.robot_command import RobotCommandBuilder
 import src.spot.robot as _r
 from src.spot.robot import motion as _motion
 from src.spot.robot import state as _state
+from src.spot.robot.state import _ESTOP_STATE_NAMES
+from src.spot.core.core_intents import CORE_INTENTS, intent_names
 from src.spot.robot.arm import (  # noqa: F401  (re-exported constant sets)
     ABORTING_INTENTS,
-    LOCOMOTION_INTENTS,
     RPC_TIMEOUT_S,
     SAFETY_INTENTS,
     SAFETY_LOCK_TIMEOUT_S,
@@ -25,19 +27,16 @@ from src.spot.robot.arm import (  # noqa: F401  (re-exported constant sets)
     arm_policy_for,
 )
 
-# Intents that never take _dispatch_lock (safety must never wait on it; the
-# rest touch no robot motion or can take long, e.g. add_persona).
-_UNLOCKED_INTENTS = SAFETY_INTENTS | frozenset({
-    "set_persona", "add_persona", "set_volume", "set_backend",
-    "battery_status", "status", "check_obstacles", "list_locations", "list_maps",
-})
-INFO_INTENTS = frozenset({"battery_status", "status", "check_obstacles",
-                          "list_locations", "list_maps"})
+# Generated sets (intent_names, read at call time):
+# - "unlocked": never takes _dispatch_lock (safety must never wait on it; the
+#   rest touch no robot motion or can take long, e.g. add_persona).
+# - "info": speaks "I can't reach my sensors" when the robot is unreachable.
+# - "locomotion": tucks the arm first (arm_policy_for).
+# CORE_INTENTS (core_intents.py) are the branches handled here.
 
-# Branches handled here. Everything else (incl. status / battery_status for
-# now: their spoken lines are scanned in spot_dispatch.py) is a feature.
-CORE_INTENTS = frozenset({"stop", "freeze", "estop", "stand", "sit", "power_off",
-                          "stow", "selfright"})
+# Spoken lines never contain stop/halt/freeze/e-stop: the always-on safety
+# KWS hears Spot's own voice and would halt it.
+_ESTOP_SPOKEN = {"not_cut": "released", "cut": "engaged", "soft_stop": "in a soft hold"}
 
 _dispatch_lock = threading.RLock()  # serialises non-safety robot dispatches
 
@@ -88,7 +87,7 @@ def dispatch_intent(intent, brain=None, speak=None):
         _r.ARM.hold_gaze()  # no gaze captures the post-stop gen before the stow lands
     if name in SAFETY_INTENTS:
         return dispatch_safety(intent, brain, speak)
-    if name in _UNLOCKED_INTENTS:
+    if name in intent_names("unlocked"):
         return _dispatch_core(intent, brain, speak)
     held = _r.CONNECTION._session
     if name in ABORTING_INTENTS and held is None:
@@ -97,7 +96,7 @@ def dispatch_intent(intent, brain=None, speak=None):
     with _dispatch_lock:
         outer = _r.SAFETY_GEN.dispatch_bump()
         try:
-            if name in LOCOMOTION_INTENTS:
+            if name in intent_names("locomotion"):
                 return _dispatch_locomotion(intent, brain, speak)
             if name in ABORTING_INTENTS:  # sit/power_off/stow never bring up a session
                 return _dispatch_core(intent, brain, speak, session=held)
@@ -214,16 +213,10 @@ def registry_dispatch(name, params, ctx):
     return spec.handler(params, ctx)
 
 
-def LEGACY_FEATURE_DISPATCH(intent, brain=None, speak=None, session=None):
-    """Feature branches still in spot_dispatch. Task 16 deletes this hook once
-    Wave 4 has emptied it."""
-    return _r.legacy_features()._dispatch_core(intent, brain, speak, session=session)
-
-
 def _dispatch_feature(intent, brain=None, speak=None, session=None):
     from src.spot.features import REGISTRY
     name = intent["intent"]
-    if REGISTRY.action(name) is not None:  # never true until Wave 4 registers features
+    if REGISTRY.action(name) is not None:
         # Same catch-all as every legacy branch: a raising handler (or Ctx /
         # tuning build) returns False and never escapes dispatch_intent, so the
         # locomotion caller still runs its arm restore.
@@ -235,12 +228,28 @@ def _dispatch_feature(intent, brain=None, speak=None, session=None):
             return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
         except Exception as e:
             print(f"[Spot] Error executing intent '{name}': {e}")
-            if name in INFO_INTENTS:
+            if name in intent_names("info"):
                 _say(speak, "I can't reach my sensors right now.")
             import traceback
             traceback.print_exc()
             return False
-    return LEGACY_FEATURE_DISPATCH(intent, brain, speak, session=session)
+    return _unknown_intent(name, session)
+
+
+def _unknown_intent(name, session=None):
+    """An unregistered or disabled intent: the old spot_dispatch fall-through
+    (R22). The session comes up first, inside the catch-all, then the intent
+    is refused with the same False as any unknown intent."""
+    try:
+        if session is None:
+            session = _r.CONNECTION.ensure()
+        print(f"[Spot] Unknown intent: {name}")
+        return False
+    except Exception as e:
+        print(f"[Spot] Error executing intent '{name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 # ---------------------------------------------------------------- core branches
@@ -413,6 +422,71 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
                 print(f"[Spot] ✗ Power off failed: {e}")
                 return False
 
+        elif name == "battery_status":
+            # Report battery status
+            print("[Spot] Checking battery status...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+                battery = robot_state.power_state.locomotion_charge_percentage.value
+                runtime_est = robot_state.power_state.locomotion_estimated_runtime.seconds
+
+                # Format runtime
+                mins = runtime_est // 60
+                hours = mins // 60
+                mins = mins % 60
+
+                print(f"[Spot] ✓ Battery: {battery:.0f}%")
+                if hours > 0:
+                    print(f"[Spot]   Estimated runtime: {hours}h {mins}m")
+                else:
+                    print(f"[Spot]   Estimated runtime: {mins}m")
+                parts = []
+                if hours > 0:
+                    parts.append(f"{hours} hour{'s' if hours != 1 else ''}")
+                if mins > 0:
+                    parts.append(f"{mins} minute{'s' if mins != 1 else ''}")
+                line = f"My battery is at {battery:.0f} percent"
+                if parts:
+                    line += f", with about {' and '.join(parts)} of walking left"
+                _say(speak, line + ".")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Battery status failed: {e}")
+                _say(speak, "I couldn't read my battery just now.")
+                return False
+
+        elif name == "status":
+            # Report overall robot status
+            print("[Spot] Checking robot status...")
+            try:
+                state_client = session["state"]
+                robot_state = state_client.get_robot_state()
+
+                # Battery
+                battery = robot_state.power_state.locomotion_charge_percentage.value
+
+                # E-stop status (uses module-level _ESTOP_STATE_NAMES)
+                estop = _ESTOP_STATE_NAMES.get(
+                    robot_state.estop_states[0].state if robot_state.estop_states else 0,
+                    "unknown",
+                )
+
+                print(f"[Spot] ✓ Status Report:")
+                print(f"[Spot]   Battery: {battery:.0f}%")
+                print(f"[Spot]   E-Stop: {estop}")
+                motors = "on" if (robot_state.power_state.motor_power_state
+                                  == robot_state.power_state.STATE_ON) else "off"
+                estop_words = _ESTOP_SPOKEN.get(estop, "in an unknown state")
+                ok_word = "All good. " if (motors == "on" and estop == "not_cut") else ""
+                _say(speak, f"{ok_word}My battery is at {battery:.0f} percent, "
+                            f"my motors are {motors}, and my safety switch is {estop_words}.")
+                return True
+            except Exception as e:
+                print(f"[Spot] ✗ Status check failed: {e}")
+                _say(speak, "I couldn't check my status just now.")
+                return False
+
         elif name == "estop":
             # Emergency stop (software e-stop)
             print("[Spot] ⚠️  EMERGENCY STOP triggered!")
@@ -428,7 +502,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
 
     except Exception as e:
         print(f"[Spot] Error executing intent '{name}': {e}")
-        if name in INFO_INTENTS:
+        if name in intent_names("info"):
             _say(speak, "I can't reach my sensors right now.")
         import traceback
         traceback.print_exc()

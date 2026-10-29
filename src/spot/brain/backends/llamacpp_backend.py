@@ -17,6 +17,8 @@ from typing import Callable, Dict, List, Optional
 import requests
 
 LLAMACPP_URL = os.environ.get("SPOT_LLAMACPP_URL", "http://127.0.0.1:11435")
+# Committed snapshot of the generated grammar (identity-tested). The grammar
+# sent to llama-server is generated from the enabled features (_grammar()).
 GRAMMAR_PATH = Path(__file__).resolve().parents[1] / "grammar" / "spot_action.gbnf"
 
 # Three sampling profiles. chat() picks action|freeform via _sampling_hint;
@@ -39,7 +41,8 @@ _GRAMMAR_CACHE: Optional[str] = None
 def _grammar() -> str:
     global _GRAMMAR_CACHE
     if _GRAMMAR_CACHE is None:
-        _GRAMMAR_CACHE = GRAMMAR_PATH.read_text(encoding="utf-8")
+        from src.spot.brain.llm_brain import _GRAMMAR_TEXT  # same text the prompt was built from
+        _GRAMMAR_CACHE = _GRAMMAR_TEXT
     return _GRAMMAR_CACHE
 
 

@@ -20,7 +20,7 @@ FEATURE = Feature(
         ActionSpec(
             name="follow_me", handler=_h.handle_follow_me, grammar_params=None,
             prompt_line='- follow_me: Follow the nearest person, maintaining distance. No params. Use for "follow me", "come with me", "tag along".',
-            locomotion=True, short_path_blocked=True),
+            locomotion=True, short_path_blocked=True, grammar_rank=210, prompt_rank=210),
     ),
     intent_rules=(
         IntentRule(priority=240, pattern=r"\b(?:follow me|come with me|tag along)\b", build=_build),
