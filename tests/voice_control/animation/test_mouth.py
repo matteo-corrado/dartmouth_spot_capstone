@@ -101,3 +101,14 @@ def test_close_supersedes_running_play():
     d.wait()
     assert d.log[-1][1] == 0.0
     assert len(d.log) < 50  # superseded, not all frames sent
+
+
+def test_speech_like_envelope_closes_between_syllables():
+    # 4 Hz syllable modulation: the claw must shut in the dips, not hover open
+    rate = 24000
+    t = np.arange(rate * 2) / rate
+    syll = (0.5 * (1 + np.sin(2 * np.pi * 4 * t))) ** 2
+    pcm = (0.6 * syll * np.sin(2 * np.pi * 180 * t)).astype(np.float32)
+    env = envelope(pcm, rate=rate, fps=20)
+    assert float((env == 0).mean()) > 0.3
+    assert float(env.max()) > 0.9

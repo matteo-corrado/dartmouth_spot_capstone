@@ -44,7 +44,7 @@ class Tuning:
     walk_speed_cap: float = 0.5
     dance_clearance_m: float = 1.0  # operator 2026-10-29 (from body centre; ~0.45 m past front/back edge)
     mouth_lead_s: float = 0.0
-    mouth_max_open: float = 0.4  # operator 2026-10-29: full-scale opening was too wide
+    mouth_max_open: float = 1.0  # no cap (operator 2026-10-29); realism comes from the envelope shape
     mouth_attack_s: float = 0.03
     mouth_release_s: float = 0.10
     mouth_rest_open: float = 0.08

@@ -35,7 +35,7 @@ voiceprint_threshold: 0.25   # operator 2026-10-29. Replay ch1: 0.35 kept only 2
 # walk_speed_cap: 0.5
 dance_clearance_m: 1.0   # operator 2026-10-29; measured from body centre (Spot is ~1.1 m long)
 # mouth_lead_s: 0.0
-mouth_max_open: 0.4   # widest claw opening while talking (0-1); before 2026-10-29 it opened fully
+# mouth_max_open: 1.0   # optional cap on the claw opening (0-1); the envelope shape sets realism
 # mouth_attack_s: 0.03
 # mouth_release_s: 0.10
 # mouth_rest_open: 0.08
