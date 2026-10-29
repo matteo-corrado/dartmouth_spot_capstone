@@ -164,3 +164,25 @@ def test_resume_waits_while_moving(robot, monkeypatch):
     d.dispatch_intent({"intent": "stop", "params": {}})
     monkeypatch.setattr(d, "is_navigating", lambda: True)
     assert d.resume_talk_after_halt() is False and d._talk_resume is True
+
+
+# ------------------------------------------------- M2: every stop has a timeout
+class _TimedCmd(FakeCmd):
+    def __init__(self):
+        super().__init__()
+        self.timeouts = []
+
+    def robot_command(self, cmd, end_time_secs=None, **kw):
+        self.timeouts.append(kw.get("timeout"))
+        return super().robot_command(cmd, end_time_secs, **kw)
+
+
+@pytest.mark.parametrize("name", ["stop", "freeze", "estop"])
+def test_safety_path_rpcs_all_have_timeouts(robot, monkeypatch, name):
+    cmd = _TimedCmd()
+    monkeypatch.setattr(d, "_spot_session", {"cmd": cmd, "state": FakeState(), "robot": object()})
+    monkeypatch.setattr(d, "_is_standing", lambda s: True)
+    d.dispatch_intent({"intent": name, "params": {}})
+    stops = [t for (k, _), t in zip(cmd.sent, cmd.timeouts) if k in ("stop", "mobility")]
+    assert len(stops) >= 2 and all(t == d.RPC_TIMEOUT_S for t in stops)
+

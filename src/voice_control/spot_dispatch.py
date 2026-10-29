@@ -1544,7 +1544,8 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _close_mouth()
             _cancel_nav()
             try:
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                # RPC timeout: a stalled link must not wedge the safety thread (M2)
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Stop command sent")
                 return True
             except Exception as e:
@@ -1558,12 +1559,12 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _cancel_nav()
             try:
                 # First stop any current movement
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 # Then hold position with a stand — ONLY if already standing, so
                 # freeze never stands up a sitting robot.
                 if _is_standing(session):
                     cmd = RobotCommandBuilder.synchro_stand_command()
-                    cmd_client.robot_command(cmd)
+                    cmd_client.robot_command(cmd, timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Robot frozen - holding position")
                 return True
             except Exception as e:
@@ -1889,7 +1890,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             _close_mouth()
             _cancel_nav()
             try:
-                cmd_client.robot_command(RobotCommandBuilder.stop_command())
+                cmd_client.robot_command(RobotCommandBuilder.stop_command(), timeout=RPC_TIMEOUT_S)
                 print("[Spot] ✓ Emergency stop executed")
                 return True
             except Exception as e:
