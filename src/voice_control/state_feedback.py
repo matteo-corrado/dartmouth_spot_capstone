@@ -22,7 +22,7 @@ _CHIME = {
     VoiceState.WAKE_WORD: None,          # dropping back to idle is silent
     VoiceState.LISTENING: "listen_cue",  # "go ahead, mic is open"
     VoiceState.THINKING: "think_cue",    # "got it, working"
-    VoiceState.RESPONDING: "speak_cue",  # soft tick just before speech
+    VoiceState.RESPONDING: None,         # silent: blue ring + the voice are the cue (operator 2026-10-28)
 }
 
 # RGB 0-255 per state. Vector magnitude kept <= 255 (BD AV-LED warranty cap).

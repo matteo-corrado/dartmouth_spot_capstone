@@ -53,4 +53,4 @@ def test_speak_cue_is_short_and_soft():
     fb.speak_cue()
     samples, rate, _ = fb._player.calls[0]
     assert np.max(np.abs(samples)) <= 0.15 + 1e-6
-    assert len(samples) <= rate * (0.070 + 0.080) + 1   # 70ms tone + silence tail
+    assert len(samples) <= rate * (0.050 + 0.080) + 1   # 50ms tick + silence tail

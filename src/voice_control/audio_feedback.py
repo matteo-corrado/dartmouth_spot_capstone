@@ -52,6 +52,31 @@ def _tone(freq: float, duration_ms: int, volume: float = 0.3) -> np.ndarray:
     return np.concatenate([samples, tail]).astype(np.float32)
 
 
+# --- Operator-approved "simple" set (2026-10-28) -----------------------------
+# Plain beeps told apart by note count + pitch direction (earcon guidelines):
+# up = "your turn", down = "done"; first note accented, last note longer.
+def _beep(freq: float, dur_s: float, volume: float = 0.22) -> np.ndarray:
+    """Beep: fundamental + soft 2nd/3rd harmonic, 5 ms fades, gentle decay. No tail."""
+    t = np.arange(int(SAMPLE_RATE * dur_s)) / SAMPLE_RATE
+    tone = (np.sin(2 * np.pi * freq * t) + 0.25 * np.sin(4 * np.pi * freq * t)
+            + 0.12 * np.sin(6 * np.pi * freq * t)) / 1.37
+    x = volume * np.exp(-t * 3.0) * tone
+    n = int(SAMPLE_RATE * 0.005)
+    x[:n] *= np.linspace(0, 1, n)
+    x[-n:] *= np.linspace(1, 0, n)
+    return x
+
+
+def _gap(s: float) -> np.ndarray:
+    return np.zeros(int(SAMPLE_RATE * s))
+
+
+def _seq(*parts: np.ndarray) -> np.ndarray:
+    """Join parts and add the ALSA drain tail."""
+    tail = np.zeros(int(SAMPLE_RATE * TAIL_MS / 1000))
+    return np.concatenate([*parts, tail]).astype(np.float32)
+
+
 class AudioFeedback:
     """Audio feedback tones for voice control events.
 
@@ -109,70 +134,41 @@ class AudioFeedback:
         self._play(samples, "listening")
 
     def command_ok(self):
-        """Happy double-beep — command accepted (C5, C6, 150ms)."""
-        c5 = _tone(523, 70, 0.2)
-        gap = np.zeros(int(SAMPLE_RATE * 0.02), dtype=np.float32)
-        c6 = _tone(1047, 60, 0.2)
-        samples = np.concatenate([c5[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, c6])
-        self._play(samples, "command_ok")
+        """Command accepted: two identical quick notes (C6 C6)."""
+        self._play(_seq(_beep(1047, .07, .24), _gap(.06), _beep(1047, .1)), "command_ok")
 
     def error(self):
-        """Low buzz — something failed (A3 descending, 250ms)."""
-        a3 = _tone(220, 120, 0.25)
-        gap = np.zeros(int(SAMPLE_RATE * 0.02), dtype=np.float32)
-        f3 = _tone(175, 120, 0.25)
-        samples = np.concatenate([a3[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, f3])
-        self._play(samples, "error")
+        """Something failed: two slow falling low notes (E4 -> C4)."""
+        self._play(_seq(_beep(330, .16, .26), _gap(.08), _beep(262, .28)), "error")
 
     def chain_next(self):
-        """Short tick — next action in chain (E5, 60ms)."""
-        samples = _tone(659, 60, 0.15)
-        self._play(samples, "chain_next")
+        """Next action in chain: one very short high tick (G6)."""
+        self._play(_seq(_beep(1568, .04, .16)), "chain_next")
 
     def thinking(self):
-        """Working blip — utterance captured, ASR+LLM running (A4 -> D5, 130ms)."""
-        a4 = _tone(440, 60, 0.18)
-        gap = np.zeros(int(SAMPLE_RATE * 0.015), dtype=np.float32)
-        d5 = _tone(587, 60, 0.18)
-        samples = np.concatenate([a4[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, d5])
-        self._play(samples, "thinking")
+        """Heard you, working: one short low note (A4). Same as think_cue."""
+        self._play(_seq(_beep(440, .12, .2)), "thinking")
 
     # --- Turn-taking cues (distinct from the power-on ``ready`` chime) ---
     def listen_cue(self):
-        """Mic is open, go ahead — rising E5 -> A5, 140ms, vol 0.2."""
-        e5 = _tone(659, 70, 0.2)
-        a5 = _tone(880, 70, 0.2)
-        samples = np.concatenate([e5[:-int(SAMPLE_RATE*TAIL_MS/1000)], a5])
-        self._play(samples, "listen_cue")
+        """Mic open, your turn: two quick rising notes (A5 -> E6)."""
+        self._play(_seq(_beep(880, .09, .26), _gap(.04), _beep(1319, .14)), "listen_cue")
 
     def think_cue(self):
-        """Got it, working — same tones as ``thinking()``."""
-        a4 = _tone(440, 60, 0.18)
-        gap = np.zeros(int(SAMPLE_RATE * 0.015), dtype=np.float32)
-        d5 = _tone(587, 60, 0.18)
-        samples = np.concatenate([a4[:-int(SAMPLE_RATE*TAIL_MS/1000)], gap, d5])
-        self._play(samples, "think_cue")
+        """Heard you, working: one short low note (A4)."""
+        self._play(_seq(_beep(440, .12, .2)), "think_cue")
 
     def speak_cue(self):
-        """About to speak — single soft C6, 70ms, vol 0.15."""
-        self._play(_tone(1047, 70, 0.15), "speak_cue")
+        """Soft C6 tick. Not mapped to RESPONDING any more (blue ring + voice are the cue)."""
+        self._play(_seq(_beep(1047, .05, .12)), "speak_cue")
 
     def released_cue(self):
-        """Speaker lock released — descending G5 -> C5, 200ms."""
-        g5 = _tone(784, 100, 0.2)
-        c5 = _tone(523, 100, 0.2)
-        samples = np.concatenate([g5[:-int(SAMPLE_RATE*TAIL_MS/1000)], c5])
-        self._play(samples, "released_cue")
+        """Conversation over: three quick high falling notes (G6 E6 C6)."""
+        self._play(_seq(_beep(1568, .07, .22), _gap(.03), _beep(1319, .07, .2), _gap(.03), _beep(1047, .13, .18)), "released_cue")
 
     def ready(self):
-        """Power-on chime — pipeline initialized (C4 -> C5 -> C6, 240ms)."""
-        c4 = _tone(261, 80, 0.25)
-        c5 = _tone(523, 80, 0.25)
-        c6 = _tone(1047, 80, 0.25)
-        samples = np.concatenate([c4[:-int(SAMPLE_RATE*TAIL_MS/1000)],
-                                  c5[:-int(SAMPLE_RATE*TAIL_MS/1000)],
-                                  c6])
-        self._play(samples, "ready")
+        """Power-on: three rising notes, slow (C5 E5 G5)."""
+        self._play(_seq(_beep(523, .12, .26), _gap(.06), _beep(659, .12), _gap(.06), _beep(784, .22)), "ready")
 
 
 # Module-level singleton. Created without a player so importing the module

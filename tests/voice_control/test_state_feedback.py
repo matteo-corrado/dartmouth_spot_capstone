@@ -17,8 +17,8 @@ def test_thinking_plays_think_cue():
     assert chime_for(VoiceState.THINKING) == "think_cue"
 
 
-def test_responding_plays_speak_cue():
-    assert chime_for(VoiceState.RESPONDING) == "speak_cue"
+def test_responding_is_silent():
+    assert chime_for(VoiceState.RESPONDING) is None
 
 
 def test_wake_word_has_no_chime():
@@ -26,8 +26,8 @@ def test_wake_word_has_no_chime():
 
 
 def test_turn_chimes_distinct_from_ready():
-    names = {chime_for(s) for s in (VoiceState.LISTENING, VoiceState.THINKING, VoiceState.RESPONDING)}
-    assert names == {"listen_cue", "think_cue", "speak_cue"} and "ready" not in names
+    names = {chime_for(s) for s in (VoiceState.LISTENING, VoiceState.THINKING)}
+    assert names == {"listen_cue", "think_cue"} and "ready" not in names
 
 
 def test_chime_names_are_audio_feedback_methods():
