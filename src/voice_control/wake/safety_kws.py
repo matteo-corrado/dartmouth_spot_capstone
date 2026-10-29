@@ -24,7 +24,7 @@ _SAFETY_KEYWORDS = "safety_keywords.txt"
 KEYWORDS_SCORE = 2.0
 KEYWORDS_THRESHOLD = 0.20
 NUM_TRAILING_BLANKS = 1
-INPUT_GAIN = 8.0  # fixed x8 (wake detector now uses peak-safe gain); safety stays fixed until eval_safety_recall is rerun with peak_safe_gain
+INPUT_GAIN = 4.0  # 2026-10-28 sweep on operator safety clips (ch1): x4 = 12/14 hits, 0 false in 6.4 min; x8 = 10/14, 2 false (clips ch1)
 
 
 class SafetyKeywordDetector:
