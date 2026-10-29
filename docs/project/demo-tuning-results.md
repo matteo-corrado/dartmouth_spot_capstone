@@ -26,7 +26,16 @@ seeded from 2 s of the condition's background take (same as the startup calibrat
 noise is appended so the endpointer can close. The background take can't be used for
 padding because ch0's AGC lifts it about 10 dB above clip silence.
 
-## 1. Headline: the SNR gate drops almost every real command
+## 1. SNR gate (now p90, `min_snr_db: 6.0`)
+
+**Current state (fixed after this replay):** `passes_gate` now gates on the **p90**
+speech level over the floor, not the median, and `config/tuning.yaml` sets
+`min_snr_db: 6.0` (see the comment there). Replay ch1 p90 SNRs: commands 6.9-13.2 dB,
+quick replies 12-15 dB, fan noise utterances 3.7/5.8 dB. That gives 0 command drops and
+0-1 noise passes per 2 min. The 2.0 dB stopgap below no longer applies. The rest of this
+section is the original finding that led to the fix.
+
+**Original finding (median gate):** the SNR gate dropped almost every real command.
 
 At the current `min_snr_db: 10`, **every** woken utterance on ch1 (13/13 fan, 3/3
 babble) and 6 of 7 on ch0 fail the gate. Live, Spot would wake and then not answer.
@@ -58,8 +67,7 @@ LISTENING in 120 s):
 The "bg passes" on fan ch1 fall inside 20-44 s of the background take, where Silero
 also hears real talking. They'd send that audio to ASR. The cost of a false pass is
 bounded: an ASR call and the empty/no-op path, and the mic reopens after 0.5 s.
-The real fix is in `audio_frontend`/`client_mic` (not this lane's files): gate on p90,
-or drop the hangover frames from `UtteranceStats`.
+The fix was to gate on p90 (done; `min_snr_db: 6.0` on the p90 scale, see above).
 
 ## 2. Wake phrases and channel
 
@@ -202,7 +210,7 @@ mic_channel: 1           # kept-phrase wakes 11/13 vs 6/13 (fan), 3/4 vs 0/4 (ba
 kws_score: 1.5           # unchanged; 2.0 ties on ch1, no false-fire evidence to justify a change
 kws_threshold: 0.05      # unchanged; >= 0.2 loses HEY SPOT
 kws_peak_target: 0.9     # ch1 HEY SPOT 6/8 vs 4/8 legacy x8
-min_snr_db: 2.0          # STOPGAP. 10 drops 13/13 real ch1 commands; 2 drops 0-1/13, passes 0-2 noise utts/2 min
+min_snr_db: 6.0          # p90 gate (superseded the 2.0 median-gate stopgap): commands 6.9-13.2 dB, noise 3.7/5.8
 end_silence_s: 1.2       # 0 cut-offs at 1.0-1.5; 1.2 keeps margin for chained commands
 end_silence_s_short: 1.0 # 0/3 pause cut-offs at 0.9-1.5 (Silero adds ~0.5 s hangover)
 beam_steering: false     # no beams-on data; lock is already unreliable
@@ -214,9 +222,9 @@ lock_window_deg: 180.0   # effectively accept all directions: wake-window lock c
   Keep HEY SPOT and EXCUSE ME SPOT; both 5/5 on non-overlap fan ch1 clips and 1/1 in
   babble. Coach visitors to say "Hey Spot". Re-run
   `scripts/setup_kws.py --phrases-file config/wake_phrases.txt`.
-- **min_snr_db** must come down or the demo answers nothing. 2.0 is chosen from ch1 rows
-  only; ch0 SNRs run about 4-10 dB higher and need a different value. Follow-up code fix:
-  gate on p90 or exclude Silero hangover frames.
+- **min_snr_db:** the median gate at 10 answered nothing. This is resolved: the gate now
+  uses p90 with `min_snr_db: 6.0` (ch1 values; ch0 p90 SNRs run higher and would need
+  re-checking if the demo falls back to ch0).
 - **Check live before the demo:** one "Hey Spot, what is this poster about" on ch1 with
   ASR running, to confirm the transcript keeps "what" and that ch1 ASR quality is fine.
   If ch1 ASR is poor, fall back to ch0 with `min_snr_db: 4` (2/7 ch0 drops) and accept
@@ -227,3 +235,72 @@ lock_window_deg: 180.0   # effectively accept all directions: wake-window lock c
 - `start lag` = utterance first frame minus wake fire time. It's negative because the
   25-frame pre-roll reaches back before the fire.
 - Full per-clip tables: run with `--clips`. JSON from both runs: `--json`.
+
+## Voiceprint (WeSpeaker ResNet34, Task 18)
+
+Run: `spot-env/bin/python tests/audio/replay_demo.py --voiceprint --channel 1 0`
+(model `models/speaker/voxceleb_resnet34_LM.onnx`). Every recording is the same
+operator, so a different clip by the same person stands in for a visitor's follow-up.
+
+**Method.** Each wake, pause and overlap clip gives one enrolment, built the way the
+live loop builds it: the L2-normalised mean of two embeddings.
+- **Wake audio:** the 1.5 s before a proxy KWS fire at Silero onset + 1.1 s. In replay
+  the KWS fires 0.8-1.4 s after onset.
+- **First utterance:** the Silero speech ±0.3 s. In overlap clips it is capped at
+  onset + 2.6 s, because the podcast keeps going.
+
+Trials:
+- **same:** each enrolment against every *other* clip's utterance and the quick replies
+  in the same condition.
+- **other:** each enrolment against the podcast tail of each overlap clip (a second
+  voice, off to the side, with the visitor silent). Tails shorter than 0.8 s are skipped.
+- **unknown:** talking in the fan background take, speaker unknown.
+- **noise:** 2 s chunks of the babble background. Silero finds no speech there on ch1,
+  so this is a noise-only row.
+
+| ch1 (mic_channel) | n pairs | min | p10 | median | p90 | max |
+|---|---|---|---|---|---|---|
+| same speaker | 595 | 0.14 | 0.34 | **0.53** | 0.66 | 0.82 |
+| other voice (podcast) | 54 | -0.02 | 0.07 | **0.16** | 0.26 | 0.37 |
+| unknown talker (fan bg) | 162 | 0.01 | 0.10 | 0.20 | 0.32 | 0.44 |
+| noise only (babble bg) | 270 | -0.12 | -0.02 | 0.08 | 0.17 | 0.27 |
+
+- **Sample sizes:** 27 enrolments and 32 same-speaker utterances. There are only **2
+  other-voice segments**: the overlap_1 and overlap_2 tails, 2.2-2.4 s each. overlap_3's
+  tail is too short.
+- **Per-segment median similarity:** 0.22 for overlap_1 and 0.11 for overlap_2. The
+  false-accept rate therefore rests on two podcast snippets.
+- **Threshold:** midway between the medians, **0.347, rounded to 0.35**.
+  - True accept is **89.7 %** and false accept is **3.7 %**.
+  - Unknown talker accept is 3 % and noise accept is 0 %.
+- **Sweep (TA / FA):**
+
+  | threshold | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 |
+  |---|---|---|---|---|---|
+  | TA / FA | 98 / 35 | 93 / 7 | 84 / 0 | 62 / 0 | 24 / 0 |
+- **ch0** (for reference): same 0.55 median against other 0.09, which is 1 segment. The
+  midpoint is 0.32 (TA 91 %, FA 0 %).
+- **Embedding cost on the Orin (CUDA EP):**
+  - 3 s utterance: about 29 ms median, 140 ms worst case (first run at a new length).
+  - Warm-up: 2.5 s on a background thread.
+
+**Decision.**
+- `voiceprint_threshold: 0.35` is set in `tuning.py` and `config/tuning.yaml`.
+- `voiceprint_enabled` stays **false**: true accept is 89.7 %, just under the 90 % bar,
+  and false accept rests on n = 2 other-voice segments. When enabled, a voiceprint
+  rejection is *added* to the direction check (`accept_combined` needs both), so roughly
+  1 in 10 genuine follow-ups would be dropped.
+- **Try it live:**
+  1. Run `spotctl voiceprint on`.
+  2. Watch the `[Voice] sim=... thr=0.35` line printed for every utterance. The score is
+     logged even while gating is off.
+  3. Check `spotctl status`: `voiceprint`, `voiceprint_enrolled`, `voiceprint_last_sim`.
+  4. If genuine follow-ups score under 0.35, lower the threshold to 0.30 (TA 93 % /
+     FA 7 % in replay) or turn the voiceprint off.
+- **Enrolment rules (memory only, never written to disk):**
+  - The wake audio and the first accepted utterance are averaged.
+  - The enrolment is cleared on release, timeout, crowd mode, `spotctl listen`,
+    `spotctl release` or `spotctl reset`.
+  - A wake phrase from anyone takes over and re-enrols.
+  - The first utterance after a wake is judged on direction only.
+  - A missing model or a failed embedding falls back to direction only, and is logged once.
