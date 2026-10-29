@@ -382,3 +382,33 @@ def test_ensure_failed_enter_still_clears_context(monkeypatch):
     with pytest.raises(RuntimeError):
         _r.CONNECTION.ensure()
     assert _r.CONNECTION._session is None and _r.CONNECTION._context is None
+
+
+def test_failed_close_refuses_instead_of_dry_run(monkeypatch, capsys):
+    """The half-up close raises partway (send_stop, once): the robot is still
+    up, so main refuses (no dry-run degrade) and its shutdown retries the close."""
+    import src.spot.robot.connection as _conn
+    import src.voice_control.spot_dispatch as sd
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
+    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    fails = [1]
+
+    def send_stop(cmd):
+        if fails:
+            fails.pop()
+            raise RuntimeError("stop rpc failed")
+        log.append("stop")
+        return True
+    monkeypatch.setattr(_conn._motion, "send_stop", send_stop)
+    calls = _count_shutdown(monkeypatch, real=True)
+    _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    out = capsys.readouterr().out
+    assert "ROBOT STILL POWERED" in out
+    assert os.environ["SPOT_DRY_RUN"] == "0"  # no dry-run degrade
+    assert calls == [1] and "run" not in seen
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]  # closed by the shutdown retry
+    assert _r.CONNECTION._session is None

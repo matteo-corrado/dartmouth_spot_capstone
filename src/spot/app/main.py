@@ -521,17 +521,23 @@ def _make_services(args, C):
     return SimpleNamespace(stt=stt, tts=tts, brain=brain, vision=vision)
 
 
-def _close_session_if_up() -> None:
+def _close_session_if_up() -> bool:
     """A bring-up that failed after the robot stood (e.g. the auto-arm start
     raised) leaves a live session: sit + power it off now, since dry-run
-    cleanup never closes the session. Never raises."""
+    cleanup never closes the session. True when no session is left; False
+    (after a loud line) when the robot is still up. Never raises."""
+    import src.spot.robot as _r
     try:
-        import src.spot.robot as _r
         if _r.CONNECTION._session is not None:
             from src.voice_control.spot_dispatch import close_spot_session
             close_spot_session()
     except Exception as e:  # noqa: BLE001
         print(f"[Spot] closing the half-up session failed: {e}")
+    if _r.CONNECTION._session is not None:
+        print("[Spot] ROBOT STILL POWERED — refusing to continue in dry-run; "
+              "use the e-stop or spotctl", flush=True)
+        return False
+    return True
 
 
 def _bring_up_robot(args, audio) -> bool:
@@ -569,7 +575,10 @@ def _bring_up_robot(args, audio) -> bool:
             except Exception as e:
                 print(f"[Spot] Eager session init failed "
                       f"({type(e).__name__}: {e}); auto-enabling dry-run.")
-                _close_session_if_up()  # BEFORE dry-run: cleanup_spot skips the close then
+                # Close BEFORE dry-run (cleanup_spot skips the close then). Still
+                # up: refuse, so main's shutdown retries the close (not dry-run).
+                if not _close_session_if_up():
+                    return False
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
         else:
