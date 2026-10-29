@@ -274,6 +274,10 @@ def parse_intent(text: str):
 # Commands the regex table doesn't cover but the brain handles in one word:
 SHORT_COMMAND_WORDS = frozenset({"dance", "stow", "wave", "bow", "nod", "spin",
                                  "sit", "stand", "stop", "freeze"})
+# Quiet short utterances may not start travel or power off: these need a
+# normal-volume utterance that passes the loudness gate (safety review I-2).
+SHORT_PATH_BLOCKED_INTENTS = frozenset({"walk", "turn", "walk_to", "follow_me", "patrol",
+                                        "come_back", "go_to_object", "power_off"})
 # No "thank you"/"you": those are classic ASR hallucinations on noise.
 SHORT_ANSWER_WORDS = frozenset({"yes", "yeah", "yep", "yup", "no", "nope", "okay", "ok", "sure"})
 
@@ -284,7 +288,10 @@ def short_utterance_ok(text: str, in_conversation: bool = False) -> bool:
     (only in an active LISTENING conversation) a short yes/no/okay answer."""
     if not text or not text.strip():
         return False
-    if check_safety_command(text) is not None or parse_intent(text) is not None:
+    if check_safety_command(text) is not None:
+        return True
+    parsed = parse_intent(text)
+    if parsed is not None and parsed.get("intent") not in SHORT_PATH_BLOCKED_INTENTS:
         return True
     words = _WORD_RE.findall(text.lower())
     if not words:

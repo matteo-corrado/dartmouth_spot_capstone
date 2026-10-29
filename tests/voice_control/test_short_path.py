@@ -64,7 +64,7 @@ def test_short_utterance_is_by_vad_speech_not_wall_clock():
 @pytest.mark.parametrize("text,conv,ok", [
     ("Stop.", False, True), ("freeze", False, True), ("Sit.", False, True),
     ("stand up", False, True), ("Dance!", False, True), ("stow the arm", False, True),
-    ("turn left", False, True),
+    ("turn left", False, False),  # travel blocked on the short path (safety review I-2)
     ("Yes.", True, True), ("okay", True, True), ("yes", False, False),
     ("what's your name", True, False), ("the", True, False), ("", True, False),
     ("I like to dance a lot", False, False), ("Thank you.", True, False), ("you", True, False),
@@ -165,3 +165,12 @@ def test_voiceprint_threshold_arg_reaches_the_queue():
 def test_status_shows_voiceprint_threshold(monkeypatch):
     monkeypatch.setattr(cm, "_voiceprint_threshold", 0.42)
     assert cm._status_snapshot()["voiceprint_threshold"] == 0.42
+
+
+def test_short_path_blocks_travel_and_power_off():
+    from src.voice_control.intent import short_utterance_ok
+    for t in ("walk forward", "back up", "turn around", "come here", "follow me",
+              "patrol", "go home", "find a chair", "power off"):
+        assert short_utterance_ok(t, in_conversation=True) is False, t
+    for t in ("sit", "stand up", "stop", "freeze", "dance", "battery"):
+        assert short_utterance_ok(t, in_conversation=True) is True, t
