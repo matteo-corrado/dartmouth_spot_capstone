@@ -66,6 +66,83 @@ def find_speaker():
     return None
 
 
+# --- Candidate redesign: distinct timbres, not just different sine notes ---
+def _t(dur_s):
+    return np.arange(int(dur_s * SAMPLE_RATE)) / SAMPLE_RATE
+
+
+def _fade(x, ms=5):
+    n = int(SAMPLE_RATE * ms / 1000)
+    x = x.copy()
+    x[:n] *= np.linspace(0, 1, n)
+    x[-n:] *= np.linspace(1, 0, n)
+    return x
+
+
+def bell(f, dur=0.45, vol=0.25):
+    """FM bell: bright, ringing, long decay."""
+    t = _t(dur)
+    idx = 3.0 * np.exp(-t * 6)
+    return _fade(vol * np.exp(-t * 7) * np.sin(2 * np.pi * f * t + idx * np.sin(2 * np.pi * 1.4 * f * t)))
+
+
+def pluck(f, dur=0.3, vol=0.3):
+    """Karplus-Strong plucked string: warm, guitar-like."""
+    n = int(dur * SAMPLE_RATE)
+    period = int(SAMPLE_RATE / f)
+    buf = np.random.default_rng(int(f)).uniform(-1, 1, period)
+    out = np.empty(n)
+    for i in range(n):
+        out[i] = buf[i % period]
+        buf[i % period] = 0.996 * 0.5 * (buf[i % period] + buf[(i + 1) % period])
+    return _fade(vol * out)
+
+
+def wood(f=900, dur=0.07, vol=0.3):
+    """Woodblock tick: short, dry, percussive."""
+    t = _t(dur)
+    return _fade(vol * np.exp(-t * 60) * (np.sin(2 * np.pi * f * t) + 0.5 * np.sin(2 * np.pi * 2.76 * f * t)), 2)
+
+
+def whoosh(rising=True, dur=0.3, vol=0.25):
+    """Filtered-noise swoosh with a sweeping centre."""
+    t = _t(dur)
+    noise = np.random.default_rng(7).standard_normal(len(t))
+    f = np.linspace(400, 3000, len(t)) if rising else np.linspace(3000, 400, len(t))
+    carrier = np.sin(2 * np.pi * np.cumsum(f) / SAMPLE_RATE)
+    env = np.sin(np.pi * t / dur)
+    sm = np.convolve(noise, np.ones(24) / 24, mode="same")
+    return _fade(vol * env * (0.6 * carrier + 0.4 * sm / (np.abs(sm).max() + 1e-9)))
+
+
+def buzz(f, dur=0.18, vol=0.18):
+    """Square-ish buzz: harsh, unmistakably 'wrong'."""
+    t = _t(dur)
+    return _fade(vol * np.tanh(4 * np.sin(2 * np.pi * f * t)) * np.exp(-t * 4))
+
+
+def gap(s):
+    return np.zeros(int(s * SAMPLE_RATE))
+
+
+def seq(*parts):
+    return np.concatenate(parts).astype(np.float32)
+
+
+NEW = [
+    ("new_ready", "Power-on: rising bell arpeggio", lambda: seq(bell(523, .25), bell(659, .25), bell(784, .25), bell(1047, .5))),
+    ("new_listen_A", "Mic open: two bright rising bells", lambda: seq(bell(1319, .18), bell(1760, .4))),
+    ("new_listen_B", "Mic open: rising whoosh", lambda: whoosh(True)),
+    ("new_think_A", "Thinking: three soft woodblock ticks", lambda: seq(wood(700), gap(.08), wood(700), gap(.08), wood(700))),
+    ("new_think_B", "Thinking: low pluck", lambda: pluck(196, .4)),
+    ("new_speak", "About to speak: single soft pluck (or drop it: the speech itself is the cue)", lambda: pluck(392, .25, .2)),
+    ("new_ok", "Command accepted: quick bright pluck pair", lambda: seq(pluck(523, .12), pluck(784, .3))),
+    ("new_chain", "Next chained action: one woodblock tick", lambda: wood(1100)),
+    ("new_error", "Something failed: two low buzzes", lambda: seq(buzz(147), gap(.06), buzz(110, .28))),
+    ("new_released", "Conversation over: falling whoosh + low bell", lambda: seq(whoosh(False, .25), bell(392, .5))),
+]
+
+
 def play(player, samples):
     """Play through the pipeline's own AudioPlayer (same stream, resampling and device)."""
     lead = np.zeros(int(LEAD_S * SAMPLE_RATE), dtype=np.float32)
@@ -75,7 +152,9 @@ def play(player, samples):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--only", help="play one chime by name (e.g. listen_cue, listen_cue_louder)")
+    ap.add_argument("--only", help="play one chime by name (e.g. listen_cue, new_listen_A)")
+    ap.add_argument("--set", choices=["current", "new", "both"], default="current",
+                    help="current pipeline chimes, the candidate redesign, or both")
     ap.add_argument("--repeat", type=int, default=1, help="times to play each chime")
     ap.add_argument("--volume", type=float, default=1.0, help="master gain, same as the pipeline --volume")
     ap.add_argument("--output-device", type=int, default=None, help="sounddevice output index")
@@ -92,11 +171,18 @@ def main():
     items = [(n, d, None) for n, d in CHIMES]
     items.append(("listen_cue_louder", "OPTION: listen_cue at 200 ms, vol 0.35 (compare with listen_cue)",
                   listen_cue_louder() * fb.volume))
+    new_items = [(n, d, f() * fb.volume) for n, d, f in NEW]
+    if args.only:
+        items = items + new_items
+    elif args.set == "new":
+        items = new_items
+    elif args.set == "both":
+        items = items + new_items
     if args.only:
         items = [i for i in items if i[0] == args.only]
         if not items:
             sys.exit(f"unknown chime {args.only!r}; choose from: "
-                     + ", ".join([n for n, _ in CHIMES] + ["listen_cue_louder"]))
+                     + ", ".join([n for n, _ in CHIMES] + ["listen_cue_louder"] + [n for n, _, _ in NEW]))
 
     for name, desc, samples in items:
         if samples is None:
