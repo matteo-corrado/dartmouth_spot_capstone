@@ -4,7 +4,7 @@ import ast
 import pathlib
 import re
 
-ROOT = pathlib.Path(__file__).resolve().parents[2] / "src" / "voice_control"
+ROOT = pathlib.Path(__file__).resolve().parents[2] / "src"
 BAD = re.compile(r"\b(stop|halt|freez\w*|e-?stop|estop)\b", re.IGNORECASE)
 _SPEAK_FUNCS = {"_say", "speak"}
 
@@ -34,14 +34,14 @@ def _spoken_literals(path):
 
 
 def test_scanner_finds_lines():
-    lines = _spoken_literals(ROOT.parent / "spot" / "robot" / "dispatcher.py")  # status lines moved (T16)
+    lines = _spoken_literals(ROOT / "spot" / "robot" / "dispatcher.py")  # status lines moved (T16)
     assert any("battery" in s for s in lines) and any("released" in s for s in lines)
 
 
 def test_no_stop_words_in_dispatcher_or_client_spoken_lines():
     # T19: spot_dispatch.py / client_mic.py are gone; every file under
     # src/spot that speaks (dispatcher, features, conversation loop, ...).
-    spot = ROOT.parent / "spot"
+    spot = ROOT / "spot"
     for fname in sorted(str(p.relative_to(spot)) for p in spot.rglob("*.py")):
         bad = [s for s in _spoken_literals(spot / fname) if BAD.search(s)]
         assert bad == [], f"{fname}: {bad}"
@@ -55,6 +55,6 @@ def test_startup_status_estop_clause_has_no_stop_words():
 
 
 def test_vlm_prompt_forbids_stop_words():
-    src = (ROOT.parent / "spot" / "brain" / "llm_brain.py").read_text()
+    src = (ROOT / "spot" / "brain" / "llm_brain.py").read_text()
     i = src.index("def query_vlm")
     assert "'stop', 'halt', 'freeze'" in src[i:i + 2000]
