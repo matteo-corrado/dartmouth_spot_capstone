@@ -165,11 +165,11 @@ def test_stop_during_retry_exits_promptly():
     first.fail = True
     m.start_poller(hz=50)
     assert wait_for(lambda: m._rc_thread is not None and m._rc_thread.is_alive())
-    rc = m._rc_thread
+    rc, poll_t = m._rc_thread, m._thread
     t = time.monotonic()
     m.close()
     assert time.monotonic() - t < 0.5
-    assert not rc.is_alive() and not m.poller_alive
+    assert not rc.is_alive() and not poll_t.is_alive()
 
 
 def test_no_reconnect_after_close():
