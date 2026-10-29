@@ -21,6 +21,9 @@ import sounddevice as sd
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from src.voice_control.audio_feedback import (  # noqa: E402
     SAMPLE_RATE, TAIL_MS, AudioFeedback, _tone)
+from src.voice_control.audio_player import AudioPlayer  # noqa: E402
+
+SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as client_mic
 
 LEAD_S = 0.25  # silence first so the USB speaker is awake (it drops the start of a fresh stream)
 GAP_S = 1.5
@@ -56,10 +59,18 @@ def listen_cue_louder():
     return np.concatenate([e5[:-int(SAMPLE_RATE * TAIL_MS / 1000)], a5])
 
 
-def play(samples, device):
+def find_speaker():
+    for i, d in enumerate(sd.query_devices()):
+        if SPEAKER_DEVICE_NAME.lower() in d["name"].lower() and d["max_output_channels"] > 0:
+            return i
+    return None
+
+
+def play(player, samples):
+    """Play through the pipeline's own AudioPlayer (same stream, resampling and device)."""
     lead = np.zeros(int(LEAD_S * SAMPLE_RATE), dtype=np.float32)
-    sd.play(np.concatenate([lead, samples.astype(np.float32)]), SAMPLE_RATE, device=device)
-    sd.wait()
+    player.enqueue_raw(np.concatenate([lead, samples.astype(np.float32)]), SAMPLE_RATE, label="preview")
+    player.wait()
 
 
 def main():
@@ -69,6 +80,12 @@ def main():
     ap.add_argument("--volume", type=float, default=1.0, help="master gain, same as the pipeline --volume")
     ap.add_argument("--output-device", type=int, default=None, help="sounddevice output index")
     args = ap.parse_args()
+
+    device = args.output_device if args.output_device is not None else find_speaker()
+    print(f"output device: {device if device is not None else 'system default'}")
+    player = AudioPlayer(output_device=device)
+    if not player.is_available():
+        sys.exit("audio player failed to open the output device")
 
     cap = _Capture()
     fb = AudioFeedback(player=cap, volume=args.volume)
@@ -87,8 +104,9 @@ def main():
             samples = cap.samples
         print(f"{name:18s} {len(samples) / SAMPLE_RATE * 1000:4.0f} ms  {desc}")
         for _ in range(args.repeat):
-            play(samples, args.output_device)
+            play(player, samples)
             time.sleep(GAP_S)
+    player.shutdown()
 
 
 if __name__ == "__main__":
