@@ -40,7 +40,7 @@ class Tuning:
     voiceprint_threshold: float = 0.35  # replay 2026-10-28 ch1: midway same 0.53 / other-voice 0.16 medians
     thinking_filler_s: float = 4.0
     walk_speed_cap: float = 0.5
-    dance_clearance_m: float = 1.5
+    dance_clearance_m: float = 1.0  # operator 2026-10-29 (from body centre; ~0.45 m past front/back edge)
     mouth_lead_s: float = 0.0
     mouth_max_open: float = 0.6
     mouth_attack_s: float = 0.03
