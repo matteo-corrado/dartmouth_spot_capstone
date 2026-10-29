@@ -27,7 +27,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 try:  # optional: absent without Task 2 / without pyusb
-    from src.voice_control.mic_array import MicArray
+    from src.spot.mic.xvf3800 import MicArray
 except Exception:  # pragma: no cover
     MicArray = None
 
@@ -183,7 +183,7 @@ CHIME_DEVICE_LEAD_S = 0.25  # silence before the cue so the USB speaker is awake
 def chime_samples() -> tuple[np.ndarray, int, str]:
     """The production 'ready' cue (AudioFeedback.ready), captured via a fake player."""
     try:
-        from src.voice_control.audio_feedback import AudioFeedback, SAMPLE_RATE as FB_RATE
+        from src.spot.audio.chimes import AudioFeedback, SAMPLE_RATE as FB_RATE
 
         class _Cap:
             got = None

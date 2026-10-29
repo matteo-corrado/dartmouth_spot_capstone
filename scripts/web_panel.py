@@ -68,7 +68,7 @@ class EStopManager:
 
         try:
             from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-            from src.session import quick_robot
+            from src.spot.robot.session import quick_robot
 
             robot = quick_robot("dartmouth_spot_web_estop")
             estop_client = robot.ensure_client(EstopClient.default_service_name)
@@ -369,7 +369,7 @@ class CameraStreamer:
             return True
         try:
             from bosdyn.client.image import ImageClient
-            from src.session import quick_robot
+            from src.spot.robot.session import quick_robot
 
             robot = quick_robot("dartmouth_spot_web_camera")
             self._image_client = robot.ensure_client(

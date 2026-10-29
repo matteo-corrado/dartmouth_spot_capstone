@@ -105,7 +105,7 @@ def main() -> int:
         print(f"  {name}: {size / 1024 / 1024:.0f} MB OK")
 
     print("\n  Ready! Test with:")
-    print("    python src/voice_control/spot_tts.py 'Hello from Spot.'")
+    print("    python -m src.spot.tts.speaker 'Hello from Spot.'")
     print("\n  Note: requires kokoro-onnx and onnxruntime-gpu installed.")
     print("        See requirements.txt for the install commands.")
     return 0

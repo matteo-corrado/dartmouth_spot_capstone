@@ -20,7 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.voice_control.mic_array import MicArray, XvfError  # noqa: E402
+from src.spot.mic.xvf3800 import MicArray, XvfError  # noqa: E402
 
 CLAP_SECONDS = 6.0
 CLAP_SETTLE_S = 2.0
@@ -219,9 +219,9 @@ SHOW_OFFSET = 6  # measured 2026-10-28: ring_offset_leds 6, not reversed
 
 def cmd_show(mic):
     """Cycle the approved turn signals through RingAnimator + ring_for (Enter to advance)."""
-    from src.voice_control.ring_animator import RingAnimator
-    from src.voice_control.state_feedback import ring_for
-    from src.voice_control.voice_state import VoiceState
+    from src.spot.mic.ring_animator import RingAnimator
+    from src.spot.mic.state_feedback import ring_for
+    from src.spot.core.voice_state import VoiceState
     L, T, R, S = VoiceState.LISTENING, VoiceState.THINKING, VoiceState.RESPONDING, VoiceState.WAKE_WORD
     kw = {"ring_offset_leds": SHOW_OFFSET, "reverse": False}  # measured 2026-10-28
     # angles are measured mic-frame ones
