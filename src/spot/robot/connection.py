@@ -77,7 +77,10 @@ class Connection:
         bring a new session up (ensure() raises while closing)."""
         self._closing = True
         _r.SAFETY_GEN.bump()  # abort any locomotion still being set up
-        _legacy()._cancel_auto_arm()
+        try:  # nothing fallible may block the send_stop below (R18)
+            _legacy()._cancel_auto_arm()
+        except Exception as e:
+            print(f"[Spot] ⚠️  auto-arm cancel failed during close: {e}")
 
         if self._session is not None and self._context is not None:
             _motion.send_stop(self._session["cmd"])  # stop first, then stow, then sit
