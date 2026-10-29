@@ -1,0 +1,1126 @@
+{
+ "clips": [
+  "lab/adv_hey_dog_lab.wav",
+  "lab/adv_hey_stop_lab.wav",
+  "lab/adv_hot_spot_lab.wav",
+  "lab/battery_status_lab.wav",
+  "lab/come_here_lab.wav",
+  "lab/describe_surroundings_lab.wav",
+  "lab/find_a_chair_lab.wav",
+  "lab/go_to_the_kitchen_lab.wav",
+  "lab/hey_spot_close_lab.wav",
+  "lab/hey_spot_far_lab.wav",
+  "lab/hey_spot_mid_lab.wav",
+  "lab/hey_spot_stand_up_lab.wav",
+  "lab/hey_spot_walk_forward_lab.wav",
+  "lab/idle_01_lab.wav",
+  "lab/idle_03_lab.wav",
+  "lab/idle_05_lab.wav",
+  "lab/sit_down_lab.wav",
+  "lab/stand_up_lab.wav",
+  "lab/stop_lab.wav",
+  "lab/turn_left_90_lab.wav",
+  "lab/walk_forward_1m_lab.wav",
+  "safety/safety_freeze_far.wav",
+  "safety/safety_freeze_far_quiet.wav",
+  "safety/safety_freeze_normal.wav",
+  "safety/safety_freeze_quiet.wav",
+  "safety/safety_freeze_quiet2.wav",
+  "safety/safety_freeze_quiet3.wav",
+  "safety/safety_freeze_sentence.wav",
+  "safety/safety_stop_far.wav",
+  "safety/safety_stop_far_quiet.wav",
+  "safety/safety_stop_normal.wav",
+  "safety/safety_stop_quiet.wav",
+  "safety/safety_stop_quiet2.wav",
+  "safety/safety_stop_quiet3.wav",
+  "safety/safety_stop_sentence.wav",
+  "fan/wake_hey_spot_front.wav",
+  "fan/pause_hey_spot.wav",
+  "fan/quick_reply_1.wav",
+  "fan/overlap_1.wav"
+ ],
+ "records": [
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": null
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/adv_hey_dog_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/adv_hey_stop_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/adv_hot_spot_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "battery_status",
+   "params": {},
+   "via": "main",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -46.5,
+   "speech_dbfs_median": -43.4,
+   "speech_dbfs_p90": -26.7,
+   "speech_dbfs_peak": -19.2,
+   "snr_db": 27.2,
+   "speech_s": 1.5,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.45,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "battery status",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/battery_status_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "walk_to",
+   "params": {
+    "relative": [
+     0.0,
+     -1.0,
+     0.0
+    ]
+   },
+   "via": "main",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -46.6,
+   "speech_dbfs_median": -45.2,
+   "speech_dbfs_p90": -25.3,
+   "speech_dbfs_peak": -24.0,
+   "snr_db": 22.6,
+   "speech_s": 0.93,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 2.88,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "come here",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/come_here_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -46.9,
+   "speech_dbfs_median": -35.3,
+   "speech_dbfs_p90": -17.3,
+   "speech_dbfs_peak": -14.6,
+   "snr_db": 32.2,
+   "speech_s": 1.8,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.75,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "describe surroundings",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/describe_surroundings_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "go_to_object",
+   "params": {
+    "description": "chair"
+   },
+   "via": "main",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -47.6,
+   "speech_dbfs_median": -40.8,
+   "speech_dbfs_p90": -22.2,
+   "speech_dbfs_peak": -21.6,
+   "snr_db": 26.1,
+   "speech_s": 1.26,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.21,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "find a chair",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/find_a_chair_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "go_to",
+   "params": {
+    "location": "the_kitchen"
+   },
+   "via": "main",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -48.0,
+   "speech_dbfs_median": -42.9,
+   "speech_dbfs_p90": -30.3,
+   "speech_dbfs_peak": -23.6,
+   "snr_db": 24.4,
+   "speech_s": 1.26,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.21,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "go to the kitchen",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/go_to_the_kitchen_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_close_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -60.2,
+   "speech_dbfs_median": -57.0,
+   "speech_dbfs_p90": -34.7,
+   "speech_dbfs_peak": -34.0,
+   "snr_db": 26.2,
+   "speech_s": 0.9,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 2.01,
+   "lock_mic_deg": 179.0,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": 0.0,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "hey spot",
+   "reached_llm": false,
+   "voice_sim": 0.8,
+   "clip": "lab/hey_spot_close_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_close_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/hey_spot_close_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_far_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -60.3,
+   "speech_dbfs_median": -56.6,
+   "speech_dbfs_p90": -39.2,
+   "speech_dbfs_peak": -38.3,
+   "snr_db": 22.0,
+   "speech_s": 0.93,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.0,
+   "duration_s": 1.92,
+   "lock_mic_deg": 179.0,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": 0.0,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "hey spot",
+   "reached_llm": false,
+   "voice_sim": 0.63,
+   "clip": "lab/hey_spot_far_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_far_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/hey_spot_far_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_mid_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -59.3,
+   "speech_dbfs_median": -56.7,
+   "speech_dbfs_p90": -43.5,
+   "speech_dbfs_peak": -43.0,
+   "snr_db": 16.2,
+   "speech_s": 0.78,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.0,
+   "duration_s": 1.89,
+   "lock_mic_deg": 179.0,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": 0.0,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "hey spot",
+   "reached_llm": false,
+   "voice_sim": 0.37,
+   "clip": "lab/hey_spot_mid_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_mid_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/hey_spot_mid_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_stand_up_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -59.2,
+   "speech_dbfs_median": -53.0,
+   "speech_dbfs_p90": -27.4,
+   "speech_dbfs_peak": -23.6,
+   "snr_db": 35.6,
+   "speech_s": 1.62,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.15,
+   "lock_mic_deg": 179.0,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": 0.0,
+   "utt_body_deg": 0.0,
+   "accepted": false,
+   "drop_reason": "gate",
+   "transcript": null,
+   "reached_llm": false,
+   "voice_sim": null,
+   "clip": "lab/hey_spot_stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/hey_spot_stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/hey_spot_walk_forward_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -57.6,
+   "speech_dbfs_median": -50.8,
+   "speech_dbfs_p90": -34.2,
+   "speech_dbfs_peak": -28.8,
+   "snr_db": 28.8,
+   "speech_s": 1.95,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.3,
+   "lock_mic_deg": 179.0,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": 0.0,
+   "utt_body_deg": 0.0,
+   "accepted": false,
+   "drop_reason": "gate",
+   "transcript": null,
+   "reached_llm": false,
+   "voice_sim": null,
+   "clip": "lab/hey_spot_walk_forward_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/hey_spot_walk_forward_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/idle_01_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/idle_03_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/idle_05_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "sit",
+   "params": {},
+   "via": "main",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -51.0,
+   "speech_dbfs_median": -50.4,
+   "speech_dbfs_p90": -46.6,
+   "speech_dbfs_peak": -43.9,
+   "snr_db": 7.1,
+   "speech_s": 0.69,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 2.64,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "sit down",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/sit_down_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "stand",
+   "params": {},
+   "via": "main",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -51.8,
+   "speech_dbfs_median": -50.0,
+   "speech_dbfs_p90": -27.4,
+   "speech_dbfs_peak": -25.0,
+   "snr_db": 26.8,
+   "speech_s": 0.9,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 2.85,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "stand up",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/stand_up_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "main",
+   "safety": true,
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -49.2,
+   "speech_dbfs_median": -44.3,
+   "speech_dbfs_p90": -42.5,
+   "speech_dbfs_peak": -41.8,
+   "snr_db": 7.4,
+   "speech_s": 0.69,
+   "short_path": true,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 6.66,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "stop",
+   "reached_llm": false,
+   "voice_sim": null,
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/stop_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "turn",
+   "params": {
+    "deg": 90,
+    "dir": "left"
+   },
+   "via": "main",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -47.1,
+   "speech_dbfs_median": -39.5,
+   "speech_dbfs_p90": -22.0,
+   "speech_dbfs_peak": -16.0,
+   "snr_db": 31.1,
+   "speech_s": 1.95,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.9,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "turn left 90 degrees",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/turn_left_90_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "walk",
+   "params": {
+    "direction": "forward",
+    "distance": 1
+   },
+   "via": "main",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -50.5,
+   "speech_dbfs_median": -42.9,
+   "speech_dbfs_p90": -27.4,
+   "speech_dbfs_peak": -23.4,
+   "snr_db": 27.1,
+   "speech_s": 1.98,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 3.93,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 179.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 0.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "walk forward 1 meter",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "lab/walk_forward_1m_lab.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_far.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_far_quiet.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "freeze",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_freeze_normal.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_normal.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "freeze",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_freeze_quiet.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_quiet.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "freeze",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_freeze_quiet2.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_quiet2.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "freeze",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_freeze_quiet3.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_quiet3.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "freeze",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_freeze_sentence.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_freeze_sentence.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_far.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_far_quiet.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_normal.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_quiet.wav"
+  },
+  {
+   "kind": "dispatch",
+   "intent": "stop",
+   "params": {},
+   "via": "safety_kws",
+   "safety": true,
+   "clip": "safety/safety_stop_quiet2.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_quiet2.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_quiet3.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "safety/safety_stop_sentence.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/wake_hey_spot_front.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "fan/wake_hey_spot_front.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -36.1,
+   "speech_dbfs_median": -33.6,
+   "speech_dbfs_p90": -27.2,
+   "speech_dbfs_peak": -26.0,
+   "snr_db": 10.1,
+   "speech_s": 1.29,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 4.38,
+   "lock_mic_deg": 333.0,
+   "utt_mic_deg": 333.0,
+   "lock_body_deg": 206.0,
+   "utt_body_deg": 206.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "hey spot can you tell me about the project",
+   "reached_llm": true,
+   "voice_sim": 0.48,
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "fan/pause_hey_spot.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -36.3,
+   "speech_dbfs_median": -33.9,
+   "speech_dbfs_p90": -21.6,
+   "speech_dbfs_peak": -21.1,
+   "snr_db": 15.2,
+   "speech_s": 1.02,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 2.97,
+   "lock_mic_deg": null,
+   "utt_mic_deg": 295.0,
+   "lock_body_deg": null,
+   "utt_body_deg": 244.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "what's your name",
+   "reached_llm": true,
+   "voice_sim": null,
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "fan/quick_reply_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/overlap_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "THINKING",
+   "clip": "fan/overlap_1.wav"
+  },
+  {
+   "kind": "utterance",
+   "floor_dbfs": -36.7,
+   "speech_dbfs_median": -32.7,
+   "speech_dbfs_p90": -25.5,
+   "speech_dbfs_peak": -19.7,
+   "snr_db": 17.0,
+   "speech_s": 5.4,
+   "short_path": false,
+   "rescued": null,
+   "rescue_transcript": null,
+   "endpoint": "end",
+   "end_silence_s": 1.2,
+   "duration_s": 6.6,
+   "lock_mic_deg": 108.0,
+   "utt_mic_deg": 108.0,
+   "lock_body_deg": 71.0,
+   "utt_body_deg": 71.0,
+   "accepted": true,
+   "drop_reason": null,
+   "transcript": "hey spot what is this poster about?",
+   "reached_llm": true,
+   "voice_sim": 0.51,
+   "clip": "fan/overlap_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "RESPONDING",
+   "clip": "fan/overlap_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "LISTENING",
+   "clip": "fan/overlap_1.wav"
+  },
+  {
+   "kind": "state",
+   "to": "WAKE_WORD",
+   "clip": "fan/overlap_1.wav"
+  }
+ ]
+}
