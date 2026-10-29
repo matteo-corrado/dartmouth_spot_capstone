@@ -66,8 +66,11 @@ class Connection:
                 sd.start_auto_arm(_r.SAFETY_GEN.current(), wait_s=sd.AUTO_ARM_STAND_WAIT_S)  # waits for this dispatch
             except Exception as e:
                 print(f"[Spot] Failed to establish session: {e}")
-                # Clear the context so we can retry
-                self._context = None
+                if self._session is None:
+                    # Bring-up itself failed: clear the context so we can retry
+                    self._context = None
+                # else the robot is already up (a step after __enter__ raised):
+                # keep session + context so close() still sits + powers it off.
                 raise
 
         return self._session

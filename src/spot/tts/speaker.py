@@ -36,6 +36,7 @@ import threading
 import time
 from pathlib import Path
 import numpy as np
+import src.spot.core.events as _ev
 
 # CRITICAL: must be set BEFORE `import kokoro_onnx`. Routes the InferenceSession
 # through CUDA. See module docstring for the bug rationale.
@@ -254,12 +255,14 @@ class SpotTTS:
             frames = frame_holder.get("frames")
             if self.mouth is not None and self.mouth.enabled and frames is not None and len(frames):
                 self.mouth.play(frames, time.monotonic())
+            _ev.publish("speaking_started")  # player thread; after the mouth starts
 
         def cb_play_end():
             if _trace_play_end:
                 _trace_play_end()
             if self.mouth is not None and self.mouth.enabled:
                 self.mouth.close()
+            _ev.publish("speaking_stopped")
 
         self._player.enqueue_render(
             _render,

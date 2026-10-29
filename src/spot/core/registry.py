@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib
 import logging
 import re
+import traceback
 from dataclasses import dataclass
 from typing import Callable
 
@@ -72,6 +73,10 @@ class Registry:
     def __init__(self) -> None:
         self.features: list[Feature] = []
         self._actions: dict[str, ActionSpec] = {}
+        self._loaded: set[str] = set()   # feature module names already added
+        # (name, exception, traceback text) for every feature that failed to
+        # load; main prints these loudly at startup (safety condition C6).
+        self.failures: list[tuple[str, BaseException, str]] = []
 
     def add(self, feature: Feature) -> None:
         seen: set[str] = set()
@@ -84,13 +89,26 @@ class Registry:
             self._actions[a.name] = a
         self.features.append(feature)
 
-    def load(self, names: list[str], import_fn=importlib.import_module) -> None:
+    def load(self, names: list[str], import_fn=importlib.import_module) -> list:
+        """Import and add each feature not already loaded (so main can call it
+        again after the import-time load). Returns this call's failures as
+        (name, exception, traceback text); they are also kept in .failures."""
+        failed = []
         for name in names:
+            if name in self._loaded:
+                continue
             try:
                 mod = import_fn(f"src.spot.features.{name}")
                 self.add(mod.FEATURE)
+                self._loaded.add(name)
+                self.failures[:] = [x for x in self.failures if x[0] != name]
             except Exception as exc:
                 log.error("[Features] %s skipped: %s", name, exc)
+                failed.append((name, exc, traceback.format_exc()))
+        for f in failed:  # one entry per feature: a retry replaces the old one
+            self.failures[:] = [x for x in self.failures if x[0] != f[0]]
+            self.failures.append(f)
+        return failed
 
     def action(self, name: str) -> ActionSpec | None:
         return self._actions.get(name)
