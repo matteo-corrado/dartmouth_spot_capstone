@@ -169,8 +169,8 @@ SIMPLE = [
      lambda: beep(1568, .04, .16)),
     ("simple_error", "Something failed: two slow FALLING notes, low (E4 -> C4)",
      lambda: seq(beep(330, .16, .26), gap(.08), beep(262, .28))),
-    ("simple_released", "Conversation over: two FALLING notes, mid (E6 -> A5) = mirror of mic-open",
-     lambda: seq(beep(1319, .09, .24), gap(.04), beep(880, .16))),
+    ("simple_released", "Conversation over: three quick FALLING notes, high (G6 E6 C6) - lighter than error",
+     lambda: seq(beep(1568, .07, .22), gap(.03), beep(1319, .07, .2), gap(.03), beep(1047, .13, .18))),
     ("simple_speak", "About to speak: (proposed: no sound - the blue ring and the voice are the cue)",
      lambda: gap(.05)),
 ]
