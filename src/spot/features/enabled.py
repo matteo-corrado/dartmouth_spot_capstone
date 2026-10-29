@@ -1,1 +1,4 @@
-ENABLED: list[str] = []
+ENABLED: list[str] = [
+    "walk",
+    "follow",
+]

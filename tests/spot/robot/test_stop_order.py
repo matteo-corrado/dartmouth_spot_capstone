@@ -343,8 +343,8 @@ def test_halt_does_not_touch_bus(monkeypatch, name):
 
 
 def test_registry_dispatch_none_when_unregistered():
-    assert REGISTRY.action("walk") is None
-    assert dispatcher.registry_dispatch("walk", {}, None) is None
+    assert REGISTRY.action("__never_registered__") is None
+    assert dispatcher.registry_dispatch("__never_registered__", {}, None) is None
 
 
 def test_registered_false_is_not_redispatched_to_legacy(monkeypatch):
@@ -373,6 +373,7 @@ def test_registered_result_is_final(monkeypatch, ret):
 
 def test_unregistered_falls_through_to_legacy(monkeypatch):
     calls = []
+    monkeypatch.setattr(REGISTRY, "_actions", {})  # Task 13 registers set_speed; probe an empty registry
     monkeypatch.setattr(dispatcher, "LEGACY_FEATURE_DISPATCH",
                         lambda intent, brain=None, speak=None, session=None:
                         calls.append(intent["intent"]) or True)
