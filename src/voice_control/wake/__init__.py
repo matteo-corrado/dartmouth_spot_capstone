@@ -1,21 +1,11 @@
-"""Wake-word backends. Selected via SPOT_WAKE_BACKEND env var.
+"""Moved to src/spot/wake/. Compatibility alias; removed in Task 19."""
+import importlib
+import sys
 
-Default = sherpa_onnx (production now). livekit becomes default once the
-custom-trained hey_spot.onnx is in place (see scripts/training/).
-
-Backends expose: is_available(), process_frame(pcm16_bytes) -> bool, reset().
-"""
-import os
-
-_DEFAULT = "sherpa_onnx"
-
-
-def make_wake_detector():
-    name = os.environ.get("SPOT_WAKE_BACKEND", _DEFAULT).lower()
-    if name == "sherpa_onnx":
-        from .sherpa_onnx import WakeWordDetector
-        return WakeWordDetector()
-    if name == "livekit":
-        from .livekit import LiveKitWakeWord
-        return LiveKitWakeWord()
-    raise ValueError(f"Unknown SPOT_WAKE_BACKEND={name!r}; valid: sherpa_onnx|livekit")
+_m = importlib.import_module("src.spot.wake")
+for _sub in ("sherpa_onnx", "livekit", "phrases"):
+    sys.modules[f"{__name__}.{_sub}"] = importlib.import_module(f"src.spot.wake.{_sub}")
+_kws = importlib.import_module("src.spot.safety.kws")
+sys.modules[f"{__name__}.safety_kws"] = _kws
+setattr(_m, "safety_kws", _kws)
+sys.modules[__name__] = _m
