@@ -17,6 +17,7 @@ end_silence_s_short: 1.0
 # kws_score: 1.5
 # kws_threshold: 0.05
 # kws_peak_target: 0.9   # wake KWS peak-safe gain target (<=0 = legacy fixed x8)
+# safety_kws_threshold: 0.25   # always-on stop/freeze KWS. 0.20 = more recall on quiet/far stop, ~2.5x false fires on fan replay
 # lock_window_deg: 35.0
 # lock_timeout_s: 20.0
 # lock_nudge: 0.3
