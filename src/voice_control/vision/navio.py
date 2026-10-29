@@ -19,7 +19,8 @@ from .types import Detection
 
 logger = logging.getLogger(__name__)
 
-TRAJ_END_S = 4.0       # trajectory command lifetime; the go-to loop re-issues it
+TRAJ_END_S = 1.5       # trajectory lifetime; go-to re-sends ~every 0.5 s, so a dead or
+                       # superseded loop stops walking its old goal within 1.5 s
 VEL_END_S = 0.5        # velocity command lifetime: a dead loop stops the robot
 RPC_TIMEOUT_S = 0.5    # < spot_dispatch.SAFETY_LOCK_TIMEOUT_S, like the gaze send
 LOCK_TIMEOUT_S = 0.5   # fail closed if the arm lock is busy (a stop's stow holds it)
@@ -59,12 +60,13 @@ class SpotNavIO:
     """NavIO on the real robot. ``session`` is spot_dispatch's session dict,
     ``gen`` the safety generation taken when the action was dispatched."""
 
-    def __init__(self, session, gen, speak=None):
+    def __init__(self, session, gen, speak=None, stop_event=None):
         if gen is None:
             raise ValueError("SpotNavIO needs a safety generation (None disables abort checks)")
         self.session = session
         self.gen = gen
         self._speak = speak
+        self.stop_event = stop_event  # the nav thread's cancel event (superseding locomotion)
 
     # -- sensing ------------------------------------------------------------
     def snapshot(self, sources, labels, model):
@@ -82,14 +84,20 @@ class SpotNavIO:
 
     # -- motion -------------------------------------------------------------
     def _send(self, cmd, end_s: float) -> bool:
-        """Check the safety generation, send, check again. Never raises."""
+        """Check the safety generation and the nav thread's stop_event (both
+        under ``_arm_lock``), send, check the generation again. Never raises.
+
+        The post-send halt is for a stop (generation bump) only: a set
+        stop_event alone means a superseding locomotion, whose own command
+        follows the nav join; a late halt here could cancel it."""
         from src.voice_control import spot_dispatch as sd
         cmd_client = self.session["cmd"]
         if not sd._arm_lock.acquire(timeout=LOCK_TIMEOUT_S):
             logger.warning("navio: arm lock busy, motion not sent")
             return False
         try:
-            if sd._aborted(self.gen):
+            if sd._aborted(self.gen) or (self.stop_event is not None
+                                         and self.stop_event.is_set()):
                 return False
             cmd_client.robot_command(cmd, end_time_secs=time.time() + end_s,
                                      timeout=RPC_TIMEOUT_S)

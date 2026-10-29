@@ -11,6 +11,7 @@ import logging
 import math
 import threading
 import time
+from dataclasses import replace
 
 from .cameras import BODY_SOURCES
 from .navio import NavIO
@@ -32,6 +33,8 @@ TURN_FIRST_DEG = 20.0     # beyond this, a tick only turns in place
 STEP_M = 1.0              # object without distance: walk this far, then re-measure
 STEP_DONE_M = 0.9
 MAX_STEPS = 8
+GROUND_MIN_M = 4.0        # R23: a person's ground-plane range counts only this far out
+                          # (same value as follow.GROUND_MIN_M)
 DEFAULT_MODEL = "yolo26l-seg"
 
 TEXTS = {
@@ -47,6 +50,15 @@ TEXTS = {
 
 def _wrap_deg(a: float) -> float:
     return (a + 180.0) % 360.0 - 180.0
+
+
+def _person_range(det: Detection) -> Detection:
+    """R23 for a person: a ground-plane range under GROUND_MIN_M (feet hidden ->
+    overestimate) is no range at all."""
+    d = det.distance_m
+    if det.distance_method == "ground" and d is not None and d < GROUND_MIN_M:
+        return replace(det, distance_m=None, distance_method=None)
+    return det
 
 
 def _result(key: str, **data) -> ActionResult:
@@ -130,6 +142,8 @@ def _loop(io, target, label, is_person, halted, rate_hz, now, sleep, model, st) 
 
     if halted():
         return _result("paused")
+    if is_person:
+        target = _person_range(target)
     pose = io.odom_pose()
     t0 = now()
     tgt = _Target(pose, target, keep_range=not is_person)
@@ -155,6 +169,8 @@ def _loop(io, target, label, is_person, halted, rate_hz, now, sleep, model, st) 
             for d in dets or []:
                 if d.label != label:
                     continue
+                if is_person:
+                    d = _person_range(d)
                 off = abs(_wrap_deg(d.bearing_deg - pred_b))
                 if off <= MATCH_DEG and (best is None or off < best[0]):
                     best = (off, d)
@@ -190,7 +206,11 @@ def _loop(io, target, label, is_person, halted, rate_hz, now, sleep, model, st) 
             if not is_person or t - dist_t <= FRESH_DIST_S:
                 tx, ty = tgt.point
                 move(tx - stop_m * math.cos(h), ty - stop_m * math.sin(h), h)
-            # else: a person without a fresh distance: no translation this tick
+            else:
+                # A person without a fresh distance: replace the last walking
+                # goal with a turn-only one at the current position, so the
+                # old goal does not keep walking for the trajectory lifetime.
+                move(pose[0], pose[1], h)
         elif is_person:
             return _result("no_distance")  # never walk blind toward a person
         else:
