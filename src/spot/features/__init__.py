@@ -1,0 +1,1 @@
+"""Spot features package (placeholder)."""

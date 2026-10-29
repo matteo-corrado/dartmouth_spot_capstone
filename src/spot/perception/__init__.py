@@ -1,0 +1,1 @@
+"""Spot perception package (placeholder)."""

@@ -1,0 +1,1 @@
+"""Spot stt package (placeholder)."""
