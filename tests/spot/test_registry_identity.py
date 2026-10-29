@@ -265,3 +265,32 @@ def test_brain_drops_non_allowlisted_actions(monkeypatch, tmp_path, capsys):
 def test_allowlist_is_the_grammar_action_names():
     line = next(l for l in build_grammar(REGISTRY).splitlines() if l.startswith("action-name ::="))
     assert llm_brain.allowed_actions(REGISTRY) == set(re.findall(r'\\"(\w+)\\"', line))
+
+
+@pytest.mark.parametrize("raw, said, kept", [
+    ('{"actions": [{"action": ["stop"]}, {"action": {"a": 1}}, {"action": "sit"}], "response": "ok"}',
+     "dropped non-allowlisted action ['stop']", ["sit"]),
+    ('[{"action": "stand"}]', "dropped non-object reply (list)", []),
+    ('{"actions": [{"action": "stand", "params": "x"}, {"action": "sit", "params": null}], "response": "ok"}',
+     "dropped action 'stand': params is str, not an object", ["sit"]),
+])
+def test_brain_malformed_replies_never_raise(monkeypatch, tmp_path, capsys, raw, said, kept):
+    """Fix round 2: unhashable action names, a non-object reply and non-object
+    params are dropped and logged, never a TypeError / AttributeError."""
+    from src.spot.conversation import conversation_log
+
+    class Fake:
+        name = "ollama"
+
+        def is_available(self):
+            return True
+
+        def chat(self, *a, **k):
+            return raw
+
+    monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
+    monkeypatch.setattr(llm_brain, "_BACKEND", Fake())
+    out = llm_brain.LLMBrain().process("hello", state={})
+    assert said in capsys.readouterr().out
+    assert [a["intent"] for a in out["actions"]] == kept
+    assert all(isinstance(a["params"], dict) for a in out["actions"])

@@ -74,9 +74,11 @@ class Registry:
         self._actions: dict[str, ActionSpec] = {}
 
     def add(self, feature: Feature) -> None:
+        seen: set[str] = set()
         for a in feature.actions:
-            if a.name in self._actions:
+            if a.name in self._actions or a.name in seen:
                 raise ValueError(f"duplicate action: {a.name}")
+            seen.add(a.name)
             _check_flags(feature.name, a)
         for a in feature.actions:
             self._actions[a.name] = a

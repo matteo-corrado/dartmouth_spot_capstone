@@ -87,3 +87,10 @@ def test_enabled_features_pass_the_checks():
     for name in ENABLED:
         r.add(importlib.import_module(f"src.spot.features.{name}").FEATURE)
     assert [f.name for f in r.features] == ENABLED
+
+
+def test_duplicate_action_within_one_feature_rejected():
+    r = Registry()
+    with pytest.raises(ValueError, match="duplicate action: x"):
+        r.add(Feature("a", actions=(act("x"), act("x"))))
+    assert r.features == [] and r.action("x") is None

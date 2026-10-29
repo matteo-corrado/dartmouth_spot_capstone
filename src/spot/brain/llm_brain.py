@@ -515,7 +515,14 @@ class LLMBrain:
 
         try:
             parsed = json.loads(raw)
+            if not isinstance(parsed, dict):
+                # e.g. a top-level JSON list (no GBNF on ollama): no actions, nothing said
+                print(f"[Brain] dropped non-object reply ({type(parsed).__name__})")
+                parsed = {"actions": [], "response": ""}
             grammar_actions = parsed.get("actions", []) or []
+            if not isinstance(grammar_actions, list):
+                print(f"[Brain] dropped non-list actions ({type(grammar_actions).__name__})")
+                grammar_actions = []
             response = parsed.get("response", "").strip()
             thinking = (parsed.get("thinking") or "").strip()
             if thinking:
@@ -527,18 +534,23 @@ class LLMBrain:
             parsed = {"actions": [], "response": response}
 
         # Grammar emits {"action": "stand", ...}; dispatcher expects {"intent": "stand", ...}.
-        actions = [
-            {"intent": a["action"], "params": a.get("params", {})}
-            for a in grammar_actions
-            if isinstance(a, dict) and a.get("action")
-        ]
-        kept = []
-        for a in actions:
-            if a["intent"] in _ALLOWED_ACTIONS:
-                kept.append(a)
-            else:
-                print(f"[Brain] dropped non-allowlisted action '{a['intent']}'")
-        actions = kept
+        # R28 allowlist: only string names the generated grammar allows, with
+        # object params (missing / null params -> {}), reach the dispatcher.
+        actions = []
+        for a in grammar_actions:
+            if not isinstance(a, dict) or not a.get("action"):
+                continue
+            name = a["action"]
+            if not isinstance(name, str) or name not in _ALLOWED_ACTIONS:
+                print(f"[Brain] dropped non-allowlisted action {name!r}")
+                continue
+            params = a.get("params")
+            if params is None:
+                params = {}
+            if not isinstance(params, dict):
+                print(f"[Brain] dropped action '{name}': params is {type(params).__name__}, not an object")
+                continue
+            actions.append({"intent": name, "params": params})
 
         # For describe actions the LLM "response" is often hallucinated
         # (model can't see the camera until the dispatcher runs the VLM
