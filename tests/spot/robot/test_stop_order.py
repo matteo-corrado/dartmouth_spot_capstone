@@ -14,6 +14,7 @@ from bosdyn.api import robot_state_pb2
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.dispatcher as dispatcher
 import src.voice_control.spot_dispatch as d
+import src.spot.features.mouth.handlers as mouth_h
 import src.voice_control.spot_tts as tts_mod
 from src.spot.core.events import EventBus
 from src.spot.core.registry import ActionSpec
@@ -299,9 +300,9 @@ def _run(monkeypatch, sname, name):
     monkeypatch.setattr(ARM, "_talk_resume", False)
     monkeypatch.setattr(ARM, "_last_brain", None)
     monkeypatch.setattr(ARM, "_settle_until", 0.0)
-    monkeypatch.setattr(d, "_auto_arm", True)
-    monkeypatch.setattr(d, "_auto_arm_pending", True)
-    monkeypatch.setattr(d, "_auto_arm_thread", None)
+    monkeypatch.setattr(mouth_h, "_auto_arm", True)
+    monkeypatch.setattr(mouth_h, "_auto_arm_pending", True)
+    monkeypatch.setattr(mouth_h, "_auto_arm_thread", None)
     if s["nav"]:
         monkeypatch.setattr(NAV, "_thread", _Thr(log))
         monkeypatch.setattr(NAV, "_stop_event", _Ev(log))

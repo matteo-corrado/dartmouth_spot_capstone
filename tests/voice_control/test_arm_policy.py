@@ -7,6 +7,7 @@ from bosdyn.api import robot_command_pb2
 
 import src.session as session_mod
 import src.voice_control.spot_dispatch as d
+import src.spot.features.mouth.handlers as mouth_h
 from src.spot.robot import ARM, CONNECTION
 import src.spot.robot.arm as arm_mod
 import src.spot.robot.connection as connection_mod
@@ -132,8 +133,8 @@ def fake(monkeypatch):
     monkeypatch.setattr(ARM, "_pose_before_walk", None)
     monkeypatch.setattr(ARM, "_pose_during_walk", None)
     monkeypatch.setattr(ARM, "_gaze_deg", 0.0)
-    monkeypatch.setattr(d, "_auto_arm", False)
-    monkeypatch.setattr(d, "_auto_arm_pending", False)
+    monkeypatch.setattr(mouth_h, "_auto_arm", False)
+    monkeypatch.setattr(mouth_h, "_auto_arm_pending", False)
     monkeypatch.setattr(ARM, "_last_brain", None)
     yield cmd
     d._cancel_nav()
