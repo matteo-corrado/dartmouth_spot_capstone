@@ -1,6 +1,7 @@
 """Task 15: main builds the pipeline in the 9-step order; features load
 loudly (C6); gaze is not put on the bus (C5); the auto-arm gate stays
 set_auto_arm(auto_arm_wanted(...)) (C3); events publish after the change."""
+import os
 import threading
 from types import SimpleNamespace
 
@@ -42,6 +43,8 @@ def _patch_pipeline(monkeypatch, seen, load_result=()):
         monkeypatch.setattr(obj, attr, getattr(obj, attr))
     monkeypatch.setenv("SPOT_DRY_RUN", "0")
     monkeypatch.delenv("SPOT_NO_TRANSCRIPT_LOG", raising=False)
+    import src.spot.features.mouth.handlers as mouth_h
+    monkeypatch.setattr(mouth_h, "_auto_arm", False)  # the step-4 mouth start stays a no-op
 
     def rec(name, ret=None):
         return lambda *a, **k: seen.append(name) or ret
@@ -192,3 +195,190 @@ def test_null_vision():
     v = make_vision()
     assert isinstance(v, NullVision) and isinstance(v, Vision)
     assert v.people() == [] and v.objects() == []
+
+
+def test_non_gaze_subscription_is_on_the_bus(monkeypatch):
+    from src.spot.core.registry import Feature, Registry
+    import src.spot.features as _f
+
+    def handler(**p):
+        pass
+
+    reg = Registry()
+    reg.add(Feature("other", subscriptions=(("robot_stood", handler),)))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    monkeypatch.setattr(reg, "load", lambda names: [])
+    bus = EventBus()
+    assert _app._start_features(SimpleNamespace(dry_run=True), bus,
+                                _app._robot_owners(), _app._tuning) is True
+    assert bus._subs["robot_stood"] == [handler]
+
+
+# ---- R29: startup cleanup runs exactly once on any exit after step 5 ----
+
+def _count_shutdown(monkeypatch, real=False):
+    calls = []
+    orig = _app._shutdown_runtime
+
+    def counted():
+        calls.append(1)
+        if real:
+            orig()
+    monkeypatch.setattr(_app, "_shutdown_runtime", counted)
+    return calls
+
+
+def test_ctrl_c_in_brain_wait_shuts_down_once(monkeypatch):
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+
+    def wait(timeout_s):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(_app, "make_brain", lambda *a, **k: SimpleNamespace(wait_available=wait))
+    calls = _count_shutdown(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _app.main(ARGS)
+    assert calls == [1]
+    assert "run" not in seen and "conversation" not in seen
+
+
+def test_run_shutdown_is_not_repeated(monkeypatch):
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+
+    def run(**k):
+        k["shutdown"]()
+        k["shutdown"]()
+        raise KeyboardInterrupt
+    monkeypatch.setattr(_loop.CONVERSATION, "run", run)
+    calls = _count_shutdown(monkeypatch)
+    with pytest.raises(KeyboardInterrupt):
+        _app.main(ARGS)
+    assert calls == [1]
+
+
+def test_refusal_shuts_down_once(monkeypatch):
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_skws, "make_safety_detector", lambda: None)  # no safety KWS on the robot
+    monkeypatch.setattr(_app, "_probe_host", lambda: "127.0.0.1")
+    import socket
+
+    class _Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+    monkeypatch.setattr(socket, "create_connection", lambda *a, **k: _Sock())
+    calls = _count_shutdown(monkeypatch)
+    _app.main(["--device", "0", "--output-device", "0"])
+    assert calls == [1] and "run" not in seen
+
+
+class _FakeRobotSession:
+    """A standing robot: records the close sequence (sit, power off, exit)."""
+
+    def __init__(self, log):
+        self.log = log
+        self.robot = SimpleNamespace(power_off=lambda **k: log.append("power_off"))
+        self.session = {"cmd": object(), "robot": self.robot}
+
+    def __enter__(self):
+        self.log.append("stood")
+        return self.session
+
+    def __exit__(self, *a):
+        self.log.append("exit")
+        return False
+
+
+def _patch_robot_close(monkeypatch, log):
+    import src.spot.robot as _r
+    import src.spot.robot.connection as _conn
+    import bosdyn.client.robot_command as _rc
+    for attr in ("_session", "_context", "_closing"):
+        monkeypatch.setattr(_r.CONNECTION, attr, getattr(_r.CONNECTION, attr))
+    monkeypatch.setattr(_conn.time, "sleep", lambda s: None)
+    monkeypatch.setattr(_conn._motion, "send_stop", lambda cmd: log.append("stop") or True)
+    monkeypatch.setattr(_r.ARM, "close_mouth", lambda: None)
+    monkeypatch.setattr(_r.ARM, "stow_now", lambda *a, **k: log.append("stow"))
+    monkeypatch.setattr(_r.NAV, "cancel", lambda *a, **k: None)
+    monkeypatch.setattr(_rc, "blocking_sit", lambda cmd, timeout_sec: log.append("sit"))
+    return _r
+
+
+def test_ctrl_c_after_map_stand_sits_and_powers_off(monkeypatch):
+    """Ctrl-C after the --map bring-up stood the robot, before run(): the
+    shutdown runs once and the robot is sat and powered off."""
+    import src.voice_control.spot_dispatch as sd
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+
+    def ensure(map_path=None):
+        _r.CONNECTION._context = fake
+        _r.CONNECTION._session = fake.__enter__()
+        raise KeyboardInterrupt  # operator Ctrl-C right after the stand
+    monkeypatch.setattr(sd, "ensure_spot_session", ensure)
+    calls = _count_shutdown(monkeypatch, real=True)
+    with pytest.raises(KeyboardInterrupt):
+        _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert calls == [1]
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert _r.CONNECTION._session is None and "run" not in seen
+
+
+def test_failed_bringup_after_stand_still_closes_robot(monkeypatch):
+    """connection.ensure: a step after the stand raises (auto-arm start). The
+    session stays closable; main closes it BEFORE degrading to dry-run."""
+    import src.spot.robot.connection as _conn
+    import src.voice_control.spot_dispatch as sd
+    seen, log = [], []
+    _patch_pipeline(monkeypatch, seen)
+    _r = _patch_robot_close(monkeypatch, log)
+    fake = _FakeRobotSession(log)
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
+
+    def boom(*a, **k):
+        raise RuntimeError("auto-arm failed")
+    monkeypatch.setattr(sd, "start_auto_arm", boom)
+    _app.main(["--map", "m", "--device", "0", "--output-device", "0"])
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+    assert os.environ["SPOT_DRY_RUN"] == "1"
+    assert seen[-1] == "run"  # degraded to dry-run and kept going
+
+
+def test_ensure_keeps_live_session_closable(monkeypatch):
+    import src.spot.robot.connection as _conn
+    import src.voice_control.spot_dispatch as sd
+    log = []
+    _r = _patch_robot_close(monkeypatch, log)
+    monkeypatch.setattr(_r.CONNECTION, "_closing", False)
+    monkeypatch.setattr(_r.CONNECTION, "_session", None)
+    monkeypatch.setattr(_r.CONNECTION, "_context", None)
+    fake = _FakeRobotSession(log)
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: fake)
+    monkeypatch.setattr(sd, "start_auto_arm", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x")))
+    with pytest.raises(RuntimeError):
+        _r.CONNECTION.ensure()
+    assert _r.CONNECTION._session is fake.session and _r.CONNECTION._context is fake
+    _r.CONNECTION.close()
+    assert log == ["stood", "stop", "stow", "sit", "power_off", "exit"]
+
+
+def test_ensure_failed_enter_still_clears_context(monkeypatch):
+    import src.spot.robot.connection as _conn
+    _r = _patch_robot_close(monkeypatch, [])
+    monkeypatch.setattr(_r.CONNECTION, "_closing", False)
+    monkeypatch.setattr(_r.CONNECTION, "_session", None)
+    monkeypatch.setattr(_r.CONNECTION, "_context", None)
+
+    class _Bad:
+        def __enter__(self):
+            raise RuntimeError("unreachable")
+    monkeypatch.setattr(_conn, "spot_session", lambda **k: _Bad())
+    with pytest.raises(RuntimeError):
+        _r.CONNECTION.ensure()
+    assert _r.CONNECTION._session is None and _r.CONNECTION._context is None

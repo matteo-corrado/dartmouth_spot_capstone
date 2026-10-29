@@ -77,10 +77,13 @@ class Registry:
                 mod = import_fn(f"src.spot.features.{name}")
                 self.add(mod.FEATURE)
                 self._loaded.add(name)
+                self.failures[:] = [x for x in self.failures if x[0] != name]
             except Exception as exc:
                 log.error("[Features] %s skipped: %s", name, exc)
                 failed.append((name, exc, traceback.format_exc()))
-        self.failures.extend(failed)
+        for f in failed:  # one entry per feature: a retry replaces the old one
+            self.failures[:] = [x for x in self.failures if x[0] != f[0]]
+            self.failures.append(f)
         return failed
 
     def action(self, name: str) -> ActionSpec | None:

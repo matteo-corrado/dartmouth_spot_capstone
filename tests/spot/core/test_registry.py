@@ -75,4 +75,4 @@ def test_load_returns_failures_and_skips_loaded():
     second = r.load(["good", "bad"], import_fn=imp)  # good is not re-added
     assert [n for n, _, _ in second] == ["bad"]
     assert calls.count("src.spot.features.good") == 1
-    assert len(r.failures) == 2
+    assert [n for n, _, _ in r.failures] == ["bad"]  # deduped across the retry

@@ -521,9 +521,22 @@ def _make_services(args, C):
     return SimpleNamespace(stt=stt, tts=tts, brain=brain, vision=vision)
 
 
+def _close_session_if_up() -> None:
+    """A bring-up that failed after the robot stood (e.g. the auto-arm start
+    raised) leaves a live session: sit + power it off now, since dry-run
+    cleanup never closes the session. Never raises."""
+    try:
+        import src.spot.robot as _r
+        if _r.CONNECTION._session is not None:
+            from src.voice_control.spot_dispatch import close_spot_session
+            close_spot_session()
+    except Exception as e:  # noqa: BLE001
+        print(f"[Spot] closing the half-up session failed: {e}")
+
+
 def _bring_up_robot(args, audio) -> bool:
     """Safety-KWS startup gate and the robot probe / --map bring-up.
-    False when startup is refused (everything started so far is shut down).
+    False when startup is refused (main then shuts down what is running).
 
     Two paths:
       --map present: eager full session init (stand_on_enter=True) so
@@ -541,7 +554,6 @@ def _bring_up_robot(args, audio) -> bool:
     # Fail closed BEFORE --map powers on / stands the robot.
     if args.map and not _sl.safety_startup_ok(audio.have_safety_kws, args.dry_run,
                                               args.allow_no_safety_kws):
-        _shutdown_runtime()
         return False
     if not args.dry_run:
         if args.map:
@@ -557,6 +569,7 @@ def _bring_up_robot(args, audio) -> bool:
             except Exception as e:
                 print(f"[Spot] Eager session init failed "
                       f"({type(e).__name__}: {e}); auto-enabling dry-run.")
+                _close_session_if_up()  # BEFORE dry-run: cleanup_spot skips the close then
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
         else:
@@ -578,15 +591,14 @@ def _bring_up_robot(args, audio) -> bool:
     # check runs after it so an unreachable robot (auto dry-run) still starts.
     if not args.map and not _sl.safety_startup_ok(audio.have_safety_kws, args.dry_run,
                                                   args.allow_no_safety_kws):
-        _shutdown_runtime()
         return False
     return True
 
 
-def _start_conversation(args, C, audio, services):
+def _start_conversation(args, C, audio, services, tuning):
     """Conversation state (logs, LEDs, voiceprint), the input stream, the
     LISTENING banner and the automatic arm fold. Returns (stream, utt_log);
-    stream is None when it could not be opened (runtime already shut down)."""
+    stream is None when it could not be opened (main then shuts down)."""
     C._store_transcript = args.store_transcript
     utt_log = _ul.UtteranceLog(_ul.UTTERANCE_LOG_DIR, store_transcript=args.store_transcript)
 
@@ -631,7 +643,6 @@ def _start_conversation(args, C, audio, services):
     except Exception as e:
         print(f"Audio error: {e}")
         print("Run with --list-devices to see available devices")
-        _shutdown_runtime()
         return None, utt_log
 
     brain, wake_detector = services.brain, audio.wake_detector
@@ -656,7 +667,7 @@ def _start_conversation(args, C, audio, services):
     # (session bring-up, a stand, or the next turn) -- never before. Opt out
     # with --no-arm or tuning auto_arm: false. Skipped in dry-run.
     # Safety condition C3: this is THE auto-arm gate.
-    _auto = auto_arm_wanted(args, _tuning)
+    _auto = auto_arm_wanted(args, tuning)
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
@@ -673,6 +684,34 @@ def _start_control_server():
     run on its HTTP threads; queued ones are drained by Conversation.run."""
     ctl_q = queue.Queue()
     return ctl_q, _ctl._start_control_server(ctl_q)
+
+
+class _ShutdownOnce:
+    """_shutdown_runtime at most once per main() (looked up at call time)."""
+
+    def __init__(self):
+        self.done = False
+
+    def __call__(self) -> None:
+        if self.done:
+            return
+        self.done = True
+        _shutdown_runtime()
+
+
+def _close_quietly(ctl_srv, stream) -> None:
+    """What run()'s finally closes, for an exit before run() started."""
+    if ctl_srv is not None:
+        try:
+            ctl_srv.stop()
+        except Exception:
+            pass
+    if stream is not None:
+        try:
+            stream.stop()
+            stream.close()
+        except Exception:
+            pass
 
 
 # ============================================================================
@@ -693,22 +732,37 @@ def main(argv: list[str] | None = None):
     # 4. Features: REGISTRY.load(ENABLED), subscriptions, start(ctx)
     if not _start_features(args, bus, robot, tuning):
         return
-    # 5. Audio capture, ring, wake, safety listener
-    audio = _start_audio(args, tuning)
-    # 6. Services: stt, tts, brain, vision
-    services = _make_services(args, C)
-    # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
-    if not _bring_up_robot(args, audio):
-        return
-    # 7. Conversation (state, input stream, automatic arm fold)
-    stream, utt_log = _start_conversation(args, C, audio, services)
-    if stream is None:
-        return
-    # 8. Control server
-    ctl_q, ctl_srv = _start_control_server()
-    # 9. Run the conversation loop until shutdown
-    C.run(args=args, stub=services.stt.stub, brain=services.brain, tts=services.tts,
-          vad=audio.vad, wake_detector=audio.wake_detector,
-          use_wake_word=audio.use_wake_word, floor=audio.floor,
-          utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
-          shutdown=_shutdown_runtime, ctl_q=ctl_q, ctl_srv=ctl_srv)
+    # From step 5 on something is open (player, mic, safety thread, maybe a
+    # standing robot): any exit -- refusal, error or Ctrl-C before run() --
+    # shuts the runtime down exactly once (run() does it on its own exit).
+    shutdown = _ShutdownOnce()
+    stream = ctl_srv = None
+    in_run = False
+    try:
+        # 5. Audio capture, ring, wake, safety listener
+        audio = _start_audio(args, tuning)
+        # 6. Services: stt, tts, brain, vision
+        services = _make_services(args, C)
+        # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
+        if not _bring_up_robot(args, audio):
+            shutdown()
+            return
+        # 7. Conversation (state, input stream, automatic arm fold)
+        stream, utt_log = _start_conversation(args, C, audio, services, tuning)
+        if stream is None:
+            shutdown()
+            return
+        # 8. Control server
+        ctl_q, ctl_srv = _start_control_server()
+        # 9. Run the conversation loop until shutdown
+        in_run = True
+        C.run(args=args, stub=services.stt.stub, brain=services.brain, tts=services.tts,
+              vad=audio.vad, wake_detector=audio.wake_detector,
+              use_wake_word=audio.use_wake_word, floor=audio.floor,
+              utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
+              shutdown=shutdown, ctl_q=ctl_q, ctl_srv=ctl_srv)
+    except BaseException:
+        if not in_run:  # run()'s finally closes these itself
+            _close_quietly(ctl_srv, stream)
+        shutdown()
+        raise
