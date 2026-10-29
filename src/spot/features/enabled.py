@@ -3,4 +3,6 @@ ENABLED: list[str] = [
     "gaze",
     "mouth",
     "settings",
+    "walk",
+    "follow",
 ]
