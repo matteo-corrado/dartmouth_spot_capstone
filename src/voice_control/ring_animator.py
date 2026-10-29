@@ -4,8 +4,13 @@
 `show(spec)` never blocks: it swaps the current RingSpec under a lock and
 wakes one daemon thread, which sets LED effect 5 once, then either loops
 ``spec.frames`` at ``spec.frame_s`` (rate-capped by ``max_hz``) or writes the
-static ``spec.ring`` once. A None or dead mic makes everything a no-op, and
-nothing here ever raises. Runtime writes only (no save-config / reboot).
+static ``spec.ring`` once. A None mic makes everything a no-op, and nothing
+here ever raises. Runtime writes only (no save-config / reboot).
+
+While the mic is ``dead`` the latest spec is still kept (writes are skipped);
+when MicArray restores control it calls ``_on_restore``, which re-sets effect
+5 and re-renders that spec. A worker thread that dies is restarted by the
+next show() / restore.
 """
 from __future__ import annotations
 
@@ -16,6 +21,7 @@ log = logging.getLogger(__name__)
 
 EFFECT_RING = 5
 EFFECT_DOA = 4   # LED effect restored on stop()
+ERROR_BACKOFF_S = 0.1  # pause after an unexpected worker error (no hot loop)
 
 
 class RingAnimator:
@@ -30,20 +36,46 @@ class RingAnimator:
         self._effect_set = False
         self._warned = False
         self._write_lock = threading.Lock()
+        self.restarts = 0
+        add = getattr(mic, "add_restore_listener", None)
+        if callable(add):
+            try:
+                add(self._on_restore)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ring animator: restore hook failed: %s", e)
 
     def _usable(self) -> bool:
         return self._mic is not None and not getattr(self._mic, "dead", False)
 
+    def _ensure_thread(self) -> None:
+        """Start (or restart) the worker. Caller holds self._cond."""
+        t = self._thread
+        if t is not None and t.is_alive():
+            return
+        if t is not None:
+            self.restarts += 1
+            log.warning("ring animator: worker thread died — restarting")
+        self._thread = threading.Thread(target=self._run, daemon=True, name="ring-animator")
+        self._thread.start()
+
     def show(self, spec) -> None:
-        if spec is None or self._stopped or not self._usable():
+        if spec is None or self._stopped or self._mic is None:
             return
         with self._cond:
             self._spec = spec
             self._gen += 1
-            if self._thread is None:
-                self._thread = threading.Thread(target=self._run, daemon=True,
-                                                name="ring-animator")
-                self._thread.start()
+            self._ensure_thread()
+            self._cond.notify_all()
+
+    def _on_restore(self) -> None:
+        """MicArray restored control: effect 5 again, then re-render the spec."""
+        with self._write_lock:
+            self._effect_set = False
+        with self._cond:
+            if self._stopped or self._spec is None:
+                return
+            self._gen += 1
+            self._ensure_thread()
             self._cond.notify_all()
 
     def stop(self) -> None:
@@ -77,7 +109,8 @@ class RingAnimator:
             try:
                 if not self._effect_set:
                     self._mic.set_led_effect(EFFECT_RING)
-                    self._effect_set = True
+                    # A failed write marks the mic dead: retry effect 5 on restore.
+                    self._effect_set = self._usable()
                 if ring is not None:
                     self._mic.set_ring(ring)
             except Exception as e:  # noqa: BLE001
@@ -90,26 +123,28 @@ class RingAnimator:
             self._cond.wait_for(lambda: self._stopped or self._gen != gen, timeout)
             return self._stopped or self._gen != gen
 
+    def _render(self, spec, gen) -> None:
+        """Render one spec until it is replaced or stop()."""
+        frames = spec.frames
+        if not frames:
+            self._write(spec.ring)
+            self._wait(gen)
+            return
+        dt = max(spec.frame_s or 0.0, self._min_dt, 0.005)
+        while True:
+            for fr in frames:
+                self._write(fr)
+                if self._wait(gen, dt):
+                    return
+
     def _run(self) -> None:
-        try:
-            while True:
-                with self._cond:
-                    if self._stopped:
-                        return
-                    spec, gen = self._spec, self._gen
-                frames = spec.frames
-                if not frames:
-                    self._write(spec.ring)
-                    self._wait(gen)
-                    continue
-                dt = max(spec.frame_s or 0.0, self._min_dt, 0.005)
-                while True:
-                    for fr in frames:
-                        self._write(fr)
-                        if self._wait(gen, dt):
-                            break
-                    else:
-                        continue
-                    break
-        except Exception as e:  # noqa: BLE001
-            self._warn(e)
+        while True:
+            with self._cond:
+                if self._stopped:
+                    return
+                spec, gen = self._spec, self._gen
+            try:
+                self._render(spec, gen)
+            except Exception as e:  # noqa: BLE001  keep the worker alive
+                self._warn(e)
+                self._wait(gen, ERROR_BACKOFF_S)

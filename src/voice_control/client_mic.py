@@ -380,11 +380,19 @@ def _mic_usable() -> bool:
 
 
 def _check_mic_alive() -> None:
-    """Log once when the XVF3800 dies mid-session; lock/ring then degrade."""
-    global _mic_dead_logged
-    if _mic is not None and getattr(_mic, "dead", False) and not _mic_dead_logged:
+    """Log XVF3800 loss/restore transitions once each; lock/ring degrade while
+    dead (MicArray reconnects in the background) and repaint on restore."""
+    global _mic_dead_logged, _ring_pending
+    if _mic is None:
+        return
+    dead = getattr(_mic, "dead", False)
+    if dead and not _mic_dead_logged:
         _mic_dead_logged = True
-        print("[MicArray] XVF3800 control lost — speaker lock + ring disabled, voice continues")
+        print("[MicArray] XVF3800 control lost — speaker lock + ring paused, voice continues")
+    elif not dead and _mic_dead_logged:
+        _mic_dead_logged = False
+        _ring_pending = True  # repaint the ring for the current state
+        print("[MicArray] XVF3800 control back — speaker lock + ring resumed")
 
 
 def _mic_speech_degs(t0: float, t1: float) -> list:
@@ -1211,6 +1219,7 @@ def _status_snapshot() -> dict:
              voiceprint_enrolled=_voice.enrolled,
              voiceprint_last_sim=(None if _voice.last_sim is None else round(_voice.last_sim, 3)),
              voiceprint_ready=_voice.embedder is not None,
+             mic_ok=_mic_usable(),
              safety_kws_ok=bool(_safety_active and _safety_health.get("ok")
                                 and _safety_thread is not None and _safety_thread.is_alive()))
     return s

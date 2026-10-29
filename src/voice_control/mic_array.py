@@ -6,6 +6,13 @@ transfers. Runtime writes only: this module never sends SAVE_CONFIGURATION
 (48/9) or REBOOT (48/7), never calls set_configuration, and never detaches
 kernel drivers (the USB audio stream must keep running).
 
+Auto-recovery: a MicArray made by open() survives transient control-link
+errors. Any failure marks it ``dead`` (lock/ring degrade), then ONE
+background thread retries with backoff: dispose the pyusb handle, re-find
+2886:001a, read VERSION. On success ``dead`` clears, the DoA poller resumes
+and restore listeners (RingAnimator) re-apply their state. All USB I/O stays
+on the poller / reconnect / ring threads, never on the caller's.
+
 Protocol: see Appendix A of docs/superpowers/specs/2026-10-27-poster-demo-design.md.
 """
 import collections
@@ -17,6 +24,7 @@ import time
 
 try:
     import usb.core
+    import usb.util
 except ImportError:  # pyusb missing: MicArray.open() returns None
     usb = None
 
@@ -42,10 +50,16 @@ READ_RETRIES = 100
 RETRY_SLEEP_S = 0.01
 RING_LEDS = 12
 USB_TIMEOUT_MS = 150  # short, so a hung device can't stall LED writes behind _dev_lock
+RECONNECT_BACKOFF_S = (0.5, 1.0, 2.0, 4.0, 5.0)  # last value repeats forever
 
 
 class XvfError(Exception):
     """Device returned a bad status or never became ready."""
+
+
+def backoff_delay(attempt, schedule=RECONNECT_BACKOFF_S):
+    """Delay before reconnect attempt `attempt` (0-based); caps at schedule[-1]."""
+    return schedule[min(attempt, len(schedule) - 1)]
 
 
 def decode_read(resp, fmt, count):
@@ -59,14 +73,41 @@ def decode_read(resp, fmt, count):
     return struct.unpack("<" + fmt * count, bytes(resp[1:1 + count * size]))
 
 
+def _raw_read(dev, param, fmt, count, stop=None):
+    """One parameter read on `dev` (retry-status loop). Raises on any failure."""
+    resid, cmd = param
+    length = count * struct.calcsize("<" + fmt) + 1
+    for _ in range(READ_RETRIES):
+        resp = dev.ctrl_transfer(0xC0, 0, 0x80 | cmd, resid, length, USB_TIMEOUT_MS)
+        out = decode_read(resp, fmt, count)
+        if out is not None:
+            return out
+        if stop is not None and stop.is_set():
+            break
+        time.sleep(RETRY_SLEEP_S)
+    raise XvfError(f"xvf3800 read {param} not ready after {READ_RETRIES} tries")
+
+
 class MicArray:
-    def __init__(self, dev):
+    def __init__(self, dev, finder=None, disposer=None):
+        """`finder` (() -> dev or None) enables auto-reconnect; without it the
+        first error latches `dead` for good. `disposer(dev)` releases a handle."""
         self._dev = dev
+        self._dev_gen = 0               # bumped on every handle swap
         self._dev_lock = threading.Lock()
+        self._finder = finder
+        self._disposer = disposer
         self._history = collections.deque(maxlen=400)
         self._hist_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
+        self._poll_period = None
+        self._rc_lock = threading.Lock()  # guards dead + _rc_thread + _dev_gen together
+        self._rc_thread = None
+        self._lost_at = None
+        self._restore_listeners = []
+        self.backoff_s = RECONNECT_BACKOFF_S
+        self.reconnects = 0
         self.dead = False
 
     @classmethod
@@ -79,7 +120,93 @@ class MicArray:
         except Exception as e:
             log.warning("xvf3800 lookup failed: %s", e)
             return None
-        return cls(dev) if dev is not None else None
+        if dev is None:
+            return None
+        return cls(dev,
+                   finder=lambda: usb.core.find(idVendor=VENDOR_ID, idProduct=PRODUCT_ID),
+                   disposer=usb.util.dispose_resources)
+
+    @property
+    def ok(self):
+        """Lock-free health flag (for status)."""
+        return not self.dead
+
+    def add_restore_listener(self, fn):
+        """fn() runs on the reconnect thread after control is restored."""
+        self._restore_listeners.append(fn)
+
+    # -- failure / recovery --------------------------------------------
+    def _mark_dead(self, why, gen=None):
+        """Mark the control link dead; start the reconnect thread if enabled.
+        A failure on a handle that has since been replaced (stale `gen`) is ignored."""
+        with self._rc_lock:
+            if gen is not None and gen != self._dev_gen:
+                return
+            self.dead = True
+            if (self._finder is None or self._stop.is_set()
+                    or self._rc_thread is not None):
+                return
+            self._lost_at = time.monotonic()
+            self._rc_thread = threading.Thread(
+                target=self._reconnect_loop, name="xvf-reconnect", daemon=True)
+            self._rc_thread.start()
+        log.warning("[MicArray] control lost — retrying (%s)", why)
+
+    def _dispose(self, dev):
+        if dev is None or self._disposer is None:
+            return
+        try:
+            self._disposer(dev)
+        except Exception as e:  # noqa: BLE001
+            log.debug("xvf3800 dispose failed: %s", e)
+
+    def _try_reconnect(self):
+        """Release the old handle, re-find the device, verify with a VERSION read."""
+        with self._dev_lock:  # no transfer in flight while the handle goes away
+            self._dispose(self._dev)
+        dev = self._finder()
+        if dev is None:
+            return False
+        try:
+            with self._dev_lock:
+                _raw_read(dev, VERSION, "B", 3, self._stop)
+        except Exception as e:  # noqa: BLE001
+            log.debug("xvf3800 reconnect verify failed: %s", e)
+            self._dispose(dev)
+            return False
+        with self._dev_lock:
+            self._dev = dev
+            with self._rc_lock:
+                self._dev_gen += 1
+        return True
+
+    def _reconnect_loop(self):
+        attempt = 0
+        while True:
+            if self._stop.wait(backoff_delay(attempt, self.backoff_s)):
+                return
+            attempt += 1
+            try:
+                ok = self._try_reconnect()
+            except Exception as e:  # noqa: BLE001  (finder raised etc.)
+                log.debug("xvf3800 reconnect attempt %d failed: %s", attempt, e)
+                ok = False
+            if self._stop.is_set():
+                return
+            if ok:
+                break
+        with self._rc_lock:
+            self.dead = False
+            self._rc_thread = None
+            down = time.monotonic() - (self._lost_at or time.monotonic())
+        self.reconnects += 1
+        log.warning("[MicArray] control restored after %.1f s (%d attempts)", down, attempt)
+        self._ensure_poller()
+        for fn in list(self._restore_listeners):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001
+                log.warning("xvf3800 restore listener failed: %s", e)
 
     # -- raw transfers -------------------------------------------------
     def _read(self, param, fmt, count):
@@ -88,31 +215,35 @@ class MicArray:
             raise XvfError("xvf3800 dead")
         resid, cmd = param
         length = count * struct.calcsize("<" + fmt) + 1
+        gen = self._dev_gen
         for _ in range(READ_RETRIES):
             try:
                 with self._dev_lock:
+                    gen = self._dev_gen
                     resp = self._dev.ctrl_transfer(
                         0xC0, 0, 0x80 | cmd, resid, length, USB_TIMEOUT_MS)
                 out = decode_read(resp, fmt, count)
             except Exception as e:
-                self.dead = True
+                self._mark_dead(f"read {param}: {e}", gen)
                 raise XvfError(f"xvf3800 read {param} failed: {e}") from e
             if out is not None:
                 return out
             time.sleep(RETRY_SLEEP_S)
-        self.dead = True
+        self._mark_dead(f"read {param} not ready", gen)
         raise XvfError(f"xvf3800 read {param} not ready after {READ_RETRIES} tries")
 
     def _write(self, param, payload):
         if self.dead:
             return
         resid, cmd = param
+        gen = self._dev_gen
         try:
             with self._dev_lock:
+                gen = self._dev_gen
                 self._dev.ctrl_transfer(0x40, 0, cmd, resid, payload, USB_TIMEOUT_MS)
         except Exception as e:
-            log.warning("xvf3800 write %s failed, disabling: %s", param, e)
-            self.dead = True
+            log.warning("xvf3800 write %s failed: %s", param, e)
+            self._mark_dead(f"write {param}: {e}", gen)
 
     # -- reads ---------------------------------------------------------
     def read_doa(self):
@@ -149,24 +280,39 @@ class MicArray:
     def start_poller(self, hz=20.0):
         if hz <= 0:
             raise ValueError(f"poller hz must be > 0, got {hz}")
-        if self._thread is not None:
+        self._poll_period = 1.0 / hz
+        self._ensure_poller()
+
+    @property
+    def poller_alive(self):
+        t = self._thread
+        return t is not None and t.is_alive()
+
+    def _ensure_poller(self):
+        if self._poll_period is None or self._stop.is_set() or self.poller_alive:
             return
-        self._stop.clear()
         self._thread = threading.Thread(
-            target=self._poll, args=(1.0 / hz,), name="xvf-doa-poller", daemon=True)
+            target=self._poll, args=(self._poll_period,), name="xvf-doa-poller", daemon=True)
         self._thread.start()
 
     def _poll(self, period):
-        try:
-            while not self._stop.is_set() and not self.dead:
+        """Poll DoA. While dead: idle until restored (exit if reconnect is off)."""
+        while not self._stop.is_set():
+            if self.dead:
+                if self._finder is None:
+                    return
+                self._stop.wait(period)
+                continue
+            try:
                 t = time.monotonic()  # stamp before the (possibly retried) read
                 deg, speech = self.read_doa()
                 with self._hist_lock:
                     self._history.append((t, deg, speech))
-                self._stop.wait(period)
-        except Exception as e:
-            log.warning("xvf3800 poller died: %s", e)
-            self.dead = True
+            except XvfError:
+                pass  # _read already marked dead (and logged)
+            except Exception as e:  # noqa: BLE001
+                self._mark_dead(f"poller: {e}")
+            self._stop.wait(period)
 
     def samples_between(self, t0, t1):
         """(monotonic t, deg, speech) samples with t0 <= t <= t1."""
@@ -178,3 +324,6 @@ class MicArray:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
+        rc = self._rc_thread
+        if rc is not None:
+            rc.join(timeout=1.0)
