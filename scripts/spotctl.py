@@ -9,7 +9,8 @@ Stdlib only.
   spotctl                      interactive hotkeys (raw tty), q quits
 
 Names: mute unmute listen release reset hush say persona stop freeze sit
-stand stow status crowd voiceprint   (say/persona need an arg)
+stand stow status crowd voiceprint   (say/persona need an arg;
+crowd/voiceprint take an optional on|off, no arg flips)
 """
 from __future__ import annotations
 

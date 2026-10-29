@@ -53,7 +53,8 @@ def test_mute_unmute_and_status(monkeypatch):
     st = cm._on_immediate("status", None)
     assert st["muted"] is True
     for k in ("state", "locked_deg", "floor_dbfs", "last_transcript",
-              "last_latency_s", "muted", "crowd", "voiceprint"):
+              "last_latency_s", "muted", "crowd", "voiceprint",
+              "voiceprint_enrolled", "voiceprint_last_sim", "voiceprint_ready"):
         assert k in st
     assert cm._on_immediate("unmute", None)["muted"] is False
 
