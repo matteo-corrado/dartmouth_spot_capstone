@@ -613,6 +613,8 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
     for p in (str(REPO), str(REPO / "src" / "voice_control")):
         if p not in sys.path:
             sys.path.insert(0, p)
+    from tests.robot_guard import install as _no_robot_contact
+    _no_robot_contact()  # Ruling R24: this child never loads tests/conftest.py
     import pytest
     import sounddevice
 
