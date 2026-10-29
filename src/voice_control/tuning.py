@@ -29,6 +29,7 @@ class Tuning:
     kws_score: float = 1.5
     kws_threshold: float = 0.05
     kws_peak_target: float = 0.9  # = wake/sherpa_onnx TARGET_PEAK (authoritative)
+    safety_kws_threshold: float = 0.25  # always-on stop/freeze KWS; 0.20 = more recall, ~2.5x false fires (kwsfix 2026-10-29)
     lock_window_deg: float = 35.0
     lock_timeout_s: float = 20.0
     lock_nudge: float = 0.3

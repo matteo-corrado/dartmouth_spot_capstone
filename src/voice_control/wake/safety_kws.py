@@ -25,7 +25,7 @@ KEYWORDS_SCORE = 1.5  # 2026-10-29 fine sweep (ch1): gain 3, thr 0.2, score 1.5 
 # 0.20 -> 0.25 with the staggered streams below: young streams over-fire at
 # 0.20 (5 vs 2 fires on fan+fan_babble); 0.25 holds fires at the old level.
 # (Single-stream, 0.10-0.20 gave identical recall: threshold wasn't binding.)
-KEYWORDS_THRESHOLD = 0.25
+KEYWORDS_THRESHOLD = 0.25  # fallback; live value = Tuning.safety_kws_threshold (config/tuning.yaml)
 NUM_TRAILING_BLANKS = 1
 INPUT_GAIN = 3.0  # see KEYWORDS_SCORE note (x4 score 2.0 was 12/14, 0 false; live quiet misses were common)
 
@@ -42,6 +42,16 @@ INPUT_GAIN = 3.0  # see KEYWORDS_SCORE note (x4 score 2.0 was 12/14, 0 false; li
 # Does NOT reach the fresh-stream 14/14: see kwsfix-report.md.
 NUM_STREAMS = 3
 STAGGER_FRAMES = 27  # 30 ms frames (0.81 s); 28 measured worse (9.0 vs 10.7 mean, 3 vs 2 fires)
+
+
+def _threshold() -> float:
+    """Operator knob Tuning.safety_kws_threshold; KEYWORDS_THRESHOLD if tuning is unavailable."""
+    try:
+        from src.voice_control.tuning import get_tuning
+        return float(get_tuning().safety_kws_threshold)
+    except Exception as e:  # noqa: BLE001 - a bad tuning file must not disable safety
+        print(f"[SafetyKWS] tuning unavailable ({e}); threshold {KEYWORDS_THRESHOLD}")
+        return KEYWORDS_THRESHOLD
 
 
 class SafetyKeywordDetector:
@@ -69,7 +79,7 @@ class SafetyKeywordDetector:
                 keywords_file=str(files["keywords"]),
                 num_threads=1, provider="cpu",
                 keywords_score=KEYWORDS_SCORE,
-                keywords_threshold=KEYWORDS_THRESHOLD,
+                keywords_threshold=_threshold(),
                 num_trailing_blanks=NUM_TRAILING_BLANKS,
             )
             self._available = True
@@ -92,19 +102,18 @@ class SafetyKeywordDetector:
         samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
         self._rebirth()
         self._frame += 1
-        hit = ""
         for st in self._streams:
             if st is None:
                 continue
             st.accept_waveform(self._sample_rate, samples)
             while self._spotter.is_ready(st):
                 self._spotter.decode_stream(st)
-            if not hit:
-                hit = self._spotter.get_result(st).strip()
-        if hit:
-            # Fresh streams so the next safety word is independent.
-            self.reset()
-            return hit.lower()
+            hit = self._spotter.get_result(st).strip()
+            if hit:
+                # Return before touching the other streams: an error there
+                # must not lose this hit. Fresh streams for the next word.
+                self.reset()
+                return hit.lower()
         return ""
 
     def _rebirth(self):

@@ -142,6 +142,42 @@ def test_stream_error_propagates_and_reset_recovers():
     assert det.process_frame(FRAME) == ""
 
 
+def test_hit_returned_before_a_later_stream_raises():
+    sp = FakeSpotter()
+    det = _det(sp)
+    _feed(det, sp, sk.STAGGER_FRAMES + 1)  # streams 0 and 1 alive
+    s0 = det._streams[0]
+    sp.get_result = lambda st: "freeze" if st is s0 else ""
+
+    def boom(sr, x):
+        raise RuntimeError("onnx")
+    det._streams[1].accept_waveform = boom
+    assert det.process_frame(FRAME) == "freeze"   # hit kept, stream 1 never touched
+    assert det._streams == [None] * sk.NUM_STREAMS
+
+
+def test_create_stream_failure_in_rebirth_propagates():
+    class NoCreate(FakeSpotter):
+        def create_stream(self):
+            raise RuntimeError("alloc")
+
+    det = _det(NoCreate())
+    with pytest.raises(RuntimeError):
+        det.process_frame(FRAME)  # safety_kws_loop counts it toward health
+
+
+def test_threshold_read_from_tuning(monkeypatch):
+    from src.voice_control import tuning
+    assert tuning.Tuning().safety_kws_threshold == sk.KEYWORDS_THRESHOLD == 0.25
+    monkeypatch.setattr(tuning, "_cached", tuning.Tuning(safety_kws_threshold=0.2))
+    assert sk._threshold() == 0.2
+
+    def broken():
+        raise OSError("bad yaml")
+    monkeypatch.setattr(tuning, "get_tuning", broken)
+    assert sk._threshold() == 0.25
+
+
 # --- real model + operator recordings (skipped when absent) -----------------
 
 _DEMO = pathlib.Path("/home/spotdog/spot/dartmouth_spot_capstone/tests/audio/demo")
