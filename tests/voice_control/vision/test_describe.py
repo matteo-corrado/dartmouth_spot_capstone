@@ -3,7 +3,10 @@ from unittest import mock
 
 import numpy as np
 
-from src.voice_control.vision import describe as D
+import importlib
+
+# importlib: the package re-exports a describe function under the module name.
+D = importlib.import_module("src.voice_control.vision.describe")
 from src.voice_control.vision.types import CameraFrame, Detection
 
 
@@ -123,6 +126,6 @@ def test_templates_have_no_stop_words():
     for name in ("NOTHING_LINE", "UNCLEAR_LINE", "OFFER_LINE", "ALSO_LINE",
                  "DESCRIBE_PROMPT", "HINT_PROMPT"):
         assert not bad.search(getattr(D, name)), name
-    from src.voice_control.vision import find as F
+    F = importlib.import_module("src.voice_control.vision.find")
     for name in ("YES_LINE", "NEAR_DIST", "FAR_DIST", "NO_LINE", "MAYBE_LINE", "FIND_PROMPT"):
         assert not bad.search(getattr(F, name)), name

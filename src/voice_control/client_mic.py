@@ -320,6 +320,73 @@ _DESCRIBE_ACKS = (
     "Let me see what's in front of me...",
     "Checking my camera...",
 )
+_FIND_ACK = "Let me look for the {what}..."
+# Camera answers (spec 9 hook 1): Gemma's own reply for these is a guess, so it
+# is never spoken; a stock ack plays and the vision package gives the answer.
+_VISION_ANSWER_INTENTS = ("describe", "find", "look_around")
+_VISION_ANSWER_RE = re.compile(r'"action"\s*:\s*"(?:describe|find|look_around)"')
+
+
+def _vision_answer_action(actions):
+    """The first describe/find/look_around action in ``actions``, else None."""
+    return next((a for a in actions or () if a.get("intent") in _VISION_ANSWER_INTENTS), None)
+
+
+EYES_OFF_LINE = "I can't see right now."
+_eyes_robot = None               # read-only robot for camera answers without a session
+_eyes_lock = threading.Lock()
+
+
+def _vision_ack(action) -> str:
+    """Stock line spoken while the robot looks (never Gemma's guess)."""
+    from src.voice_control.vision.speech import safe_words
+    what = safe_words(str((action.get("params") or {}).get("what", "")).replace("_", " "))
+    if action.get("intent") == "find" and what:
+        return _FIND_ACK.format(what=what)
+    return random.choice(_DESCRIBE_ACKS)
+
+
+def _vision_robot():
+    """Robot for camera answers. Never brings up the motion session (that
+    stands the robot): the live session's robot if there is one, else one
+    cached read-only connection (no lease, no power, no stand). None if
+    neither is reachable."""
+    global _eyes_robot
+    try:
+        from src.voice_control import spot_dispatch as sd
+        sess = sd._spot_session
+        if sess is not None:
+            return sess["robot"]
+        with _eyes_lock:
+            if _eyes_robot is None:
+                from src.session import quick_robot  # same robot-IP setting as spot_session
+                _eyes_robot = quick_robot("spot-voice-eyes")
+            return _eyes_robot
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] no camera connection: {type(e).__name__}: {e}")
+        return None
+
+
+def _run_vision_answer(cmd, params, question):
+    """describe / find / look_around through the vision package -> ActionResult."""
+    # Submodule imports (looked up per call): vision.describe / vision.find.
+    from src.voice_control.vision.describe import describe
+    from src.voice_control.vision.find import find
+    from src.voice_control.vision.types import ActionResult
+    robot = _vision_robot()
+    if robot is None:
+        return ActionResult(EYES_OFF_LINE, False)
+    if cmd == "find":
+        what = str(params.get("what") or params.get("query") or "").replace("_", " ").strip()
+        if what:
+            return find(robot, what)
+        cmd = "describe"
+    if cmd == "look_around":
+        return describe(robot, "around", "")
+    side = str(params.get("side") or params.get("camera") or "front").lower()
+    if side not in ("front", "left", "right", "back"):
+        side = "front"
+    return describe(robot, side, question)
 
 # ============================================================================
 # Audio Queue (filled by callback)
@@ -1011,6 +1078,18 @@ def _probe_host() -> str:
         except Exception:
             host = None
     return host or "192.168.80.3"
+
+
+def _last_nav_ok():
+    """spot_dispatch.last_nav_ok(): False if the last vision go-to/follow
+    failed; None in dry-run / without a robot / unknown."""
+    if os.environ.get("SPOT_DRY_RUN") == "1":
+        return None
+    try:
+        from src.voice_control.spot_dispatch import last_nav_ok
+        return last_nav_ok()
+    except Exception:
+        return None
 
 
 def _wait_for_nav_complete(timeout: float = 120.0):
@@ -1731,6 +1810,7 @@ def main():
             set_auto_arm(_auto)
         except Exception as e:
             print(f"[client_mic] auto arm setup failed: {e}")
+    _setup_vision(args.dry_run)
 
     # ========================================================================
     # Main Loop State
@@ -2273,7 +2353,7 @@ _PERSONA_INTENTS = ("set_persona", "add_persona")
 # (final-review I1): nothing that moves the body or the arm. Mirrors
 # spot_dispatch._UNLOCKED_INTENTS (not imported: bosdyn) plus the camera.
 _MOTION_FREE_INTENTS = frozenset({
-    "describe", "stop", "freeze", "estop",
+    "describe", "find", "look_around", "stop", "freeze", "estop",
     "set_persona", "add_persona", "set_volume", "set_backend",
     "battery_status", "status", "check_obstacles", "list_locations", "list_maps",
 })
@@ -2335,7 +2415,7 @@ class _TokenWatch:
             head = "".join(self._head)
             if _RESPONSE_KEY_RE.search(head):
                 self._seen_response = True
-                if _PERSONA_ACTION_RE.search(head):
+                if _PERSONA_ACTION_RE.search(head) or _VISION_ANSWER_RE.search(head):
                     self._chunker.suppressed = True
                 if self._filler is not None:
                     self._filler.cancel()
@@ -2395,14 +2475,81 @@ _gaze_q = queue.Queue(maxsize=1)  # latest gaze request only: (body deg or None,
 _gaze_worker = None
 
 
-def _gaze_loop():
+_vision_warm = threading.Event()  # set once the main detector is loaded (no build on the gaze worker)
+VISION_WARM_MODELS = ("yolo26l-seg", "yolo26l-pose", "yoloe-26l-seg")
+
+
+def _refined_bearing(body):
+    """Snap the mic bearing to a person the cameras see near it (spec 6.3).
+    Gaze worker only. The raw bearing on any doubt: dry-run, centre, models
+    not warm yet, no session (never brings one up), walking, or not in the
+    talk pose (gaze_at_bearing would refuse anyway)."""
+    if body is None or os.environ.get("SPOT_DRY_RUN") == "1" or not _vision_warm.is_set():
+        return body
+    try:
+        from src.voice_control import spot_dispatch as sd
+        sess = sd._spot_session
+        if (sess is None or sd.is_navigating() or sd.get_arm_pose() != "talk"
+                or sd._selecting):  # person selection owns the gaze: no GPU work for a no-op
+            return body
+        from src.voice_control.vision.speaker import refine_speaker_bearing
+        b = refine_speaker_bearing(sess["robot"], body)
+        if b is not None and b != body:
+            print(f"[Vision] speaker {body:+.0f} deg (mic) -> {b:+.0f} deg (camera)")
+        return body if b is None else b
+    except Exception as e:  # noqa: BLE001 - refinement is optional
+        print(f"[Vision] speaker refinement skipped: {type(e).__name__}: {e}")
+        return body
+
+
+def _gaze_once(body, gen):
     from src.voice_control.spot_dispatch import gaze_at_bearing
+    try:
+        gaze_at_bearing(_refined_bearing(body), gen)  # gen taken at request time: a stop since wins
+    except Exception as e:  # noqa: BLE001 - gaze is cosmetic
+        print(f"[Spot] gaze skipped: {type(e).__name__}: {e}")
+
+
+def _gaze_loop():
     while True:
         body, gen = _gaze_q.get()
+        _gaze_once(body, gen)
+
+
+def _warm_vision_models():
+    """Load the vision models once (a first TensorRT build is slow) so the
+    first gaze / follow doesn't wait for it. Errors are logged, never raised."""
+    try:
+        from src.voice_control.vision.runtime import load_model
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] runtime unavailable: {type(e).__name__}: {e}")
+        return
+    for name in VISION_WARM_MODELS:
         try:
-            gaze_at_bearing(body, gen)  # gen taken at request time: a stop since wins
-        except Exception as e:  # noqa: BLE001 - gaze is cosmetic
-            print(f"[Spot] gaze skipped: {type(e).__name__}: {e}")
+            m = load_model(name)
+            print(f"[Vision] {name} ready ({m.provider})")
+        except Exception as e:  # noqa: BLE001
+            print(f"[Vision] {name} warm-up failed: {type(e).__name__}: {e}")
+    # Only now: until every load has finished, the runtime's model lock may be
+    # held by a TensorRT build (go-to/follow refuse, gaze is not refined).
+    _vision_warm.set()
+    try:
+        from src.voice_control.spot_dispatch import mark_vision_warm
+        mark_vision_warm()
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] dispatcher warm flag failed: {type(e).__name__}: {e}")
+
+
+def _setup_vision(dry_run: bool) -> None:
+    """Startup (spec 9 hook 6): the vision package reads the locked speaker's
+    body bearing from _status; models warm on a daemon thread (not in dry-run)."""
+    try:
+        from src.voice_control.vision import set_speaker_bearing_getter
+        set_speaker_bearing_getter(lambda: _status.get("locked_deg"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] speaker bearing hook failed: {type(e).__name__}: {e}")
+    if not dry_run:
+        threading.Thread(target=_warm_vision_models, name="vision-warm", daemon=True).start()
 
 
 def _gaze_at_speaker(body_deg) -> None:
@@ -2733,24 +2880,14 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if not actions and result.get("action"):
                 actions = [result["action"]]
 
-            # If a describe action is queued, the LLM's "response" field is
-            # often a hallucinated answer (the model can't actually see the
-            # camera). Replace it with a stock acknowledgment so we don't
-            # speak a fake description before the VLM provides the real one.
-            # Note: this only suppresses what gets spoken — the raw LLM JSON
-            # is still stored in brain.history, so the model can still see
-            # its own hallucination on the next turn (acceptable footnote).
-            describe_action = next(
-                (a for a in actions if a.get("intent") == "describe"),
-                None,
-            )
-            if describe_action:
-                query = str(describe_action.get("params", {}).get("query", "")).replace("_", " ").strip()
-                response = (
-                    f"Let me take a look for the {query}..."
-                    if query
-                    else random.choice(_DESCRIBE_ACKS)
-                )
+            # If a camera answer (describe / find / look_around) is queued,
+            # the LLM's "response" field is a guess (the model can't see the
+            # cameras). Replace it with a stock acknowledgment; the vision
+            # package gives the real answer below. (llm_brain also sanitises
+            # the stored assistant turn for these actions.)
+            vision_action = _vision_answer_action(actions)
+            if vision_action:
+                response = _vision_ack(vision_action)
 
             # B6: run persona switches BEFORE speaking so the announcing reply
             # uses the new voice (the chunker held it back — _TokenWatch).
@@ -2801,52 +2938,18 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                         if i > 0:
                             beep.chain_next()
 
-                    # Special VLM flow for "describe" action
-                    if cmd == "describe":
+                    # Camera answers: the vision package looks and answers
+                    if cmd in _VISION_ANSWER_INTENTS:
                         vlm_used = True
-                        camera = params.get("camera", "front")
-                        query = params.get("query", "")
                         try:
-                            from src.voice_control.spot_dispatch import capture_frame
-                            image_bytes = capture_frame(camera)
-                            if image_bytes:
-                                # If asking about a specific object, run YOLO first
-                                yolo_hint = ""
-                                if query:
-                                    try:
-                                        from src.voice_control.visual_nav import detect_in_image
-                                        det = detect_in_image(image_bytes, query)
-                                        if det["found"]:
-                                            yolo_hint = (
-                                                f"IMPORTANT: Object detection confirms a '{query}' "
-                                                f"IS visible in this image ({det['position']}, "
-                                                f"confidence {det['confidence']:.0%}). "
-                                                f"Describe it and its surroundings."
-                                            )
-                                            print(f"[YOLO] Found '{query}' — {det['position']}, "
-                                                  f"conf={det['confidence']:.2f}")
-                                        else:
-                                            yolo_hint = (
-                                                f"NOTE: Object detection did NOT find '{query}' "
-                                                f"in this image. If you also don't see it, say so."
-                                            )
-                                            print(f"[YOLO] '{query}' not detected")
-                                    except ImportError:
-                                        pass
-                                with (trace.span("vlm") if trace else nullcontext()):
-                                    vlm_response = brain.query_vlm(image_bytes, clean, yolo_hint=yolo_hint)
-                                print(f"\nSPOT (VLM): \"{vlm_response}\"")
-                                if tts:
-                                    tts.wait()
-                                    _say(tts, vlm_response, voice_id)
-                            else:
-                                beep.error()
-                                vlm_error = True
-                                fallback = "Sorry, I couldn't capture an image right now."
-                                print(f"\nSPOT (VLM, error): \"{fallback}\"")
-                                if tts:
-                                    tts.wait()
-                                    _say(tts, fallback, voice_id)
+                            with (trace.span("vlm") if trace else nullcontext()):
+                                result = _run_vision_answer(cmd, params, clean)
+                            from src.voice_control.vision.speech import safe_words
+                            answer = safe_words(result.text)  # never a stop word (self-halt)
+                            print(f"\nSPOT (vision): \"{answer}\"")
+                            if tts:
+                                tts.wait()
+                                _say(tts, answer, voice_id)
                         except Exception as e:
                             beep.error()
                             vlm_error = True
@@ -2870,6 +2973,9 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                             if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back",
                                        "emote"):
                                 _wait_for_nav_complete()
+                                if cmd in ("go_to_object", "follow_me") and _last_nav_ok() is False:
+                                    print(f"[Chain] {cmd} did not get there — skipping the rest")
+                                    break
                             elif cmd in ("walk", "strafe", "turn"):
                                 _abort_chain.wait(CHAIN_MOVEMENT_WAIT_S)
                             elif cmd in ("sit", "stand", "selfright", "body_height"):
