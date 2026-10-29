@@ -29,7 +29,7 @@ def test_bare_okay_reply_reaches_the_brain(monkeypatch):
     monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "Okay.")
     monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
     monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda: None)
+    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: None)
     monkeypatch.setattr(cm, "parse_intent", lambda t: sent.append(t) or None)
     info = {}
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], info=info, has_wake_detector=True)

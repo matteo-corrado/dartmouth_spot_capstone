@@ -47,7 +47,7 @@ def _turn(monkeypatch, brain, utt_t0, last_safety, transcript="what's your next 
     monkeypatch.setattr(cm, "execute_on_spot",
                         lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
     monkeypatch.setattr(cm, "_last_safety_at", last_safety)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda: resume.append("resume"))
+    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: resume.append("resume"))
     tts = _TTS()
     cm._abort_chain.clear()
     try:
@@ -130,12 +130,12 @@ def test_stop_from_talk_still_stops_first_then_resume_restores(robot):
     assert cmd.kinds()[0] == "stop"                # halt first, unchanged
     assert d.get_arm_pose() == "stowed" and m.log == ["off"]
     assert d._talk_resume is True
-    t = d.resume_talk_after_halt()
+    t = d.resume_talk_after_halt(d.current_safety_gen())
     assert t
     t.join(2)                                       # mouth only after the arm arrives
     assert d.get_arm_pose() == "talk" and m.log == ["off", "on"]
     assert cmd.kinds()[-1] == "arm_ready"
-    assert d.resume_talk_after_halt() is False     # one-shot
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False     # one-shot
 
 
 def test_no_resume_when_not_in_talk_or_after_estop(robot, monkeypatch):
@@ -151,14 +151,14 @@ def test_resume_cleared_by_sit(robot):
     d.dispatch_intent({"intent": "stop", "params": {}})
     assert d._talk_resume is True
     d.dispatch_intent({"intent": "sit", "params": {}})
-    assert d._talk_resume is False and d.resume_talk_after_halt() is False
+    assert d._talk_resume is False and d.resume_talk_after_halt(d.current_safety_gen()) is False
 
 
 def test_resume_loses_to_a_racing_stop(robot, monkeypatch):
     cmd, m = robot
     d.dispatch_intent({"intent": "stop", "params": {}})
     monkeypatch.setattr(d, "_aborted", lambda gen: True)  # a stop bumped the generation
-    assert d.resume_talk_after_halt() is False
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False
     assert d.get_arm_pose() == "stowed" and m.log == ["off"]
 
 
@@ -166,7 +166,7 @@ def test_resume_keeps_mouth_off_if_arm_never_arrives(robot, monkeypatch):
     cmd, m = robot
     d.dispatch_intent({"intent": "stop", "params": {}})
     monkeypatch.setattr(d, "block_until_arm_arrives", lambda c, i, t: False)
-    d.resume_talk_after_halt().join(2)
+    d.resume_talk_after_halt(d.current_safety_gen()).join(2)
     assert m.log == ["off"] and not m.enabled
 
 
@@ -178,8 +178,58 @@ def test_stop_during_arm_raise_keeps_mouth_off(robot, monkeypatch):
         d.dispatch_intent({"intent": "stop", "params": {}})  # stop lands mid-raise
         return True
     monkeypatch.setattr(d, "block_until_arm_arrives", arrives_after_a_stop)
-    d.resume_talk_after_halt().join(2)
+    d.resume_talk_after_halt(d.current_safety_gen()).join(2)
     assert m.log == ["off", "off"] and d.get_arm_pose() == "stowed"
+
+
+def test_estop_after_stop_cancels_pending_resume(robot):
+    # Safety review C1: stop (talk -> flag set), then e-stop with the arm
+    # already stowed; the next turn must not raise the arm.
+    cmd, m = robot
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    assert d._talk_resume is True
+    d.dispatch_intent({"intent": "estop", "params": {}})
+    assert d._talk_resume is False
+    n = len(cmd.sent)
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False
+    assert cmd.sent[n:] == [] and d.get_arm_pose() == "stowed" and not m.enabled
+
+
+def test_not_standing_clears_pending_resume(robot, monkeypatch):
+    cmd, m = robot
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    monkeypatch.setattr(d, "_standing_and_powered", lambda s: False)
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False
+    assert d._talk_resume is False
+    monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)  # re-stood later
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False
+    assert d.get_arm_pose() == "stowed"
+
+
+def test_stop_after_turn_gen_snapshot_wins(robot):
+    # Safety review I1: a stop landing between the turn's gen snapshot and
+    # the resume must win, even though the flag is still set.
+    cmd, m = robot
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    gen = d.current_safety_gen()
+    d._set_arm_pose("talk")          # pretend talk again so the next stop re-arms the flag
+    d.dispatch_intent({"intent": "stop", "params": {}})
+    assert d._talk_resume is True
+    n = len(cmd.sent)
+    assert d.resume_talk_after_halt(gen) is False
+    assert "arm_ready" not in cmd.kinds()[n:] and d.get_arm_pose() == "stowed"
+
+
+def test_process_utterance_passes_gen_taken_at_turn_start(monkeypatch):
+    seen, gens = [], iter([7, 8, 9])
+    monkeypatch.setattr(cm, "_safety_gen_now", lambda: next(gens))
+    res = {"response": "Sure.", "actions": [{"intent": "walk", "params": {}}]}
+    _turn(monkeypatch, _Brain(res), utt_t0=49.0, last_safety=10.0)
+    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: seen.append(gen))
+    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=_Brain(res),
+                         tts=_TTS(), info={}, has_wake_detector=True, utt_t0=49.0)
+    assert seen == [8]  # second turn's snapshot, taken before ASR/LLM
+    cm._abort_chain.clear()
 
 
 def test_hush_skips_stream_rebuild_when_nothing_plays(monkeypatch):
@@ -199,7 +249,7 @@ def test_hush_skips_stream_rebuild_when_nothing_plays(monkeypatch):
 def test_resume_waits_while_moving(robot, monkeypatch):
     d.dispatch_intent({"intent": "stop", "params": {}})
     monkeypatch.setattr(d, "is_navigating", lambda: True)
-    assert d.resume_talk_after_halt() is False and d._talk_resume is True
+    assert d.resume_talk_after_halt(d.current_safety_gen()) is False and d._talk_resume is True
 
 
 # ------------------------------------------------- M2: every stop has a timeout

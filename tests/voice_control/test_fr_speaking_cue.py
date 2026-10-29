@@ -43,7 +43,7 @@ def _setup(monkeypatch, events):
     monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "walk forward and tell me a joke")
     monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
     monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda: None)
+    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: None)
     monkeypatch.setattr(cm, "_last_safety_at", float("-inf"))
     monkeypatch.setattr(cm, "_tuning", cm._tuning.__class__(thinking_filler_s=60.0))
     monkeypatch.setattr(cm, "execute_on_spot",

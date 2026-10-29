@@ -2191,14 +2191,26 @@ def _heard(text: str) -> str:
     return f"<heard {len((text or '').split())} words>"
 
 
-def _resume_talk_after_halt() -> None:
-    """Bring the arm/mouth back to "talk" if a safety halt stowed them
-    (final-review I1). Best-effort; never raises; no-op without a robot."""
+def _safety_gen_now():
+    """spot_dispatch's safety generation (None in dry-run / without a robot)."""
     if os.environ.get("SPOT_DRY_RUN") == "1":
+        return None
+    try:
+        from src.voice_control.spot_dispatch import current_safety_gen
+        return current_safety_gen()
+    except Exception:
+        return None
+
+
+def _resume_talk_after_halt(gen) -> None:
+    """Bring the arm/mouth back to "talk" if a safety halt stowed them
+    (final-review I1). `gen` was taken at the start of the turn, so a stop
+    landing since then wins. Best-effort; never raises; no-op without a robot."""
+    if gen is None or os.environ.get("SPOT_DRY_RUN") == "1":
         return
     try:
         from src.voice_control.spot_dispatch import resume_talk_after_halt
-        resume_talk_after_halt()
+        resume_talk_after_halt(gen)
     except Exception as e:
         print(f"[Spot] talk-pose resume skipped: {type(e).__name__}: {e}")
 
@@ -2298,6 +2310,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # "next stop", a bystander, ...) already stopped the robot. It blocks this
     # turn's motion only; the spoken reply still plays (final-review I1).
     motion_blocked = utt_t0 is not None and _last_safety_at >= utt_t0
+    turn_gen = _safety_gen_now()  # any stop after this point cancels a talk-pose resume
     t_utterance_start = time.time()
 
     # Combine audio
@@ -2410,7 +2423,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     if on_thinking is not None:
         on_thinking()
     if not motion_blocked and not _abort_chain.is_set():
-        _resume_talk_after_halt()
+        _resume_talk_after_halt(turn_gen)
 
     global _speaking_hook
     _speaking_hook = on_speaking

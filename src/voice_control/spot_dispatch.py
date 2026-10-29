@@ -1383,9 +1383,16 @@ def _dispatch_safety(intent, brain=None, speak=None):
     ok = _dispatch_core(intent, brain, speak, session=sess)  # original branch (stops again)
     _stow_now(cmd_client, resend_stop=was_emote,
               then_stand=(was_emote and name == "freeze" and _is_standing(sess)))
-    if was_talk and name != "estop":
+    if name == "estop":
+        _set_talk_resume(False)  # an e-stop cancels any pending talk-pose restore
+    elif was_talk:
         _set_talk_resume(True)  # the next motion-allowed turn brings the arm back
     return ok
+
+
+def current_safety_gen() -> int:
+    """Snapshot for resume_talk_after_halt(gen): any stop after it wins."""
+    return _safety_gen
 
 
 def _in_talk_mode() -> bool:
@@ -1398,20 +1405,21 @@ def _set_talk_resume(on: bool):
     _talk_resume = bool(on)
 
 
-def resume_talk_after_halt():
+def resume_talk_after_halt(gen):
     """Final-review I1: a stop/freeze stowed the arm and latched the mouth off.
     Called by client_mic at the start of the next turn that may move; sends the
     arm back to "talk" without waiting, and a daemon thread re-enables the
     mouth once it arrives. Needs a standing, powered, idle robot; otherwise the
-    flag stays for a later turn. Returns the thread (truthy) or False."""
-    if not _talk_resume or _closing:
+    flag stays for a later turn. `gen` is current_safety_gen() taken at the
+    start of the turn; any stop since then wins. Returns the thread or False."""
+    if not _talk_resume or _closing or gen is None or _aborted(gen):
         return False
-    gen = _safety_gen  # a stop from here on wins (checked under _arm_lock)
     sess = _spot_session
     if sess is None or is_navigating() or _arm_pose != "stowed":
         return False
     try:
         if not _standing_and_powered(sess):
+            _set_talk_resume(False)  # sat / powered off / e-stopped: don't keep it for later
             return False
         from src.voice_control.spot_tts import get_tts
         tts = get_tts()
