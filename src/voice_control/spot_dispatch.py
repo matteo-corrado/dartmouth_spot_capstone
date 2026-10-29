@@ -1515,6 +1515,7 @@ def dispatch_intent(intent, brain=None, speak=None):
 
     if name in ABORTING_INTENTS:
         _safety_gen += 1
+        _hold_gaze()  # no gaze captures the post-stop gen before the stow lands
     if name in SAFETY_INTENTS:
         return _dispatch_safety(intent, brain, speak)
     if name in _UNLOCKED_INTENTS:
