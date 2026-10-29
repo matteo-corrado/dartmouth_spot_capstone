@@ -3,6 +3,9 @@ before the first reply line is queued, not after the action chain."""
 import numpy as np
 
 import src.voice_control.client_mic as cm
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 from src.voice_control.spot_tts import TTSChunker
 
 
@@ -36,17 +39,17 @@ class _StreamBrain:
 
 
 def _setup(monkeypatch, events):
-    monkeypatch.setattr(cm, "_brain_ok", True)
-    monkeypatch.setattr(cm, "get_spot_state", lambda: {})
-    monkeypatch.setattr(cm, "_resolve_voice", lambda b: None)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "walk forward and tell me a joke")
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: None)
-    monkeypatch.setattr(cm, "_last_safety_at", float("-inf"))
-    monkeypatch.setattr(cm, "_tuning", cm._tuning.__class__(thinking_filler_s=60.0))
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_loop.CONVERSATION, "_brain_ok", True)
+    monkeypatch.setattr(_loop, "get_spot_state", lambda: {})
+    monkeypatch.setattr(_loop, "_resolve_voice", lambda b: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "walk forward and tell me a joke")
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: False)
+    monkeypatch.setattr(_loop, "_resume_talk_after_halt", lambda gen: None)
+    monkeypatch.setattr(_sl.LISTENER, "_last_safety_at", float("-inf"))
+    monkeypatch.setattr(_loop, "_tuning", cm._tuning.__class__(thinking_filler_s=60.0))
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda i, brain=None, speak=None: events.append(("action", i["intent"])) or True)
     cm._abort_chain.clear()
 
@@ -97,11 +100,11 @@ def test_silent_turn_never_cues(monkeypatch):
 
 def test_thinking_filler_does_not_cue(monkeypatch):
     events = []
-    monkeypatch.setattr(cm, "_speaking_hook", lambda: events.append("cue"))
+    monkeypatch.setattr(_loop.CONVERSATION, "_speaking_hook", lambda: events.append("cue"))
     cm._abort_chain.clear()
     cm._say(_TTS(events), "One moment.", cue=False)
     assert events == [("speak", "One moment.")]
-    cm._speaking_hook = None
+    _loop.CONVERSATION._speaking_hook = None
 
 
 def test_hook_cleared_after_turn(monkeypatch):

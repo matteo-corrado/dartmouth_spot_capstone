@@ -2,6 +2,8 @@
 import numpy as np
 
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
 
 
 class _Player:
@@ -25,10 +27,10 @@ def _feed():
 
 
 def test_chime_only_does_not_mute(monkeypatch):
-    monkeypatch.setattr(cm, "_audio_player", _Player(busy=True, speech=False))
-    monkeypatch.setattr(cm, "_mic_gated", False)
-    monkeypatch.setattr(cm, "_operator_muted", False)
-    monkeypatch.setattr(cm, "_player_last_busy_at", 0.0)
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", _Player(busy=True, speech=False))
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", False)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_player_last_busy_at", 0.0)
     _drain()
     _feed()
     assert not cm.audio_queue.empty()
@@ -36,18 +38,18 @@ def test_chime_only_does_not_mute(monkeypatch):
 
 
 def test_speech_mutes(monkeypatch):
-    monkeypatch.setattr(cm, "_audio_player", _Player(busy=True, speech=True))
-    monkeypatch.setattr(cm, "_mic_gated", False)
-    monkeypatch.setattr(cm, "_operator_muted", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", _Player(busy=True, speech=True))
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", False)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
     _drain()
     _feed()
     assert cm.audio_queue.empty()
 
 
 def test_gate_mutes(monkeypatch):
-    monkeypatch.setattr(cm, "_audio_player", None)
-    monkeypatch.setattr(cm, "_mic_gated", True)
-    monkeypatch.setattr(cm, "_operator_muted", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", None)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
     _drain()
     _feed()
     assert cm.audio_queue.empty()
@@ -56,14 +58,14 @@ def test_gate_mutes(monkeypatch):
 def test_gate_does_not_extend_speaker_tail(monkeypatch):
     # Reopen: the first frame after the gate lifts must be captured, not
     # eaten by a tail cooldown measured from the last *gated* frame.
-    monkeypatch.setattr(cm, "_audio_player", _Player(busy=False, speech=False))
-    monkeypatch.setattr(cm, "_operator_muted", False)
-    monkeypatch.setattr(cm, "_player_last_busy_at", 0.0)
-    monkeypatch.setattr(cm, "_mic_gated", True)
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", _Player(busy=False, speech=False))
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_player_last_busy_at", 0.0)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", True)
     _drain()
     _feed()
     assert cm.audio_queue.empty() and cm._player_last_busy_at == 0.0
-    monkeypatch.setattr(cm, "_mic_gated", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", False)
     _feed()
     assert not cm.audio_queue.empty()
     _drain()

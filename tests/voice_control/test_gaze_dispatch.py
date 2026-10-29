@@ -10,6 +10,7 @@ import src.spot.robot.arm as arm_mod
 import src.spot.robot.state as state_mod
 import src.voice_control.tuning as tuning
 from tests.voice_control.test_arm_policy import FakeCmd
+import src.spot.conversation.loop as _loop
 
 
 def _sh0(proto):
@@ -220,8 +221,8 @@ def test_client_gaze_uses_gen_from_request_time(cmd, monkeypatch):
     import src.voice_control.client_mic as cm
     monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
     q = _q.Queue(maxsize=1)
-    monkeypatch.setattr(cm, "_gaze_q", q)
-    monkeypatch.setattr(cm, "_gaze_worker", _AliveWorker())  # pick up by hand
+    monkeypatch.setattr(_loop, "_gaze_q", q)
+    monkeypatch.setattr(_loop, "_gaze_worker", _AliveWorker())  # pick up by hand
     cm._gaze_at_speaker(30.0)
     body, gen = q.get_nowait()
     assert body == 30.0 and gen == d.current_safety_gen()
@@ -234,9 +235,9 @@ def test_client_gaze_skipped_without_gen(monkeypatch):
     import queue as _q
     import src.voice_control.client_mic as cm
     q = _q.Queue(maxsize=1)
-    monkeypatch.setattr(cm, "_gaze_q", q)
-    monkeypatch.setattr(cm, "_safety_gen_now", lambda: None)
-    monkeypatch.setattr(cm, "_gaze_worker", _AliveWorker())
+    monkeypatch.setattr(_loop, "_gaze_q", q)
+    monkeypatch.setattr(_loop, "_safety_gen_now", lambda: None)
+    monkeypatch.setattr(_loop, "_gaze_worker", _AliveWorker())
     cm._gaze_at_speaker(30.0)
     assert q.empty()
 

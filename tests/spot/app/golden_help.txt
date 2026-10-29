@@ -1,0 +1,50 @@
+usage: client_mic.py [-h] [--list-devices] [--device DEVICE]
+                     [--output-device OUTPUT_DEVICE] [--no-brain] [--no-tts]
+                     [--tts-backend {kokoro,elevenlabs}] [--no-wake-word]
+                     [--dry-run] [--debug-audio] [--volume VOLUME] [--map MAP]
+                     [--enable-arm] [--no-arm]
+                     [--latency {off,summary,file,all}]
+                     [--latency-out LATENCY_OUT] [--mic-channel MIC_CHANNEL]
+                     [--no-transcript-log] [--allow-no-safety-kws]
+
+Spot Voice Control Client
+
+options:
+  -h, --help            show this help message and exit
+  --list-devices        List audio devices and exit
+  --device DEVICE       Mic input device index (auto-detected from XVF3800)
+  --output-device OUTPUT_DEVICE
+                        Speaker output device index (auto-detected from
+                        UACDemoV1.0)
+  --no-brain            Disable LLM brain (regex-only)
+  --no-tts              Disable text-to-speech
+  --tts-backend {kokoro,elevenlabs}
+                        TTS backend (overrides SPOT_TTS_BACKEND env).
+                        kokoro=local ONNX, elevenlabs=cloud premium.
+  --no-wake-word        Always listening (skip wake word)
+  --dry-run             Skip robot dispatch (transcript+brain only; for mic-
+                        verify)
+  --debug-audio         Print audio levels for mic diagnostics
+  --volume VOLUME       TTS + beep output gain (0.0-1.5, default 1.0)
+  --map MAP             GraphNav map path to upload during session bring-up.
+  --enable-arm          No-op, kept for old launch lines: the arm folds + the
+                        mouth turns on automatically once Spot is standing
+                        (see --no-arm).
+  --no-arm              Never fold the arm / turn the gripper mouth on
+                        automatically (also: tuning auto_arm: false). 'enable
+                        mouth' still works.
+  --latency {off,summary,file,all}
+                        Latency telemetry mode: off (default), summary (in-
+                        memory only), file (write JSONL), all (both)
+  --latency-out LATENCY_OUT
+                        Latency JSONL file path (default:
+                        logs/latency-{timestamp}.jsonl). Only used when
+                        --latency=file or all.
+  --mic-channel MIC_CHANNEL
+                        XVF3800 input channel (0=beamformed, 1=ASR); default
+                        Tuning.mic_channel
+  --no-transcript-log   Privacy: conversation + utterance logs store
+                        transcript: null
+  --allow-no-safety-kws
+                        Start on the robot even if the always-on safety
+                        keyword spotter fails to load (default: refuse)

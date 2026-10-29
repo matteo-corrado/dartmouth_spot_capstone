@@ -5,6 +5,10 @@ import numpy as np
 import pytest
 
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 import src.voice_control.spot_dispatch as d
 from src.spot.robot import ARM, CONNECTION, NAV, SAFETY_GEN
 import src.spot.robot.arm as arm_mod
@@ -40,17 +44,17 @@ class _TTS:
 
 def _turn(monkeypatch, brain, utt_t0, last_safety, transcript="what's your next stop after this"):
     sent, resume = [], []
-    monkeypatch.setattr(cm, "_brain_ok", True)
-    monkeypatch.setattr(cm, "get_spot_state", lambda: {})
-    monkeypatch.setattr(cm, "_resolve_voice", lambda b: None)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: transcript)
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_loop.CONVERSATION, "_brain_ok", True)
+    monkeypatch.setattr(_loop, "get_spot_state", lambda: {})
+    monkeypatch.setattr(_loop, "_resolve_voice", lambda b: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: transcript)
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: False)
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
-    monkeypatch.setattr(cm, "_last_safety_at", last_safety)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: resume.append("resume"))
+    monkeypatch.setattr(_sl.LISTENER, "_last_safety_at", last_safety)
+    monkeypatch.setattr(_loop, "_resume_talk_after_halt", lambda gen: resume.append("resume"))
     tts = _TTS()
     cm._abort_chain.clear()
     try:
@@ -225,10 +229,10 @@ def test_stop_after_turn_gen_snapshot_wins(robot):
 
 def test_process_utterance_passes_gen_taken_at_turn_start(monkeypatch):
     seen, gens = [], iter([7, 8, 9])
-    monkeypatch.setattr(cm, "_safety_gen_now", lambda: next(gens))
+    monkeypatch.setattr(_loop, "_safety_gen_now", lambda: next(gens))
     res = {"response": "Sure.", "actions": [{"intent": "walk", "params": {}}]}
     _turn(monkeypatch, _Brain(res), utt_t0=49.0, last_safety=10.0)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: seen.append(gen))
+    monkeypatch.setattr(_loop, "_resume_talk_after_halt", lambda gen: seen.append(gen))
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=_Brain(res),
                          tts=_TTS(), info={}, has_wake_detector=True, utt_t0=49.0)
     assert seen == [8]  # second turn's snapshot, taken before ASR/LLM
@@ -244,7 +248,7 @@ def test_hush_skips_stream_rebuild_when_nothing_plays(monkeypatch):
 
         def force_reset(self):
             calls.append("reset")
-    monkeypatch.setattr(cm, "_audio_player", P())
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", P())
     cm._hush_player()
     assert calls == []
 

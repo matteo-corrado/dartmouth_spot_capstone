@@ -4,6 +4,7 @@ import json
 import math
 
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
 from src.voice_control.audio_frontend import UtteranceStats
 from src.voice_control.speaker_lock import SpeakerLock
 
@@ -92,7 +93,7 @@ def test_utterance_log_io_error_never_raises(tmp_path):
 
 
 def test_mic_absent_degrades(monkeypatch):
-    monkeypatch.setattr(cm, "_mic", None)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic", None)
     assert cm._mic_usable() is False
     assert cm._mic_speech_degs(0, 1) == []
 
@@ -104,8 +105,8 @@ def test_dead_mic_degrades(monkeypatch):
         def samples_between(self, a, b):
             raise AssertionError("must not read a dead mic")
 
-    monkeypatch.setattr(cm, "_mic", Dead())
-    monkeypatch.setattr(cm, "_mic_dead_logged", False)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic", Dead())
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_dead_logged", False)
     assert cm._mic_speech_degs(0, 1) == []
     cm._check_mic_alive()
     assert cm._mic_dead_logged is True

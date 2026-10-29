@@ -1,5 +1,8 @@
 """B11: filler-only utterances are ignored before the LLM call."""
 from src.voice_control.intent import is_filler_only
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 
 
 def test_filler_only():
@@ -26,11 +29,11 @@ def test_bare_okay_reply_reaches_the_brain(monkeypatch):
     import numpy as np
     import src.voice_control.client_mic as cm
     sent = []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "Okay.")
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "_resume_talk_after_halt", lambda gen: None)
-    monkeypatch.setattr(cm, "parse_intent", lambda t: sent.append(t) or None)
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "Okay.")
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_loop, "_resume_talk_after_halt", lambda gen: None)
+    monkeypatch.setattr(_loop, "parse_intent", lambda t: sent.append(t) or None)
     info = {}
     cm.process_utterance(None, None, [np.zeros(16000, np.float32)], info=info, has_wake_detector=True)
     assert info.get("reached_llm") and sent == ["Okay"]

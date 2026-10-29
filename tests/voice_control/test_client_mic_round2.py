@@ -2,6 +2,8 @@
 from collections import deque
 
 import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
 from src.voice_control.audio_frontend import Endpointer
 
 
@@ -156,15 +158,15 @@ def test_say_guarded_by_abort():
 
 
 def test_heard_redacts_without_transcript_log(monkeypatch):
-    monkeypatch.setattr(cm, "_store_transcript", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_store_transcript", True)
     assert cm._heard("go to the lab") == '"go to the lab"'
-    monkeypatch.setattr(cm, "_store_transcript", False)
+    monkeypatch.setattr(_loop.CONVERSATION, "_store_transcript", False)
     assert cm._heard("go to the lab") == "<heard 4 words>"
 
 
 def test_enter_state_updates_status(monkeypatch):
-    monkeypatch.setattr(cm, "_mic", None)
-    monkeypatch.setattr(cm, "_state_leds", None)
-    monkeypatch.setattr(cm, "chime_for", lambda s: None)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic", None)
+    monkeypatch.setattr(_loop.CONVERSATION, "_state_leds", None)
+    monkeypatch.setattr(_loop, "chime_for", lambda s: None)
     cm._enter_state(cm.VoiceState.THINKING)
     assert cm._status["state"] == "THINKING"
