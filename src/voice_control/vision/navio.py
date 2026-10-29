@@ -23,6 +23,12 @@ TRAJ_END_S = 4.0       # trajectory command lifetime; the go-to loop re-issues i
 VEL_END_S = 0.5        # velocity command lifetime: a dead loop stops the robot
 RPC_TIMEOUT_S = 0.5    # < spot_dispatch.SAFETY_LOCK_TIMEOUT_S, like the gaze send
 LOCK_TIMEOUT_S = 0.5   # fail closed if the arm lock is busy (a stop's stow holds it)
+# spot_dispatch._cancel_nav joins the nav thread for 2.0 s. One in-flight send
+# (lock wait + command RPC + post-send halt RPC) must finish well inside that,
+# so a sit/stop the dispatcher sends after the join is never overtaken by a
+# late navio command or halt.
+NAV_JOIN_S = 2.0
+assert LOCK_TIMEOUT_S + 2 * RPC_TIMEOUT_S < NAV_JOIN_S
 
 
 class NavIO(Protocol):
@@ -32,6 +38,8 @@ class NavIO(Protocol):
     def odom_pose(self) -> tuple[float, float, float]: ...  # x, y, yaw (rad) in odom
 
     def move_body(self, x: float, y: float, yaw: float) -> bool: ...
+
+    def move_odom(self, x: float, y: float, yaw: float) -> bool: ...  # odom-frame goal
 
     def velocity(self, vx: float, vy: float, vrot: float) -> bool: ...
 
@@ -52,6 +60,8 @@ class SpotNavIO:
     ``gen`` the safety generation taken when the action was dispatched."""
 
     def __init__(self, session, gen, speak=None):
+        if gen is None:
+            raise ValueError("SpotNavIO needs a safety generation (None disables abort checks)")
         self.session = session
         self.gen = gen
         self._speak = speak
@@ -85,14 +95,16 @@ class SpotNavIO:
                                      timeout=RPC_TIMEOUT_S)
         except Exception as e:
             logger.warning("navio: motion command failed: %s", e)
-            return False
+            sent_ok = False
+        else:
+            sent_ok = True
         finally:
             sd._arm_lock.release()
         if sd._aborted(self.gen):
             # A stop raced our send: make sure the last word is a stop.
             self.halt()
             return False
-        return True
+        return sent_ok
 
     def move_body(self, x, y, yaw) -> bool:
         """Body-frame trajectory goal (m, m, rad). False if aborted or failed."""
@@ -109,6 +121,25 @@ class SpotNavIO:
                 params=capped_mobility_params())
         except Exception as e:
             logger.warning("navio: move_body build failed: %s", e)
+            return False
+        return self._send(cmd, TRAJ_END_S)
+
+    def move_odom(self, x, y, yaw) -> bool:
+        """Odom-frame trajectory goal (m, m, heading rad). False if aborted or failed."""
+        try:
+            from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
+            from bosdyn.client.robot_command import RobotCommandBuilder
+            from src.graph_nav_utils import capped_mobility_params
+            if self.aborted():
+                return False
+            vals = (float(x), float(y), float(yaw))
+            if not all(math.isfinite(v) for v in vals):
+                return False
+            cmd = RobotCommandBuilder.synchro_se2_trajectory_point_command(
+                goal_x=vals[0], goal_y=vals[1], goal_heading=vals[2],
+                frame_name=ODOM_FRAME_NAME, params=capped_mobility_params())
+        except Exception as e:
+            logger.warning("navio: move_odom build failed: %s", e)
             return False
         return self._send(cmd, TRAJ_END_S)
 

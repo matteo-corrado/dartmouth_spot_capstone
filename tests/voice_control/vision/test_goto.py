@@ -37,7 +37,9 @@ class FakeNavIO:
         self.visible = visible
         self.depth = depth
         self.blocked = blocked
-        self.moves = []      # (x, y, yaw) body-frame goals
+        self.moves = []      # (x, y, yaw) goals relative to the body at command time
+        self.odom_cmds = []  # raw move_odom goals
+        self.snap_drift = 0.0  # metres walked (along +x) while a snapshot runs
         self.goals_odom = []  # commanded goal endpoints in odom
         self.vels = []
         self.halts = 0
@@ -63,24 +65,38 @@ class FakeNavIO:
 
     def snapshot(self, sources, labels, model):
         self.snaps.append((list(sources), labels, model))
-        return [self.det()] if self.visible(self) else []
+        out = [self.det()] if self.visible(self) else []
+        self.pose[0] += self.snap_drift  # the robot keeps walking during capture
+        return out
 
     def odom_pose(self):
         return tuple(self.pose)
 
     def move_body(self, x, y, yaw):
-        self.moves.append((x, y, yaw))
         px, py, pyaw = self.pose
         gx = px + x * math.cos(pyaw) - y * math.sin(pyaw)
         gy = py + x * math.sin(pyaw) + y * math.cos(pyaw)
+        return self._apply(x, y, yaw, gx, gy, pyaw + yaw)
+
+    def move_odom(self, x, y, yaw):
+        px, py, pyaw = self.pose
+        dx, dy = x - px, y - py
+        bx = dx * math.cos(pyaw) + dy * math.sin(pyaw)
+        by = -dx * math.sin(pyaw) + dy * math.cos(pyaw)
+        self.odom_cmds.append((x, y, yaw))
+        return self._apply(bx, by, yaw - pyaw, x, y, yaw)
+
+    def _apply(self, bx, by, dyaw, gx, gy, gyaw):
+        self.moves.append((bx, by, dyaw))
         self.goals_odom.append((gx, gy))
         if self.abort_after_moves is not None and len(self.moves) >= self.abort_after_moves:
             self._aborted = True
         if self.blocked:
             return True
-        dist = math.hypot(x, y)
+        px, py, _ = self.pose
+        dist = math.hypot(bx, by)
         f = 1.0 if dist <= self.step else self.step / dist
-        self.pose = [px + (gx - px) * f, py + (gy - py) * f, pyaw + yaw]
+        self.pose = [px + (gx - px) * f, py + (gy - py) * f, gyaw]
         return True
 
     def velocity(self, vx, vy, vrot):
@@ -143,7 +159,7 @@ def test_goto_never_backs_up_when_already_close():
     io = FakeNavIO(target_xy=(0.4, 0.0))
     r = _run(io)
     assert r.ok is True and r.text == "I'm here."
-    assert io.moves == []
+    assert io.moves == [] and io.halts == 0  # nothing moved: nothing to halt
 
 
 def test_goto_lost_after_three_seconds():
@@ -177,14 +193,14 @@ def test_goto_stop_event_honoured_within_one_tick():
     clock = FakeClock()
     ev = threading.Event()
     io = FakeNavIO(target_xy=(9.0, 0.0), step=0.5)
-    orig = io.move_body
+    orig = io.move_odom
 
     def move(x, y, yaw):
         ok = orig(x, y, yaw)
         if len(io.moves) == 1:
             ev.set()
         return ok
-    io.move_body = move
+    io.move_odom = move
     r = _run(io, stop_event=ev, clock=clock)
     assert r.text == "I paused." and r.ok is False
     assert len(io.moves) == 1 and io.halts == 0
@@ -202,20 +218,20 @@ def test_goto_no_depth_walks_one_metre_steps_then_gives_up():
     clock = FakeClock()
     io = FakeNavIO(target_xy=(30.0, 0.0), depth=False)
     r = _run(io, clock=clock)
-    assert r.ok is False and r.text == TEXTS["no_distance"]
+    assert r.ok is False and r.text == TEXTS["no_distance_object"]
     assert len(io.moves) == 8
     assert all(math.hypot(x, y) == pytest.approx(1.0) for x, y, _ in io.moves)
 
 
 def test_goto_no_depth_switches_to_measured_when_distance_appears():
     io = FakeNavIO(target_xy=(5.0, 0.0), depth=False)
-    orig = io.move_body
+    orig = io.move_odom
 
     def move(x, y, yaw):
         ok = orig(x, y, yaw)
         io.depth = True  # depth shows up after the first step
         return ok
-    io.move_body = move
+    io.move_odom = move
     r = _run(io)
     assert r.ok is True and r.text == "I'm here."
     assert _left(io) == pytest.approx(1.0, abs=0.05)
@@ -237,7 +253,7 @@ def test_goto_exception_in_move_halts_and_reraises_nothing():
 
     def boom(*a, **k):
         raise RuntimeError("rpc")
-    io.move_body = boom
+    io.move_odom = boom
     r = _run(io)
     assert r.ok is False and io.halts >= 1
 
@@ -257,6 +273,80 @@ def test_goto_texts_no_stop_words():
     assert TEXTS["lost"] == "I lost sight of it."
     assert TEXTS["blocked"] == "Something's in the way."
     assert TEXTS["paused"] == "I paused."
+    assert TEXTS["no_distance"] == "I couldn't tell how far away you are."
+
+
+def _translations(io, eps=1e-6):
+    return [m for m in io.moves if math.hypot(m[0], m[1]) > eps]
+
+
+def test_goto_person_no_distance_refuses():
+    io = FakeNavIO(target_xy=(5.0, 0.0), label="person", depth=False)
+    r = _run(io, is_person=True, label="person")
+    assert r.ok is False and r.text == "I couldn't tell how far away you are."
+    assert _translations(io) == [] and io.halts == 0
+
+
+def test_goto_person_no_distance_may_turn_but_never_translates():
+    io = FakeNavIO(target_xy=(0.0, 5.0), label="person", depth=False)
+    r = _run(io, is_person=True, label="person")
+    assert r.text == TEXTS["no_distance"] and r.ok is False
+    assert io.moves and _translations(io) == []
+    assert io.halts == 1  # it turned, so it halts
+
+
+def test_goto_person_needs_fresh_distance_then_lost():
+    clock = FakeClock()
+    io = FakeNavIO(target_xy=(9.0, 0.0), label="person", step=0.3)
+    orig = io.move_odom
+    times = []
+
+    def move(x, y, yaw):
+        times.append((clock.t, (x, y)))
+        ok = orig(x, y, yaw)
+        io.depth = False  # depth vanishes after the first command
+        return ok
+    io.move_odom = move
+    r = _run(io, is_person=True, label="person", clock=clock)
+    assert r.text == "I lost sight of it." and r.ok is False
+    assert clock.t == pytest.approx(3.0)
+    # translations only while the last measured distance is <= 1 s old
+    assert times and all(t <= 1.0 for t, _ in times)
+    # the remembered range is never re-projected along a new bearing
+    assert all(g == times[0][1] for _, g in times)
+
+
+def test_goto_odom_goal_ignores_pose_change_during_snapshot():
+    io = FakeNavIO(target_xy=(6.0, 0.0), step=0.25)
+    io.snap_drift = 0.25
+    r = _run(io)
+    assert r.ok is True
+    assert len(io.odom_cmds) >= 2
+    for x, y, yaw in io.odom_cmds:
+        assert (x, y, yaw) == pytest.approx((5.0, 0.0, 0.0), abs=1e-9)
+
+
+def test_goto_blind_steps_reissue_remaining_step_each_tick():
+    clock = FakeClock()
+    io = FakeNavIO(target_xy=(30.0, 0.0), depth=False, step=0.2)  # slow walker
+    r = _run(io, clock=clock)
+    assert r.text == TEXTS["no_distance_object"]  # not "Something's in the way."
+    first_step = [c for c in io.odom_cmds if c[0] == pytest.approx(1.0)]
+    assert len(first_step) >= 4  # same 1 m goal re-sent while walking
+
+
+def test_goto_abort_at_end_overrides_finished_outcome(monkeypatch):
+    import sys
+    gm = sys.modules["src.voice_control.vision.goto"]
+    io = FakeNavIO()
+
+    def fake_loop(io_, *a, **k):
+        a[-1]["moved"] = True
+        io_._aborted = True  # the stop lands just as the loop finishes
+        return gm._result("arrived")
+    monkeypatch.setattr(gm, "_loop", fake_loop)
+    r = _run(io)
+    assert r.text == "I paused." and r.ok is False and io.halts == 0
 
 
 # ---------------------------------------------------------------------------
@@ -426,3 +516,59 @@ def test_spotnavio_speak_never_raises():
     def bad(t):
         raise RuntimeError
     SpotNavIO({}, 0, bad).speak("x")
+
+
+def test_spotnavio_send_error_after_abort_still_halts(sd, monkeypatch):
+    from src.voice_control.vision.navio import SpotNavIO
+    log = []
+    _patch_builders(monkeypatch, log)
+    sess = _session(log)
+
+    def send(*a, **k):
+        log.append(("send", a, k))
+        if a[0] == "TRAJ":
+            sd._safety_gen = 8  # the stop lands, then our RPC errors out
+            raise RuntimeError("rpc")
+    sess["cmd"].robot_command.side_effect = send
+    assert SpotNavIO(sess, 7, None).move_body(1.0, 0.0, 0.0) is False
+    assert [e[1][0] for e in log if e[0] == "send"] == ["TRAJ", "STOP"]
+
+
+def test_spotnavio_rejects_gen_none():
+    from src.voice_control.vision.navio import SpotNavIO
+    with pytest.raises(ValueError):
+        SpotNavIO({}, None, None)
+
+
+def test_spotnavio_move_odom_odom_frame_caps_and_abort_order(sd, monkeypatch):
+    from bosdyn.client import robot_command as rc
+    from src.voice_control.vision.navio import SpotNavIO
+    log = []
+    sentinel, spy = _patch_builders(monkeypatch, log)
+
+    def se2(**k):
+        log.append(("build_se2", k))
+        return "SE2"
+    monkeypatch.setattr(rc.RobotCommandBuilder, "synchro_se2_trajectory_point_command",
+                        staticmethod(se2))
+    _wrap_aborted(monkeypatch, sd, log)
+    io = SpotNavIO(_session(log), 7, None)
+    assert io.move_odom(2.0, 1.0, 0.5) is True
+    kinds = [e[0] for e in log]
+    i = kinds.index("send")
+    assert kinds[i - 1] == "check" and log[i][1][0] == "SE2"
+    b = next(e for e in log if e[0] == "build_se2")[1]
+    assert b["frame_name"] == "odom" and b["params"] is sentinel
+    assert (b["goal_x"], b["goal_y"], b["goal_heading"]) == (2.0, 1.0, 0.5)
+    sd._safety_gen = 9
+    log.clear()
+    assert io.move_odom(2.0, 1.0, 0.5) is False
+    assert "send" not in [e[0] for e in log]
+
+
+def test_navio_timeouts_fit_inside_nav_join():
+    from src.voice_control.vision import navio
+    from src.voice_control import spot_dispatch
+    import inspect
+    assert navio.LOCK_TIMEOUT_S + 2 * navio.RPC_TIMEOUT_S < navio.NAV_JOIN_S
+    assert "join(timeout=2.0)" in inspect.getsource(spot_dispatch._cancel_nav)
