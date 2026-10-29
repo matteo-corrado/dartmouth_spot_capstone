@@ -1752,6 +1752,13 @@ def main():
             _mic_gated = True
             gate_announced = False
         info = {}
+
+        def _announce_speaking():
+            # Final-review I2: blue ring + speak tick as the reply starts,
+            # not after every action in the chain has run.
+            info["spoke"] = True
+            _enter_state(VoiceState.RESPONDING)
+
         t_proc = time.monotonic()
         audio = [pcm16_to_float32(f) for _, f, _, _ in trim_trailing(utt, TRAILING_KEEP_FRAMES)]
         try:
@@ -1759,7 +1766,8 @@ def main():
                                        safety_only=safety_only, tts=tts,
                                        has_wake_detector=bool(wake_detector),
                                        on_thinking=(None if safety_only else _announce_thinking),
-                                       info=info, utt_t0=t0)
+                                       info=info, utt_t0=t0,
+                                       on_speaking=(None if safety_only else _announce_speaking))
         except Exception as e:
             # A per-utterance failure (ASR/LLM/TTS) must drop the turn, not
             # crash voice control. result=None routes to the idle-based gate
@@ -1776,7 +1784,8 @@ def main():
 
         if result != "wake_detected" and not safety_only and gate_announced:
             response_pending = True
-            _enter_state(VoiceState.RESPONDING)
+            if not info.get("spoke"):
+                _enter_state(VoiceState.RESPONDING)
             state = VoiceState.RESPONDING
         elif result == "wake_detected" and state == VoiceState.WAKE_WORD:
             print(">>> Now listening for commands...")
@@ -2144,6 +2153,13 @@ class _TokenWatch:
                     self._chunker.suppressed = True
                 if self._filler is not None:
                     self._filler.cancel()
+                if not self._chunker.suppressed and not _abort_chain.is_set():
+                    # The chunker may still suppress a describe reply on this
+                    # very delta; it checks the same key, so ask it first.
+                    self._chunker.accept(delta)
+                    if not self._chunker.suppressed:
+                        _cue_speaking()  # RESPONDING + speak tick before the 1st sentence
+                    return
         self._chunker.accept(delta)
 
 
@@ -2172,9 +2188,28 @@ def _resume_talk_after_halt() -> None:
         print(f"[Spot] talk-pose resume skipped: {type(e).__name__}: {e}")
 
 
-def _say(tts, text, voice=None) -> None:
-    """tts.speak unless an operator hush/stop aborted this turn."""
+# Per-turn "Spot starts talking" hook (final-review I2), set by
+# process_utterance. Fired once, just before the first reply line is queued,
+# so the RESPONDING ring + speak cue land before the speech (same FIFO player).
+_speaking_hook = None
+
+
+def _cue_speaking() -> None:
+    global _speaking_hook
+    hook, _speaking_hook = _speaking_hook, None
+    if hook is not None:
+        try:
+            hook()
+        except Exception as e:
+            print(f"[Indicator] speaking cue failed: {type(e).__name__}: {e}")
+
+
+def _say(tts, text, voice=None, cue=True) -> None:
+    """tts.speak unless an operator hush/stop aborted this turn. cue=False for
+    lines that are not the reply (the thinking filler)."""
     if tts is not None and text and not _abort_chain.is_set():
+        if cue:
+            _cue_speaking()
         tts.speak(text, voice=voice)
 
 
@@ -2212,7 +2247,8 @@ MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise 
 
 def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                       brain=None, safety_only=False, tts=None,
-                      has_wake_detector=False, on_thinking=None, info=None, utt_t0=None):
+                      has_wake_detector=False, on_thinking=None, info=None, utt_t0=None,
+                      on_speaking=None):
     """Process recorded speech through ASR then LLM brain (or regex fallback).
 
     Args:
@@ -2225,6 +2261,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
               the utterance metrics line.
         utt_t0: monotonic time of the utterance's first frame; motion is not
               dispatched if a safety halt happened at/after it.
+        on_speaking: called once, just before the first reply line is queued.
 
     Returns:
         "wake_detected" if a wake phrase was found (ASR fallback only), None otherwise.
@@ -2360,6 +2397,8 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     if not motion_blocked and not _abort_chain.is_set():
         _resume_talk_after_halt()
 
+    global _speaking_hook
+    _speaking_hook = on_speaking
     rec = get_recorder()
     trace = rec.begin_utterance() if rec else None
     try:
@@ -2386,7 +2425,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
             if chunker is not None:
                 # B12: one neutral line if nothing has been said after
                 # Tuning.thinking_filler_s; cancelled when the reply starts.
-                filler = ThinkingFiller(lambda: _say(tts, THINKING_FILLER_LINE, voice_id),
+                filler = ThinkingFiller(lambda: _say(tts, THINKING_FILLER_LINE, voice_id, cue=False),
                                         _tuning.thinking_filler_s, _speech_busy)
                 brain.on_token_callback = _TokenWatch(chunker, filler)
                 filler.start()
@@ -2618,6 +2657,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
         print(f"[Timing] Total: {time.time() - t_utterance_start:.2f}s")
         return "wake_detected" if wake_activated else None
     finally:
+        _speaking_hook = None
         if rec is not None and trace is not None:
             if tts is not None:
                 try:
