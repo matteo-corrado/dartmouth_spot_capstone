@@ -3,14 +3,17 @@ commands-only path + safety rescue, live voiceprint threshold."""
 import numpy as np
 import pytest
 
-import src.voice_control.client_mic as cm
+import src.spot.conversation.gate as conv_gate
+import src.spot.conversation.loop as _loop
+import src.spot.operator.control as _ctl
+import src.spot.safety.listener as _sl
 import src.spot.conversation.loop as _loop
 import src.spot.safety.listener as _sl
 import src.spot.stt.client as _stt
-from src.voice_control.audio_frontend import UtteranceStats, passes_gate
-from src.voice_control.control_server import parse_command
-from src.voice_control.intent import short_utterance_ok
-from src.voice_control.tuning import Tuning
+from src.spot.audio.frontend import UtteranceStats, passes_gate
+from src.spot.operator.control_server import parse_command
+from src.spot.brain.intent import short_utterance_ok
+from src.spot.core.tuning import Tuning
 
 
 # ---- gate statistic --------------------------------------------------------
@@ -55,12 +58,12 @@ def test_tuning_defaults():
 
 def test_short_utterance_is_by_vad_speech_not_wall_clock():
     s = _one_word_utterance()            # 2.4 s of speech-flagged frames
-    assert cm.is_short_utterance(s, 1.5) is False
+    assert conv_gate.is_short_utterance(s, 1.5) is False
     w = UtteranceStats()
     [w.add(-40.0, True) for _ in range(30)]   # 0.9 s of VAD speech
     [w.add(-60.0, False) for _ in range(60)]  # end silence doesn't count
-    assert cm.is_short_utterance(w, 1.5) is True
-    assert cm.is_short_utterance(UtteranceStats(), 1.5) is False
+    assert conv_gate.is_short_utterance(w, 1.5) is True
+    assert conv_gate.is_short_utterance(UtteranceStats(), 1.5) is False
 
 
 # ---- short-path transcript filter ------------------------------------------
@@ -86,10 +89,10 @@ def _run_short(monkeypatch, transcript, in_conversation=True, safety_only=False)
     monkeypatch.setattr(_loop, "_auto_arm_at_turn", lambda gen: None)
     monkeypatch.setattr(_loop, "parse_intent", lambda t: llm.append(t) or None)
     info = {}
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], info=info,
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], info=info,
                          has_wake_detector=True, safety_only=safety_only,
                          short_filter=True, in_conversation=in_conversation)
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
     return halts, llm, info
 
 
@@ -130,14 +133,14 @@ def test_rescue_executes_stop(monkeypatch):
     halts = []
     monkeypatch.setattr(_sl, "_dispatch_safety", lambda intent: halts.append(intent["intent"]) or True)
     monkeypatch.setattr(_sl, "_start_hush", lambda: None)
-    text, done = cm.rescue_safety(None, b"\0\0" * 1600, asr=lambda stub, pcm: "Stop.")
+    text, done = _sl.rescue_safety(None, b"\0\0" * 1600, asr=lambda stub, pcm: "Stop.")
     assert done is True and text == "Stop." and halts == ["stop"]
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_rescue_ignores_non_safety_text(monkeypatch):
     calls = []
-    text, done = cm.rescue_safety(None, b"\0\0" * 1600, asr=lambda stub, pcm: "sit down",
+    text, done = _sl.rescue_safety(None, b"\0\0" * 1600, asr=lambda stub, pcm: "sit down",
                                   run_safety=lambda t: calls.append(t) or False)
     assert done is False and text == "sit down" and calls  # checked, nothing executed
 
@@ -145,20 +148,20 @@ def test_rescue_ignores_non_safety_text(monkeypatch):
 def test_rescue_survives_asr_failure():
     def boom(stub, pcm):
         raise RuntimeError("asr down")
-    assert cm.rescue_safety(None, b"\0\0" * 1600, asr=boom) == ("", False)
-    assert cm.rescue_safety(None, b"", asr=boom) == ("", False)
+    assert _sl.rescue_safety(None, b"\0\0" * 1600, asr=boom) == ("", False)
+    assert _sl.rescue_safety(None, b"", asr=boom) == ("", False)
 
 
 # ---- voiceprint threshold ---------------------------------------------------
 def test_voiceprint_threshold_command():
-    assert cm.apply_voiceprint_arg("threshold 0.3", False, 0.25) == (False, 0.3)
-    assert cm.apply_voiceprint_arg("threshold 1.5", True, 0.25) == (True, 0.9)
-    assert cm.apply_voiceprint_arg("threshold -2", True, 0.25) == (True, 0.0)
-    assert cm.apply_voiceprint_arg("on", False, 0.25) == (True, 0.25)
-    assert cm.apply_voiceprint_arg(None, True, 0.25) == (False, 0.25)
+    assert _ctl.apply_voiceprint_arg("threshold 0.3", False, 0.25) == (False, 0.3)
+    assert _ctl.apply_voiceprint_arg("threshold 1.5", True, 0.25) == (True, 0.9)
+    assert _ctl.apply_voiceprint_arg("threshold -2", True, 0.25) == (True, 0.0)
+    assert _ctl.apply_voiceprint_arg("on", False, 0.25) == (True, 0.25)
+    assert _ctl.apply_voiceprint_arg(None, True, 0.25) == (False, 0.25)
     for bad in ("threshold", "threshold abc", "threshold nan"):
         with pytest.raises(ValueError):
-            cm.apply_voiceprint_arg(bad, False, 0.25)
+            _ctl.apply_voiceprint_arg(bad, False, 0.25)
 
 
 def test_voiceprint_threshold_arg_reaches_the_queue():
@@ -167,11 +170,11 @@ def test_voiceprint_threshold_arg_reaches_the_queue():
 
 def test_status_shows_voiceprint_threshold(monkeypatch):
     monkeypatch.setattr(_loop.CONVERSATION, "_voiceprint_threshold", 0.42)
-    assert cm._status_snapshot()["voiceprint_threshold"] == 0.42
+    assert _ctl._status_snapshot()["voiceprint_threshold"] == 0.42
 
 
 def test_short_path_blocks_travel_and_power_off():
-    from src.voice_control.intent import short_utterance_ok
+    from src.spot.brain.intent import short_utterance_ok
     for t in ("walk forward", "back up", "turn around", "come here", "follow me",
               "patrol", "go home", "find a chair", "power off"):
         assert short_utterance_ok(t, in_conversation=True) is False, t

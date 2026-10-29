@@ -1,4 +1,4 @@
-# src/voice_control/wake/safety_kws.py
+# src/spot/safety/kws.py
 """Always-on frame-level safety keyword spotter (Stage 2F C1).
 
 Spots stop/freeze/estop in WAKE_WORD state with no wake required, regardless
@@ -51,7 +51,7 @@ def _threshold() -> float:
     """Operator knob Tuning.safety_kws_threshold, clamped to [THRESHOLD_MIN,
     THRESHOLD_MAX]; KEYWORDS_THRESHOLD if tuning is unavailable."""
     try:
-        from src.voice_control.tuning import get_tuning
+        from src.spot.core.tuning import get_tuning
         t = float(get_tuning().safety_kws_threshold)
     except Exception as e:  # noqa: BLE001 - a bad tuning file must not disable safety
         print(f"[SafetyKWS] tuning unavailable ({e}); threshold {KEYWORDS_THRESHOLD}")

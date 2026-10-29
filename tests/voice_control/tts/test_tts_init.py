@@ -1,5 +1,5 @@
 import pytest
-from src.voice_control.tts import TTSBackend, get_backend, register_backend
+from src.spot.tts import TTSBackend, get_backend, register_backend
 
 
 class FakeBackend:
@@ -24,7 +24,7 @@ def test_get_backend_unknown_raises(monkeypatch):
 
 
 def test_get_backend_default_when_env_unset(monkeypatch):
-    from src.voice_control.tts import _INSTANCES
+    from src.spot.tts import _INSTANCES
     _INSTANCES.clear()  # don't let a cached singleton from another test pass vacuously
     monkeypatch.delenv("SPOT_TTS_BACKEND", raising=False)
     register_backend("elevenlabs", lambda: FakeBackend())  # DEFAULT_BACKEND
@@ -36,7 +36,7 @@ def test_get_backend_default_when_env_unset(monkeypatch):
 def test_get_backend_fallback_on_init_failure(monkeypatch):
     """If the chosen backend cannot be instantiated (e.g. ElevenLabs without
     an API key), get_backend() falls back to Kokoro so Spot keeps talking."""
-    from src.voice_control.tts import _INSTANCES
+    from src.spot.tts import _INSTANCES
     _INSTANCES.clear()
     monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
 
@@ -53,7 +53,7 @@ def test_get_backend_fallback_is_cached(monkeypatch):
     """After ElevenLabs init fails once and we fall back, subsequent calls
     must NOT re-run the broken factory (which would do a network round-trip
     per sentence chunk). Cache the fallback under the requested name."""
-    from src.voice_control.tts import _INSTANCES, _REGISTRY
+    from src.spot.tts import _INSTANCES, _REGISTRY
     _INSTANCES.clear()
     monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
 
@@ -74,7 +74,7 @@ def test_get_backend_fallback_is_cached(monkeypatch):
 def test_get_backend_dual_failure_preserves_primary_error(monkeypatch):
     """If both ElevenLabs AND Kokoro init fail, the operator needs to see
     the primary (ElevenLabs) error — not just the fallback failure."""
-    from src.voice_control.tts import _INSTANCES
+    from src.spot.tts import _INSTANCES
     _INSTANCES.clear()
     monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
 
@@ -97,7 +97,7 @@ def test_get_active_backend_name(monkeypatch):
     """get_active_backend_name() reflects the *actual* class returned, not
     the requested env var — so callers picking persona voice slots get the
     right key after a silent fallback."""
-    from src.voice_control.tts import _INSTANCES, get_active_backend_name
+    from src.spot.tts import _INSTANCES, get_active_backend_name
     _INSTANCES.clear()
     monkeypatch.setenv("SPOT_TTS_BACKEND", "elevenlabs")
 

@@ -5,7 +5,7 @@ import pytest
 
 import src.spot.features as features_pkg
 import src.spot.robot.arm as arm_mod
-import src.voice_control.spot_dispatch as d
+import src.spot.robot.dispatcher as d
 from src.spot.core.registry import Registry
 from src.spot.features.enabled import ENABLED
 from src.spot.robot import ARM, CONNECTION, NAV

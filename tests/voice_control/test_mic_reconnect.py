@@ -3,10 +3,10 @@ import struct
 import threading
 import time
 
-from src.voice_control.mic_array import (
+from src.spot.mic.xvf3800 import (
     RECONNECT_BACKOFF_S, MicArray, XvfError, backoff_delay)
-from src.voice_control.ring_animator import RingAnimator
-from src.voice_control.state_feedback import RingSpec
+from src.spot.mic.ring_animator import RingAnimator
+from src.spot.mic.state_feedback import RingSpec
 
 OK_DOA = bytes([0]) + struct.pack("<HH", 90, 1)
 OK_VER = bytes([0, 2, 1, 1])

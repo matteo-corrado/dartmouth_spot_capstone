@@ -12,14 +12,6 @@ def test_flags_match_legacy_sets():
     assert FEATURE.subscriptions == (("speaker_locked", gaze_h.on_speaker_locked),)
 
 
-def test_gaze_t_write_seen_through_spot_dispatch(monkeypatch):
-    """R21: the moved global is read live through spot_dispatch (no stale copy)."""
-    import src.voice_control.spot_dispatch as d
-    assert "_gaze_t" not in vars(d)
-    monkeypatch.setattr(gaze_h, "_gaze_t", 123.5)
-    assert d._gaze_t == 123.5
-
-
 def test_speaker_locked_subscriber_needs_gen(monkeypatch):
     calls = []
     monkeypatch.setattr(gaze_h, "gaze_at_bearing", lambda b, g: calls.append((b, g)) or True)

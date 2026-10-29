@@ -1,4 +1,4 @@
-# src/voice_control/response_gate.py
+# src/spot/audio/response_gate.py
 """Pure predicate for reopening the mic after a response (Stage 2F P6).
 
 The mic is hard-gated from the moment Spot commits to a response (THINKING)
@@ -9,7 +9,7 @@ actual drain/reset. No audio, no threads, no VoiceState.
 """
 from __future__ import annotations
 
-from src.voice_control.tuning import get_tuning
+from src.spot.core.tuning import get_tuning
 
 # Seconds the mic stays gated after playback goes idle, before re-listening.
 # Covers the OS audio-buffer drain + room echo of Spot's own voice.

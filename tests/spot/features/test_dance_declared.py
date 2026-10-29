@@ -39,12 +39,3 @@ def test_prompt_line_verbatim_from_llm_brain():
     assert spec.grammar_params is None  # the GBNF has no emote-specific params rule
     assert FEATURE.intent_rules == ()   # intent.py has no emote regex rule
     assert not any(i == "emote" for _, i, _ in intent.COMMANDS)
-
-
-def test_last_routine_write_seen_through_spot_dispatch(monkeypatch):
-    """R21: the moved global is read live through spot_dispatch (no stale copy)."""
-    import src.spot.features.dance.handlers as dance_h
-    import src.voice_control.spot_dispatch as d
-    assert "_last_routine" not in vars(d)
-    monkeypatch.setattr(dance_h, "_last_routine", "tail_wag")
-    assert d._last_routine == "tail_wag"

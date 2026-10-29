@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from src.voice_control.speaker_embed import SpeakerEmbedder, accept_combined, cosine, fbank
+from src.spot.conversation.voiceprint import SpeakerEmbedder, accept_combined, cosine, fbank
 
 MODEL = Path(__file__).resolve().parents[2] / "models" / "speaker" / "voxceleb_resnet34_LM.onnx"
 

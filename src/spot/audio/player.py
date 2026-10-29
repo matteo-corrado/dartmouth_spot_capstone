@@ -102,7 +102,7 @@ class _Task:
     The four optional ``on_*`` callbacks are latency-tracing hooks fired by
     the worker thread inside ``_safe_cb``. They are GIL-atomic single
     attribute writes on the latency module's Trace object — see
-    ``src/voice_control/latency.py`` for the consumer side.
+    ``src/spot/core/latency.py`` for the consumer side.
     """
     label: str
     samples: Optional[np.ndarray] = None

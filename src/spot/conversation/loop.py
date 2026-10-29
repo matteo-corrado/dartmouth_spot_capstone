@@ -2,7 +2,7 @@
 (ASR -> safety -> wake -> brain/regex -> dispatch + reply) and the robot
 bridge it uses (dispatch, state, gaze, talk-pose resume, auto-arm retry).
 
-Moved from src/voice_control/client_mic.py (Task 10), logic unchanged. The
+Moved from the old client_mic.py (Task 10), logic unchanged. The
 closures inside the old main() are Conversation methods; process_utterance
 is a method; run() is the old main-loop body. The conversation state that
 used to be client_mic module globals lives on CONVERSATION, created once at
@@ -114,7 +114,7 @@ def execute_on_spot(intent: dict, brain=None, speak=None) -> bool:
         print(f"[dry-run] would dispatch: {shown}")
         return True
     try:
-        from src.voice_control.spot_dispatch import dispatch_intent
+        from src.spot.robot.dispatcher import dispatch_intent
         return dispatch_intent(intent, brain=brain, speak=speak)
     except Exception as e:
         print(f"[Spot error: {e}]")
@@ -128,7 +128,7 @@ def get_spot_state() -> dict:
     if os.environ.get("SPOT_DRY_RUN") == "1":
         return {}
     try:
-        from src.voice_control.spot_dispatch import get_robot_state_dict
+        from src.spot.robot.state import get_robot_state_dict
         return get_robot_state_dict()
     except Exception as e:
         print(f"[State error: {e}]")
@@ -140,7 +140,7 @@ def _is_robot_moving() -> bool:
     if os.environ.get("SPOT_DRY_RUN") == "1":
         return False  # no robot; don't import spot_dispatch (bosdyn) per utterance
     try:
-        from src.voice_control.spot_dispatch import is_navigating
+        from src.spot.nav.runner import is_navigating
         return is_navigating()
     except Exception:
         return False
@@ -187,7 +187,7 @@ def _safety_gen_now():
     if os.environ.get("SPOT_DRY_RUN") == "1":
         return None
     try:
-        from src.voice_control.spot_dispatch import current_safety_gen
+        from src.spot.robot.dispatcher import current_safety_gen
         return current_safety_gen()
     except Exception:
         return None
@@ -199,7 +199,7 @@ def _auto_arm_at_turn(gen) -> None:
     if gen is None or os.environ.get("SPOT_DRY_RUN") == "1":
         return
     try:
-        from src.voice_control.spot_dispatch import start_auto_arm
+        from src.spot.features.mouth.handlers import start_auto_arm
         start_auto_arm(gen)
     except Exception as e:
         print(f"[Spot] automatic arm fold skipped: {type(e).__name__}: {e}")
@@ -210,7 +210,7 @@ _gaze_worker = None
 
 
 def _gaze_loop():
-    from src.voice_control.spot_dispatch import gaze_at_bearing
+    from src.spot.features.gaze.handlers import gaze_at_bearing
     while True:
         body, gen = _gaze_q.get()
         try:
@@ -250,7 +250,7 @@ def _resume_talk_after_halt(gen) -> None:
     if gen is None or os.environ.get("SPOT_DRY_RUN") == "1":
         return
     try:
-        from src.voice_control.spot_dispatch import resume_talk_after_halt
+        from src.spot.robot.dispatcher import resume_talk_after_halt
         resume_talk_after_halt(gen)
     except Exception as e:
         print(f"[Spot] talk-pose resume skipped: {type(e).__name__}: {e}")
@@ -297,7 +297,7 @@ def _brain_ready(brain) -> bool:
 
 def _resolve_voice(brain):
     """Voice ID for the brain's current persona on the active TTS backend."""
-    from src.voice_control.tts import get_active_backend_name
+    from src.spot.tts import get_active_backend_name
     persona = get_persona(brain.session_state.current_persona, brain._persona_registry)
     return voice_id_for(persona, get_active_backend_name()) or None
 
@@ -549,7 +549,7 @@ class Conversation:
             if self.brain is None:
                 print("[Control] persona: no brain")
             else:
-                from src.voice_control.spot_dispatch import do_set_persona
+                from src.spot.features.settings.handlers import do_set_persona
                 print(f"[Control] persona -> {do_set_persona({'name': arg}, self.brain)}")
         elif name == "crowd":
             self._crowd_mode = _ctl._toggle(self._crowd_mode, arg)
@@ -619,7 +619,7 @@ class Conversation:
 
         # Operator control server (spotctl). Immediate commands run on its HTTP
         # threads via _on_immediate; queued ones are drained here between frames.
-        from src.voice_control.control_server import drain as _drain_control
+        from src.spot.operator.control_server import drain as _drain_control
         if ctl_q is None:  # main starts it (step 8); standalone callers get one here
             ctl_q = queue.Queue()
             ctl_srv = _ctl._start_control_server(ctl_q)
@@ -1146,14 +1146,14 @@ class Conversation:
                             camera = params.get("camera", "front")
                             query = params.get("query", "")
                             try:
-                                from src.voice_control.spot_dispatch import capture_frame
+                                from src.spot.robot.state import capture_frame
                                 image_bytes = capture_frame(camera)
                                 if image_bytes:
                                     # If asking about a specific object, run YOLO first
                                     yolo_hint = ""
                                     if query:
                                         try:
-                                            from src.voice_control.visual_nav import detect_in_image
+                                            from src.spot.features.visual_nav.navigator import detect_in_image
                                             det = detect_in_image(image_bytes, query)
                                             if det["found"]:
                                                 yolo_hint = (

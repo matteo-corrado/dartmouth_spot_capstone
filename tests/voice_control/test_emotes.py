@@ -3,7 +3,7 @@ import random
 
 import pytest
 
-from src.voice_control.emotes import DANCES, ROUTINES, prompt_section, resolve_routine
+from src.spot.features.dance.emotes import DANCES, ROUTINES, prompt_section, resolve_routine
 
 
 def test_resolve_exact_and_random():
@@ -35,7 +35,7 @@ def test_catalogue_keys():
 
 
 def test_generic_triggers_not_on_specific_routines():
-    from src.voice_control.emotes import _TRIGGERS
+    from src.spot.features.dance.emotes import _TRIGGERS
     for phrases in _TRIGGERS.values():
         assert "dance" not in phrases and "show off" not in phrases
 

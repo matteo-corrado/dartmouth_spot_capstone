@@ -1,8 +1,8 @@
 """B5/B7/E1: static prompt first, persona + state last, no volatile keys."""
 import pytest
 
-import src.voice_control.llm_brain as llm_brain
-from src.voice_control.llm_brain import LLMBrain
+import src.spot.brain.llm_brain as llm_brain
+from src.spot.brain.llm_brain import LLMBrain
 
 
 class _FakeBackend:
@@ -20,7 +20,7 @@ class _FakeBackend:
 
 @pytest.fixture
 def brain(monkeypatch, tmp_path):
-    from src.voice_control.chatbot import conversation_log
+    from src.spot.conversation import conversation_log
     monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
     monkeypatch.setattr(llm_brain, "_BACKEND", _FakeBackend())
     return LLMBrain()

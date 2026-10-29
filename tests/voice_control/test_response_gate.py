@@ -1,6 +1,6 @@
 # tests/voice_control/test_response_gate.py
 """Unit tests for the post-response mic-reopen predicate (Stage 2F P6)."""
-from src.voice_control.response_gate import (
+from src.spot.audio.response_gate import (
     should_arm_reopen, should_reopen_mic, RESPONSE_REOPEN_DELAY_S)
 
 
@@ -53,5 +53,5 @@ def test_reopen_uses_tuned_delay():
 
 
 def test_reopen_delay_comes_from_tuning():
-    from src.voice_control.tuning import get_tuning
+    from src.spot.core.tuning import get_tuning
     assert RESPONSE_REOPEN_DELAY_S == get_tuning().reopen_delay_s

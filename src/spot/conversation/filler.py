@@ -1,7 +1,7 @@
 """Thinking filler (B12) and the brain token watcher around the streaming
 TTS chunker (B6 persona hold-back, filler cancel, speaking cue).
 
-Moved from src/voice_control/client_mic.py (Task 10), unchanged.
+Moved from the old client_mic.py (Task 10), unchanged.
 """
 import re
 import threading

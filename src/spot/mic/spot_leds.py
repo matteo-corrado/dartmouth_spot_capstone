@@ -1,4 +1,4 @@
-# src/voice_control/spot_leds.py
+# src/spot/mic/spot_leds.py
 """Onboard RGB LED state indicator for the voice pipeline (Stage 2F P7).
 
 Drives Spot's 5 body LED groups via AudioVisualClient. One pulse behavior is
@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 import time
 
-from src.voice_control.voice_state import VoiceState
+from src.spot.core.voice_state import VoiceState
 from src.spot.mic.state_feedback import led_color_for, LED_PERIOD_S
 
 REFRESH_S = 2.0          # re-run cadence; end_time = now + REFRESH_S + margin

@@ -1,4 +1,4 @@
-# src/voice_control/ring_animator.py
+# src/spot/mic/ring_animator.py
 """Single owner of all XVF3800 LED-ring writes.
 
 `show(spec)` never blocks: it swaps the current RingSpec under a lock and

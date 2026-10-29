@@ -15,7 +15,7 @@ import src.spot.core.events as _ev
 import src.spot.mic.ring_control as _ring
 import src.spot.operator.control as _ctl
 import src.spot.safety.listener as _sl
-import src.voice_control.wake.safety_kws as _skws
+import src.spot.safety.kws as _skws
 from src.spot.core.events import EventBus
 from src.spot.features import REGISTRY
 from src.spot.perception.vision import NullVision
@@ -311,7 +311,7 @@ def _patch_robot_close(monkeypatch, log):
 def test_ctrl_c_after_map_stand_sits_and_powers_off(monkeypatch):
     """Ctrl-C after the --map bring-up stood the robot, before run(): the
     shutdown runs once and the robot is sat and powered off."""
-    import src.voice_control.spot_dispatch as sd
+    import src.spot.robot.connection as sd
     seen, log = [], []
     _patch_pipeline(monkeypatch, seen)
     _r = _patch_robot_close(monkeypatch, log)

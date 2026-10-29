@@ -1,4 +1,4 @@
-# src/voice_control/mic_array.py
+# src/spot/mic/xvf3800.py
 """USB control of the reSpeaker XVF3800 mic array (firmware 2.1.1).
 
 Reads speaker direction (DoA) and drives the 12-LED ring via vendor control

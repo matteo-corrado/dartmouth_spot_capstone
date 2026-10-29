@@ -1,4 +1,4 @@
-# src/voice_control/control_server.py
+# src/spot/operator/control_server.py
 """Localhost control endpoint for the operator's laptop CLI (``scripts/spotctl``).
 
 The operator ssh's into the Jetson (Tailscale) and runs ``spotctl <name> [arg]``,
@@ -19,7 +19,7 @@ Integration interface (for client_mic.py)
 ::
 
     import queue
-    from src.voice_control.control_server import ControlServer, drain
+    from src.spot.operator.control_server import ControlServer, drain
 
     ctl_q = queue.Queue()
     srv = ControlServer(port=8770, on_immediate=_on_immediate, queue=ctl_q)

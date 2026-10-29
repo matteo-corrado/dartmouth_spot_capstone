@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import src.spot.features.mouth.handlers as mouth_h
-import src.voice_control.spot_dispatch as d
+import src.spot.robot.dispatcher as d
 from src.spot.features import REGISTRY
 from src.spot.features.mouth import FEATURE
 from tests.spot.features._legacy_sets import LLM_PROMPT_SOURCE, declared_flags, legacy_flags
@@ -24,17 +24,6 @@ def test_registered_and_prompt_lines_verbatim():
         assert spec.grammar_params is None
     assert FEATURE.intent_rules == ()
     assert FEATURE.start is mouth_h.start
-
-
-def test_auto_arm_globals_read_live_through_spot_dispatch(monkeypatch):
-    for name in ("_auto_arm", "_auto_arm_pending"):
-        assert name not in vars(d)  # no stale binding shadows the forward
-        for value in (True, False):
-            monkeypatch.setattr(mouth_h, name, value)
-            assert getattr(d, name) is value
-    sentinel = object()
-    monkeypatch.setattr(mouth_h, "_auto_arm_thread", sentinel)
-    assert d._auto_arm_thread is sentinel
 
 
 def test_core_callbacks_resolve_to_feature():

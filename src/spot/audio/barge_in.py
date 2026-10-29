@@ -1,4 +1,4 @@
-# src/voice_control/barge_in.py
+# src/spot/audio/barge_in.py
 """Pure helpers for the post-TTS detector-state reset (Stage 2F P0a).
 
 No audio device, no threads, no VoiceState — by construction the reset can

@@ -1,7 +1,7 @@
 """Operator control (spotctl): status snapshot, immediate commands, toggles
 and the localhost control server.
 
-Moved from src/voice_control/client_mic.py (Task 10), logic unchanged. The
+Moved from the old client_mic.py (Task 10), logic unchanged. The
 flags it flips are owned by the Conversation (operator mute, crowd mode,
 voiceprint mode/threshold) and the Ring (repaint pending); the HTTP threads
 read/flip them without locks so a slow request can never delay a stop.
@@ -85,7 +85,7 @@ def _toggle(current: bool, arg) -> bool:
 def _start_control_server(ctl_q):
     """Start the localhost control server; None if the port is taken etc."""
     try:
-        from src.voice_control.control_server import ControlServer
+        from src.spot.operator.control_server import ControlServer
         srv = ControlServer(port=8770, on_immediate=_on_immediate, queue=ctl_q)
         srv.start()
         return srv

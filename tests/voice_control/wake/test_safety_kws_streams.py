@@ -9,7 +9,7 @@ import wave
 import numpy as np
 import pytest
 
-import src.voice_control.wake.safety_kws as sk
+import src.spot.safety.kws as sk
 
 FRAME = b"\x00\x00" * 480
 
@@ -167,7 +167,7 @@ def test_create_stream_failure_in_rebirth_propagates():
 
 
 def test_threshold_read_from_tuning(monkeypatch):
-    from src.voice_control import tuning
+    from src.spot.core import tuning
     assert tuning.Tuning().safety_kws_threshold == sk.KEYWORDS_THRESHOLD == 0.25
     monkeypatch.setattr(tuning, "_cached", tuning.Tuning(safety_kws_threshold=0.2))
     assert sk._threshold() == 0.2
@@ -181,7 +181,7 @@ def test_threshold_read_from_tuning(monkeypatch):
 @pytest.mark.parametrize("val,want,warn", [(0.25, 0.25, False), (0.05, 0.05, False), (0.40, 0.40, False),
                                            (0.01, 0.05, True), (0.9, 0.40, True), (-1.0, 0.05, True)])
 def test_threshold_clamped(monkeypatch, capsys, val, want, warn):
-    from src.voice_control import tuning
+    from src.spot.core import tuning
     monkeypatch.setattr(tuning, "_cached", tuning.Tuning(safety_kws_threshold=val))
     assert sk._threshold() == want
     assert ("out of range" in capsys.readouterr().out) is warn

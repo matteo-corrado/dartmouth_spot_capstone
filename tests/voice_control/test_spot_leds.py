@@ -1,8 +1,8 @@
 # tests/voice_control/test_spot_leds.py
 """Unit tests for the StateLeds AV wrapper degrade + dispatch (Stage 2F P7)."""
 import pytest
-from src.voice_control.client_mic import VoiceState
-from src.voice_control.spot_leds import StateLeds
+from src.spot.core.voice_state import VoiceState
+from src.spot.mic.spot_leds import StateLeds
 
 
 class FakeAvClient:

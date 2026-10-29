@@ -1,4 +1,4 @@
-# src/voice_control/state_feedback.py
+# src/spot/mic/state_feedback.py
 """Pure state -> indicator mapping (Stage 2F P6/P7).
 
 No audio device, no robot, no threads. The live loop (client_mic.py) calls
@@ -12,7 +12,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
-from src.voice_control.voice_state import VoiceState
+from src.spot.core.voice_state import VoiceState
 
 # Chime fired when ENTERING a state. None = silent transition.
 # Names map to methods on the audio_feedback `beep` singleton.

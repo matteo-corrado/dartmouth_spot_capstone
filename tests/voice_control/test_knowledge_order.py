@@ -1,4 +1,4 @@
-from src.voice_control import llm_brain
+from src.spot.brain import llm_brain
 
 
 def test_unfilled_template_is_skipped():

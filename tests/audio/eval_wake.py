@@ -77,7 +77,7 @@ def evaluate(make_detector):
 
 
 def main():
-    from src.voice_control.wake import make_wake_detector
+    from src.spot.wake import make_wake_detector
     result = evaluate(make_wake_detector)
     print(json.dumps(result, indent=2))
     # The corpus is ~minutes, so the FAR CI upper bound will be far above 1/hr —

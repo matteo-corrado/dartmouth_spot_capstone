@@ -28,8 +28,8 @@ def _handle_enable_mouth(params, gen=None):
     from src.spot.robot import state as _state
     global _auto_arm, _auto_arm_pending
     try:
-        from src.voice_control.spot_tts import get_tts
-        from src.voice_control.animation.mouth import MouthDriver
+        from src.spot.tts.speaker import get_tts
+        from src.spot.features.mouth.driver import MouthDriver
         tts = get_tts()
         if tts is None:
             print("[Spot] enable_mouth: TTS not initialized")
@@ -83,7 +83,7 @@ def _handle_disable_mouth(params, session=None):
     _auto_arm_pending = False
     _r.ARM.set_talk_resume(False)
     try:
-        from src.voice_control.spot_tts import get_tts
+        from src.spot.tts.speaker import get_tts
         tts = get_tts()
         if tts is not None and tts.mouth is not None:
             tts.mouth.disable()

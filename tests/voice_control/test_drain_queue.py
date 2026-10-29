@@ -1,6 +1,6 @@
 # tests/voice_control/test_drain_queue.py
 """Unit tests for the audio-queue drain partition (Stage 2F P6)."""
-from src.voice_control.client_mic import partition_drain
+from src.spot.audio.capture import partition_drain
 
 
 def test_keep_tail_keeps_last_n_and_reports_dropped():

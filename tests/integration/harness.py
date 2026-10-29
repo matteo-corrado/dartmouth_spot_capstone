@@ -183,7 +183,7 @@ def quiet_tile(pcm: np.ndarray, seconds: float) -> np.ndarray:
 
 def clip_deg(path: Path) -> float:
     """Fixed mic-frame DoA for a clip: circular median of its .doa.csv."""
-    from src.voice_control.speaker_lock import circular_median_deg
+    from src.spot.conversation.speaker_lock import circular_median_deg
     csv_path = Path(path).with_suffix(".doa.csv")
     if not csv_path.exists():
         return DEFAULT_MIC_DEG
@@ -470,8 +470,8 @@ class _Feeder:
     """Main-stream feeder: real-time paced, lock-stepped with the main loop,
     and the virtual clock advances exactly FRAME_S per frame."""
 
-    def __init__(self, cm, cb):
-        self.cm, self.cb = cm, cb
+    def __init__(self, cb):
+        self.cb = cb
         self.n = 0
         self.t_real0 = None
 
@@ -481,8 +481,10 @@ class _Feeder:
         _sleep_until(self.t_real0 + self.n * FRAME_S)
         _H.vnow = _H.vbase + self.n * FRAME_S  # stamp seen by audio_callback
         self.n += 1
-        _one_iteration(self.cm.audio_queue, lambda: self.cb(f, FRAME, None, None))
-        self.cm._safety_q.step()
+        import src.spot.audio.capture as _cap
+        import src.spot.safety.listener as _sl
+        _one_iteration(_cap.CAPTURE.audio_queue, lambda: self.cb(f, FRAME, None, None))
+        _sl.LISTENER._q.step()
 
     def feed(self, pcm):
         for i in range(len(pcm) // FRAME):
@@ -491,21 +493,26 @@ class _Feeder:
     def control(self, name, state):
         """spotctl command, applied on the next loop iteration (virtual time
         does not advance; the real gap re-anchors the real-time pacing)."""
-        _one_iteration(self.cm.audio_queue, lambda: _H.ctl_q.put((name, None)))
-        if self.cm._status["state"] != state or not _H.ctl_q.empty():
+        import src.spot.audio.capture as _cap
+        import src.spot.conversation.loop as _loop
+        _one_iteration(_cap.CAPTURE.audio_queue, lambda: _H.ctl_q.put((name, None)))
+        if _loop.CONVERSATION._status["state"] != state or not _H.ctl_q.empty():
             raise RuntimeError(f"harness: spotctl {name} left state "
-                               f"{self.cm._status['state']} (want {state})")
+                               f"{_loop.CONVERSATION._status['state']} (want {state})")
         self.t_real0 = time.monotonic() - self.n * FRAME_S
 
     def settled(self) -> bool:
-        cm, ep = self.cm, _H.ep
-        return (not cm._mic_gated and cm._mic_reopen_at is None
+        import src.spot.audio.capture as _cap
+        import src.spot.conversation.loop as _loop
+        ep = _H.ep
+        return (not _cap.CAPTURE._mic_gated and _cap.CAPTURE._mic_reopen_at is None
                 and not (ep is not None and ep._in_speech)
-                and cm._status["state"] in ("WAKE_WORD", "LISTENING"))
+                and _loop.CONVERSATION._status["state"] in ("WAKE_WORD", "LISTENING"))
 
 
-def _feed_main(cm, cb):
-    fd = _Feeder(cm, cb)
+def _feed_main(cb):
+    import src.spot.audio.capture as _cap
+    fd = _Feeder(cb)
     try:
         _wait(lambda: _H.waiting and _H.ctl_q is not None, 120.0, "main loop start")
         for key, path in _H.plan:
@@ -523,7 +530,7 @@ def _feed_main(cm, cb):
                 fd.frame(pad[extra * FRAME:(extra + 1) * FRAME])
                 extra += 1
             _H.meta.setdefault("extra_tail_frames", {})[key] = extra
-            _H.hits.setdefault("audio_queue_puts_first_clip", cm.audio_queue.puts)
+            _H.hits.setdefault("audio_queue_puts_first_clip", _cap.CAPTURE.audio_queue.puts)
             fd.control("reset", "WAKE_WORD")
         with _H.lock:
             _H.clip = None
@@ -534,7 +541,7 @@ def _feed_main(cm, cb):
     finally:
         _H.done.set()
         try:
-            queue.Queue.put(cm.audio_queue, _TICK, False)  # wake the loop to exit
+            queue.Queue.put(_cap.CAPTURE.audio_queue, _TICK, False)  # wake the loop to exit
         except Exception:
             pass
 
@@ -546,15 +553,15 @@ class FakeInputStream:
 
     def __init__(self, device=None, channels=2, samplerate=RATE, callback=None,
                  blocksize=FRAME, **k):
-        import src.voice_control.client_mic as cm
-        self._cm, self._cb = cm, callback
+        import src.spot.audio.capture as _cap
+        self._cb = callback
         self._stop = threading.Event()
         self._thread = None
-        self._main = callback is cm.audio_callback
+        self._main = callback is _cap.audio_callback
 
     def start(self):
         if self._main:
-            target = lambda: _feed_main(self._cm, self._cb)  # noqa: E731
+            target = lambda: _feed_main(self._cb)  # noqa: E731
         else:
             def target():
                 while not self._stop.is_set():
@@ -624,12 +631,11 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         mp.setattr(sounddevice, "OutputStream", _forbidden)
         mp.setattr(sounddevice, "play", _forbidden)
         mp.setattr(sounddevice, "rec", _forbidden)
-        from src.voice_control import mic_array
+        from src.spot.mic import xvf3800 as mic_array
         mp.setattr(mic_array.MicArray, "open", classmethod(_forbidden))
 
-        import src.voice_control.client_mic as cm
-        import src.voice_control.control_server as control_server
-        import src.spot.app.main as _app
+        import src.spot.app.main as _app  # first, as the old client_mic import did
+        import src.spot.operator.control_server as control_server
         import src.spot.audio.capture as _cap
         import src.spot.conversation.loop as _loop
         import src.spot.conversation.utterance_log as _ul
@@ -678,14 +684,14 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
         _H.vbase = _H.vnow = time.monotonic()
         for _m in (_cap, _ring, _sl, _loop, _ul, _app):  # every module that reads time
             mp.setattr(_m, "time", _VirtualTime())
-        mp.setattr(_cap.CAPTURE, "audio_queue", LockstepQueue(cm.AUDIO_QUEUE_MAX))
+        mp.setattr(_cap.CAPTURE, "audio_queue", LockstepQueue(_cap.AUDIO_QUEUE_MAX))
         # Safety KWS: lock-stepped behind the main loop, and its 1.5 s
         # refractory window reads the same virtual clock (it defaults to the
         # real one). Run 2 of the un-lock-stepped harness missed/added a
         # safety hit after a refractory window that ended a few frames
         # earlier or later.
-        mp.setattr(_sl.LISTENER, "_q", SafetyLockstepQueue(cm.SAFETY_QUEUE_MAX))
-        real_safety_loop = cm.safety_kws_loop
+        mp.setattr(_sl.LISTENER, "_q", SafetyLockstepQueue(_sl.SAFETY_QUEUE_MAX))
+        real_safety_loop = _sl.safety_kws_loop
 
         def safety_loop(*a, **k):
             k["clock"] = _VirtualTime().monotonic
@@ -708,7 +714,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
 
         # Dry-run's _dispatch_safety returns before execute_on_spot: record
         # here, then run the real one (it only prints in dry-run).
-        real_dispatch_safety = cm._dispatch_safety
+        real_dispatch_safety = _sl._dispatch_safety
 
         def dispatch_safety(intent):
             _H.add({"kind": "dispatch", "intent": intent.get("intent"),
@@ -716,7 +722,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             return real_dispatch_safety(intent)
         mp.setattr(_sl, "_dispatch_safety", dispatch_safety)
 
-        real_enter_state = cm._enter_state
+        real_enter_state = _loop._enter_state
 
         def enter_state(new_state):
             _H.hits["enter_state"] += 1
@@ -724,7 +730,7 @@ def _child(out_path: str, clip_paths: list[str]) -> int:
             return real_enter_state(new_state)
         mp.setattr(_loop, "_enter_state", enter_state)
 
-        real_new_ep = cm._new_endpointer
+        real_new_ep = _cap._new_endpointer
 
         def new_endpointer():
             _H.ep = real_new_ep()  # observed (in_speech) by the feeder, never driven

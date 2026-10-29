@@ -12,8 +12,8 @@ pin the two guards that fix it:
 import threading
 import time
 
-import src.voice_control.llm_brain as llm_brain
-from src.voice_control.llm_brain import LLMBrain
+import src.spot.brain.llm_brain as llm_brain
+from src.spot.brain.llm_brain import LLMBrain
 
 
 class _FakeBackend:
@@ -40,7 +40,7 @@ class _FakeBackend:
 
 
 def _brain(monkeypatch, tmp_path):
-    from src.voice_control.chatbot import conversation_log
+    from src.spot.conversation import conversation_log
     monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
     fake = _FakeBackend()
     monkeypatch.setattr(llm_brain, "_BACKEND", fake)
@@ -80,7 +80,7 @@ def test_process_and_warm_up_never_run_concurrently(monkeypatch, tmp_path):
 
 
 def test_brain_construction_does_not_touch_real_logs(monkeypatch, tmp_path):
-    from src.voice_control.chatbot import conversation_log
+    from src.spot.conversation import conversation_log
     real = conversation_log.DEFAULT_LOG_DIR
     assert real.parts[-2:] == ("logs", "conversations")
     before = sorted(real.glob("*.jsonl")) if real.exists() else []
@@ -92,7 +92,7 @@ def test_brain_construction_does_not_touch_real_logs(monkeypatch, tmp_path):
 
 def test_no_transcript_log_writes_null(tmp_path):
     import json
-    from src.voice_control.chatbot.conversation_log import ConversationLog
+    from src.spot.conversation.conversation_log import ConversationLog
     log = ConversationLog(tmp_path, store_transcript=False)
     log.log_turn("secret", "hi", [], "p", "kokoro", "v", {})
     rec = json.loads(next(tmp_path.glob("*.jsonl")).read_text())

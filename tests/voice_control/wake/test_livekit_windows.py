@@ -1,5 +1,5 @@
 import numpy as np
-from src.voice_control.wake.livekit import embedding_windows, EMBEDDING_WINDOW, EMBEDDING_STRIDE
+from src.spot.wake.livekit import embedding_windows, EMBEDDING_WINDOW, EMBEDDING_STRIDE
 
 
 def test_window_count_and_shape():

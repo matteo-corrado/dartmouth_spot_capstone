@@ -1,5 +1,5 @@
 """B2: TTSChunker decodes JSON string escapes before speaking."""
-from src.voice_control.spot_tts import TTSChunker
+from src.spot.tts.speaker import TTSChunker
 
 
 def test_chunker_decodes_escapes():

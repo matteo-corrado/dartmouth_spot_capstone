@@ -93,11 +93,3 @@ def test_go_to_object_yolo_thread_carries_the_dispatch_gen(monkeypatch):
     monkeypatch.setattr(_r.SAFETY_GEN, "dispatch_current", lambda: 41)
     assert vn_h.handle_go_to_object({"description": "red chair"}, None) is True
     assert spawned == ["cancel", ("visual_nav", 41)]
-
-
-def test_spot_dispatch_reexports_the_moved_helpers():
-    import src.voice_control.spot_dispatch as d
-    assert d._spoken_list is nav_h._spoken_list
-    assert d._handle_list_maps is nav_h._handle_list_maps
-    assert d._handle_list_locations is nav_h._handle_list_locations
-    assert d._is_named_location("waypoint_6") is False and d._is_named_location("desk")

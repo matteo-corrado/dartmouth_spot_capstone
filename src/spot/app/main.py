@@ -7,7 +7,7 @@ Architecture (Boston Dynamics "Robots That Can Chat" style):
 Safety commands (stop/estop/freeze) bypass the LLM for zero-latency execution.
 Everything else goes through the LLM brain which decides what to do AND what to say.
 
-Moved from src/voice_control/client_mic.py (Task 10): CLI args, startup,
+Moved from the old client_mic.py (Task 10): CLI args, startup,
 the shutdown signal handler and the shutdown sequence. The voice loop itself
 is Conversation.run() (src/spot/conversation/loop.py).
 
@@ -40,20 +40,10 @@ try:
 except Exception:
     pass
 
-from src.voice_control.chatbot.persona import get_persona, voice_id_for  # noqa: F401
-
-import re  # noqa: F401
-import glob  # noqa: F401
-import json  # noqa: F401
-import math  # noqa: F401
-import time  # noqa: F401
-import queue  # noqa: F401
-import random  # noqa: F401
+import time  # noqa: F401  (the golden harness patches _app.time)
+import queue
 import signal
 import argparse
-import subprocess  # noqa: F401
-import threading  # noqa: F401
-import numpy as np  # noqa: F401
 import sounddevice as sd
 from sherpa_onnx import VoiceActivityDetector, VadModelConfig, SileroVadModelConfig
 import grpc
@@ -93,27 +83,17 @@ signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 from contextlib import nullcontext
 from types import SimpleNamespace
 
-from src.spot.stt.asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk  # noqa: F401
 from src.spot.stt.asr_pb2_grpc import ASRStub
-from src.spot.brain.intent import parse_intent  # noqa: F401
 from src.spot.brain.llm_brain import LLMBrain, DEFAULT_MODEL
 from src.spot.audio.player import AudioPlayer
 from src.spot.tts.speaker import SpotTTS
 from src.spot.audio.chimes import beep
 from src.spot.core.latency import init_recorder, get_recorder
-from src.voice_control import startup_status  # noqa: F401 — available for later use
-from src.voice_control.response_gate import should_arm_reopen, should_reopen_mic  # noqa: F401
-from src.voice_control.tuning import get_tuning
-from src.voice_control.barge_in import should_reset_after_player  # noqa: F401
-from src.voice_control.audio_frontend import (  # noqa: F401
-    frame_dbfs, FloorTracker, Endpointer, UtteranceStats, passes_gate)
-from src.voice_control.speaker_lock import (  # noqa: F401
-    SpeakerLock, circular_median_deg, mic_to_body_deg)
-from src.voice_control.speaker_embed import VoiceprintGate, warm_up_async  # noqa: F401
+from src.spot.core.tuning import get_tuning
+from src.spot.audio.frontend import FloorTracker
+from src.spot.conversation.voiceprint import warm_up_async
 
 _tuning = get_tuning()
-from src.voice_control.voice_state import VoiceState  # noqa: F401,E402
-from src.voice_control.state_feedback import chime_for, ring_for as _ring_for  # noqa: F401,E402
 
 import src.spot.audio.capture as _cap  # noqa: E402
 import src.spot.conversation.loop as _loop  # noqa: E402
@@ -159,12 +139,12 @@ def cleanup_spot():
     # module-load side effects in a path advertised as robot-free.
     if os.environ.get("SPOT_DRY_RUN") != "1":
         try:
-            from src.voice_control.spot_dispatch import _cancel_nav
+            from src.spot.nav.runner import _cancel_nav
             _cancel_nav()
         except Exception as e:
             print(f"[Spot] cancel_nav error during cleanup: {e}")
         try:
-            from src.voice_control.spot_dispatch import close_spot_session
+            from src.spot.robot.connection import close_spot_session
             close_spot_session()
         except Exception:
             pass
@@ -454,7 +434,7 @@ def _start_audio(args, tuning):
     # In dry-run it only warns; then safety needs a transcript (wake first).
     safety_detector = None
     try:
-        from src.voice_control.wake.safety_kws import make_safety_detector
+        from src.spot.safety.kws import make_safety_detector
         safety_detector = make_safety_detector()
         if not safety_detector.is_available():
             print("[SafetyKWS] UNAVAILABLE — spoken stop/freeze/estop only work via ASR "
@@ -529,7 +509,7 @@ def _close_session_if_up() -> bool:
     import src.spot.robot as _r
     try:
         if _r.CONNECTION._session is not None:
-            from src.voice_control.spot_dispatch import close_spot_session
+            from src.spot.robot.connection import close_spot_session
             close_spot_session()
     except Exception as e:  # noqa: BLE001
         print(f"[Spot] closing the half-up session failed: {e}")
@@ -565,7 +545,7 @@ def _bring_up_robot(args, audio) -> bool:
         if args.map:
             print(f"\n[Spot] Eager session init with map: {args.map}")
             try:
-                from src.voice_control.spot_dispatch import ensure_spot_session
+                from src.spot.robot.connection import ensure_spot_session
                 ensure_spot_session(map_path=args.map)
                 print("[Spot] Map loaded; session standing.")
             except ModuleNotFoundError as e:
@@ -619,8 +599,8 @@ def _start_conversation(args, C, audio, services, tuning):
     if os.environ.get("SPOT_DRY_RUN") == "1":
         C._state_leds = None
     else:
-        from src.voice_control.spot_leds import StateLeds
-        import src.voice_control.spot_dispatch as _spot_dispatch
+        from src.spot.mic.spot_leds import StateLeds
+        import src.spot.robot as _r
 
         def _led_robot():
             # Return the ALREADY-established Spot session's robot, or None.
@@ -630,7 +610,7 @@ def _start_conversation(args, C, audio, services, tuning):
             # LEDs stay off until a real command brings the session up, then
             # activate on the next state change.
             try:
-                sess = getattr(_spot_dispatch, "_spot_session", None)
+                sess = getattr(_r.CONNECTION, "_session", None)
                 return sess["robot"] if sess else None
             except Exception:
                 return None
@@ -682,7 +662,7 @@ def _start_conversation(args, C, audio, services, tuning):
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
-            from src.voice_control.spot_dispatch import set_auto_arm
+            from src.spot.features.mouth.handlers import set_auto_arm
             set_auto_arm(_auto)
         except Exception as e:
             print(f"[client_mic] auto arm setup failed: {e}")

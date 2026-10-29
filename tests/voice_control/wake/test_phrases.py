@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from scripts.setup_kws import build_keyword_lines
-from src.voice_control.wake.phrases import (
+from src.spot.wake.phrases import (
     load_wake_phrases, peak_safe_gain, strip_wake_phrase,
 )
 
@@ -59,7 +59,7 @@ def test_load_wake_phrases(tmp_path):
 
 
 def test_repo_phrase_file_has_operator_phrases():
-    from src.voice_control.wake.phrases import WAKE_PHRASES
+    from src.spot.wake.phrases import WAKE_PHRASES
     assert WAKE_PHRASES == DEMO
 
 
@@ -88,7 +88,7 @@ class _StubSpotter:
 
 
 def _detector():
-    from src.voice_control.wake.sherpa_onnx import WakeWordDetector
+    from src.spot.wake.sherpa_onnx import WakeWordDetector
     det = WakeWordDetector(model_dir="/nonexistent")  # no model -> unavailable
     det._spotter, det._stream, det._available = _StubSpotter(), _StubStream(), True
     return det
@@ -107,7 +107,7 @@ def test_wake_quiet_frame_gets_fixed_x8():
 
 
 def test_wake_loud_frame_scaled_to_target_peak_no_clip():
-    from src.voice_control.wake.sherpa_onnx import TARGET_PEAK
+    from src.spot.wake.sherpa_onnx import TARGET_PEAK
     det = _detector()
     det.process_frame(_pcm(0.4).tobytes())
     sent = det._stream.waves[0]

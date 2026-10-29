@@ -1,7 +1,7 @@
 """client_mic mic gating: chimes don't mute the mic, speech does (Task 8)."""
 import numpy as np
 
-import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
 import src.spot.audio.capture as _cap
 import src.spot.conversation.loop as _loop
 
@@ -18,12 +18,12 @@ class _Player:
 
 
 def _drain():
-    while not cm.audio_queue.empty():
-        cm.audio_queue.get_nowait()
+    while not _cap.CAPTURE.audio_queue.empty():
+        _cap.CAPTURE.audio_queue.get_nowait()
 
 
 def _feed():
-    cm.audio_callback(np.zeros((480, 2), np.float32), 480, None, None)
+    _cap.audio_callback(np.zeros((480, 2), np.float32), 480, None, None)
 
 
 def test_chime_only_does_not_mute(monkeypatch):
@@ -33,7 +33,7 @@ def test_chime_only_does_not_mute(monkeypatch):
     monkeypatch.setattr(_cap.CAPTURE, "_player_last_busy_at", 0.0)
     _drain()
     _feed()
-    assert not cm.audio_queue.empty()
+    assert not _cap.CAPTURE.audio_queue.empty()
     _drain()
 
 
@@ -43,7 +43,7 @@ def test_speech_mutes(monkeypatch):
     monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
     _drain()
     _feed()
-    assert cm.audio_queue.empty()
+    assert _cap.CAPTURE.audio_queue.empty()
 
 
 def test_gate_mutes(monkeypatch):
@@ -52,7 +52,7 @@ def test_gate_mutes(monkeypatch):
     monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", False)
     _drain()
     _feed()
-    assert cm.audio_queue.empty()
+    assert _cap.CAPTURE.audio_queue.empty()
 
 
 def test_gate_does_not_extend_speaker_tail(monkeypatch):
@@ -64,8 +64,8 @@ def test_gate_does_not_extend_speaker_tail(monkeypatch):
     monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", True)
     _drain()
     _feed()
-    assert cm.audio_queue.empty() and cm._player_last_busy_at == 0.0
+    assert _cap.CAPTURE.audio_queue.empty() and _cap.CAPTURE._player_last_busy_at == 0.0
     monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", False)
     _feed()
-    assert not cm.audio_queue.empty()
+    assert not _cap.CAPTURE.audio_queue.empty()
     _drain()

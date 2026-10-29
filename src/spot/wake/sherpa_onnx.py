@@ -6,7 +6,7 @@ Uses sherpa-onnx's zipformer-based keyword spotter (int8, CPU).
 No new dependencies — sherpa-onnx is already installed for TTS.
 
 Usage:
-    from src.voice_control.wake import make_wake_detector
+    from src.spot.wake import make_wake_detector
     det = make_wake_detector()
     if det.process_frame(pcm16_bytes):
         print("Hey Spot detected!")

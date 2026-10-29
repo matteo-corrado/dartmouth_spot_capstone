@@ -42,8 +42,8 @@ import src.spot.core.events as _ev
 # through CUDA. See module docstring for the bug rationale.
 os.environ.setdefault("ONNX_PROVIDER", "CUDAExecutionProvider")
 
-from src.voice_control.audio_player import AudioPlayer
-from src.voice_control.latency import get_recorder
+from src.spot.audio.player import AudioPlayer
+from src.spot.core.latency import get_recorder
 
 # Stage 2E.1: route TTS synth through swappable backend registry.
 import src.spot.tts.kokoro      # noqa: F401  (registers backend)

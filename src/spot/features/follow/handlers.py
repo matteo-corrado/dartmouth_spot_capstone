@@ -15,7 +15,7 @@ def handle_follow_me(params, ctx):
 
     def _follow_thread(ev):
         try:
-            from src.voice_control.visual_nav import follow_person
+            from src.spot.features.visual_nav.navigator import follow_person
             result = follow_person(session, ev)
             if result:
                 print("[Spot] ✓ Follow mode ended cleanly")

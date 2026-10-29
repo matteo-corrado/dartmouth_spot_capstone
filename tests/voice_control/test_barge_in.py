@@ -1,6 +1,6 @@
 # tests/voice_control/test_barge_in.py
 """Unit tests for the barge-in detector-state reset helper (P0a)."""
-from src.voice_control.barge_in import should_reset_after_player, DetectorState
+from src.spot.audio.barge_in import should_reset_after_player, DetectorState
 
 
 def test_edge_fires_only_on_busy_to_idle_with_response_pending():

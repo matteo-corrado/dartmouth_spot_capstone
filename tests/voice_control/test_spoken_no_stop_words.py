@@ -39,13 +39,16 @@ def test_scanner_finds_lines():
 
 
 def test_no_stop_words_in_dispatcher_or_client_spoken_lines():
-    for fname in ("spot_dispatch.py", "client_mic.py"):
-        bad = [s for s in _spoken_literals(ROOT / fname) if BAD.search(s)]
+    # T19: spot_dispatch.py / client_mic.py are gone; every file under
+    # src/spot that speaks (dispatcher, features, conversation loop, ...).
+    spot = ROOT.parent / "spot"
+    for fname in sorted(str(p.relative_to(spot)) for p in spot.rglob("*.py")):
+        bad = [s for s in _spoken_literals(spot / fname) if BAD.search(s)]
         assert bad == [], f"{fname}: {bad}"
 
 
 def test_startup_status_estop_clause_has_no_stop_words():
-    from src.voice_control.startup_status import _estop_clause
+    from src.spot.core.startup_status import _estop_clause
     for state in ({"estop_holders_cut": "web"}, {"estop_endpoints": "panel"}):
         line = _estop_clause(state)
         assert line and not BAD.search(line), line

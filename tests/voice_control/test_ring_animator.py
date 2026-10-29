@@ -1,9 +1,9 @@
 """RingAnimator: fake mic, no hardware."""
 import time
 
-from src.voice_control.mic_array import XvfError
-from src.voice_control.ring_animator import RingAnimator
-from src.voice_control.state_feedback import RingSpec
+from src.spot.mic.xvf3800 import XvfError
+from src.spot.mic.ring_animator import RingAnimator
+from src.spot.mic.state_feedback import RingSpec
 
 
 class FakeMic:

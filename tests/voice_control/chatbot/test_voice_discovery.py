@@ -6,9 +6,9 @@ import pytest
 def test_find_and_claim_returns_voice_id_on_match(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
     # Reset module-level client singleton between tests
-    import src.voice_control.chatbot.voice_discovery as vd
+    import src.spot.brain.voice_discovery as vd
     vd._client = None
-    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+    with patch("src.spot.brain.voice_discovery.ElevenLabs") as MockClient:
         instance = MagicMock()
         MockClient.return_value = instance
         mock_voice = MagicMock(voice_id="library_voice_abc",
@@ -29,9 +29,9 @@ def test_find_and_claim_returns_voice_id_on_match(monkeypatch):
 
 def test_find_and_claim_returns_none_on_no_match(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
-    import src.voice_control.chatbot.voice_discovery as vd
+    import src.spot.brain.voice_discovery as vd
     vd._client = None
-    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+    with patch("src.spot.brain.voice_discovery.ElevenLabs") as MockClient:
         instance = MagicMock()
         MockClient.return_value = instance
         instance.voices.get_shared.return_value = MagicMock(voices=[])
@@ -42,9 +42,9 @@ def test_find_and_claim_returns_none_on_no_match(monkeypatch):
 
 def test_find_and_claim_returns_none_on_api_failure(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
-    import src.voice_control.chatbot.voice_discovery as vd
+    import src.spot.brain.voice_discovery as vd
     vd._client = None
-    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+    with patch("src.spot.brain.voice_discovery.ElevenLabs") as MockClient:
         instance = MagicMock()
         MockClient.return_value = instance
         instance.voices.get_shared.side_effect = Exception("network error")
@@ -54,9 +54,9 @@ def test_find_and_claim_returns_none_on_api_failure(monkeypatch):
 
 def test_lru_eviction_retries_on_quota_fail(monkeypatch):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test_key")
-    import src.voice_control.chatbot.voice_discovery as vd
+    import src.spot.brain.voice_discovery as vd
     vd._client = None
-    with patch("src.voice_control.chatbot.voice_discovery.ElevenLabs") as MockClient:
+    with patch("src.spot.brain.voice_discovery.ElevenLabs") as MockClient:
         instance = MagicMock()
         MockClient.return_value = instance
         mock_voice = MagicMock(voice_id="lib_v", public_owner_id="own", name="V")

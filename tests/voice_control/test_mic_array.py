@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from src.voice_control.mic_array import MicArray, XvfError, decode_read
+from src.spot.mic.xvf3800 import MicArray, XvfError, decode_read
 
 OK_DOA = bytes([0]) + struct.pack("<HH", 0, 0)
 

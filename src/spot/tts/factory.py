@@ -20,6 +20,6 @@ def make_tts(player, volume: float, output_device=None, cls=None):
     # Register the live TTS instance as the module singleton so the LLM
     # set_volume action (in spot_dispatch._handle_set_volume) can find it.
     if tts is not None:
-        import src.voice_control.spot_tts as _spot_tts_mod
+        import src.spot.tts.speaker as _spot_tts_mod
         _spot_tts_mod._tts_instance = tts
     return tts

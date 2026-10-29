@@ -1,7 +1,7 @@
 """Voice gate helpers: DoA speech samples, utterance trimming, the
 conversation clock, and the short-utterance test.
 
-Moved from src/voice_control/client_mic.py (Task 10), unchanged. Pure
+Moved from the old client_mic.py (Task 10), unchanged. Pure
 functions; no state.
 """
 import math
