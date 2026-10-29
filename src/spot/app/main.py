@@ -509,7 +509,11 @@ def _close_session_if_up() -> bool:
     raised) leaves a live session: sit + power it off now, since dry-run
     cleanup never closes the session. True when no session is left; False
     (after a loud line) when the robot is still up. Never raises."""
-    import src.spot.robot as _r
+    # Never import here: with the SDK missing the robot package cannot load
+    # (and then there is no session to close).
+    _r = sys.modules.get("src.spot.robot")
+    if _r is None:
+        return True
     try:
         if _r.CONNECTION._session is not None:
             from src.spot.robot.connection import close_spot_session

@@ -512,3 +512,50 @@ def test_robot_owners_step_runs_before_conversation(monkeypatch):
                         lambda *a, **k: loaded.append("src.spot.robot.dispatcher" in sys.modules))
     _app.main(ARGS)
     assert loaded == [True]
+
+
+def _fresh(code, **env):
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[3]
+    return subprocess.run([sys.executable, "-c", code], cwd=str(root), capture_output=True,
+                          text=True, timeout=120, env=dict(os.environ, **env))
+
+
+def test_cleanup_cancel_nav_in_fresh_process():
+    """Fix round 1: cleanup_spot's cancel step (from src.spot.nav.runner import
+    _cancel_nav) in a process where only src.spot.app.main was imported (a
+    Ctrl-C during startup): no circular-import error, the cancel runs."""
+    out = _fresh("import sys, src.spot.app.main as m; "
+                 "assert 'src.spot.robot' not in sys.modules; "
+                 "from src.spot.nav.runner import _cancel_nav, is_navigating; "
+                 "_cancel_nav(); print('CANCEL_OK', is_navigating())", SPOT_DRY_RUN="1")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CANCEL_OK False" in out.stdout
+    assert "partially initialized" not in out.stdout + out.stderr
+
+
+def test_cleanup_spot_cancel_step_in_fresh_process():
+    out = _fresh("import src.spot.app.main as m; m.cleanup_spot(); print('CLEANUP_DONE')",
+                 SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CLEANUP_DONE" in out.stdout
+    assert "cancel_nav error" not in out.stdout
+
+
+def test_no_sdk_degrades_to_dry_run_in_fresh_process():
+    """Fix round 1: with bosdyn missing, --map bring-up hits ModuleNotFoundError;
+    _close_session_if_up never imports the robot package (never raises), so
+    main degrades to dry-run as at base."""
+    code = ("import sys; sys.modules['bosdyn'] = None; "
+            "import os, src.spot.app.main as m; from types import SimpleNamespace as N; "
+            "print('CLOSE', m._close_session_if_up()); "
+            "a = N(map='m', dry_run=False, allow_no_safety_kws=False); "
+            "ok = m._bring_up_robot(a, N(have_safety_kws=True)); "
+            "print('BRINGUP', ok, a.dry_run, os.environ['SPOT_DRY_RUN'])")
+    out = _fresh(code, SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert "CLOSE True" in out.stdout
+    assert "SDK not installed" in out.stdout
+    assert "BRINGUP True True 1" in out.stdout
