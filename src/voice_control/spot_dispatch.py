@@ -1712,13 +1712,31 @@ NOT_STANDING_LINE = "Ask me to stand up first."
 CANT_SEE_THAT_LINE = "I can't see that from here."
 VISION_DOWN_LINE = "I can't use my cameras right now."
 WARMING_LINE = "My eyes are still warming up. Ask me again in a minute."
+EYES_DOWN_LINE = "My eyes aren't working right now, so I'll stay here."
+SAY_WHICH_LINE = "I'll go to the {label} {where}."
+FRESH_MATCH_DEG = 15.0  # fresh look after selection: same person within this bearing
 _vision_warm = threading.Event()  # client_mic sets it once every model warm-up finished
+_vision_ok = True                 # False: warm-up found the main detector unusable
 
 
-def mark_vision_warm():
+def mark_vision_warm(ok=True):
     """client_mic: the vision models are loaded (or failed); no TensorRT build
-    can hold the runtime's model lock any more, so go-to/follow may start."""
+    can hold the runtime's model lock any more, so go-to/follow may start.
+    ``ok=False``: the main detector is unavailable, go-to/follow say so."""
+    global _vision_ok
+    _vision_ok = bool(ok)
     _vision_warm.set()
+
+
+def _vision_ready(speak) -> bool:
+    """go-to/follow gate: warm and usable, else say why (nothing moves)."""
+    if not _vision_warm.is_set():  # a TensorRT build must never hold _dispatch_lock
+        _say(speak, WARMING_LINE)
+        return False
+    if not _vision_ok:
+        _say(speak, EYES_DOWN_LINE)
+        return False
+    return True
 
 
 def _vision_spoken(text) -> str:
@@ -1728,17 +1746,6 @@ SELECT_GAZE_WAIT_S = 5.0  # max wait for a pose move / the gaze rate limit befor
 
 _last_nav_ok = None          # how the latest vision go-to/follow ended (None = unknown)
 _nav_outcome_token = None    # the run allowed to write _last_nav_ok
-
-_PERSON_RE = re.compile(
-    r"^(?:me|myself|us)$"
-    r"|\b(?:person|people|someone|somebody|man|woman|men|women|guy|girl|boy|lady|"
-    r"gentleman|kid|child|wearing|dressed)\b"
-    r"|\bone (?:in|on|with|wearing|at|to|behind|dressed)\b")
-_CLOTHES_RE = re.compile(
-    r"\b(?:shirt|t-shirt|tshirt|jacket|hoodie|sweater|jumper|coat|dress|hat|cap|jeans|"
-    r"pants|trousers|shorts|skirt|top|scarf|glasses|uniform|vest|suit|blouse)s?\b")
-_LABEL_SPLIT_RE = re.compile(r"\b(?:on|in|at|by|near|next to|beside|behind|under|with|over)\b")
-
 
 def last_nav_ok():
     """True/False: how the latest vision go-to/follow ended (True only on a
@@ -1756,48 +1763,41 @@ def _reset_nav_outcome():
     return token
 
 
-def _clean_phrase(text) -> str:
-    text = re.sub(r"[^\w\s-]", " ", str(text or "").lower())
-    return re.sub(r"\s+", " ", text).strip()
-
-
 def _is_person_phrase(description) -> bool:
-    """"me", "person in red shirt", "the one on the left" -> True; objects -> False."""
-    text = _clean_phrase(description)
-    if _PERSON_RE.search(text):
-        return True
-    from src.voice_control.vision.people import parse_person_description
-    clothing, _side = parse_person_description(text)
-    return bool(clothing and _CLOTHES_RE.search(clothing))
+    """"me", "person in red shirt", "the kids" -> True; objects -> False (vision.phrases)."""
+    from src.voice_control.vision.phrases import is_person_phrase
+    return is_person_phrase(description)
 
 
 def _vision_object_label(description):
-    """("coco"|"yoloe", label) for a go-to object phrase, or None: the whole
-    phrase, then the part before a preposition and its shorter tails
-    ("red chair" -> chair, "the cup on the floor" -> cup)."""
-    from src.voice_control.vision.vocab import resolve_label
-    text = _clean_phrase(description)
-    words = _LABEL_SPLIT_RE.split(text, maxsplit=1)[0].split()
-    for cand in [text] + [" ".join(words[i:]) for i in range(len(words))]:
-        hit = resolve_label(cand) if cand else None
-        if hit:
-            return hit
-    return None
+    """("coco"|"yoloe", label) for a go-to object phrase, or None (vision.phrases)."""
+    from src.voice_control.vision.phrases import object_label
+    return object_label(description)
+
+
+def _wants_person(description) -> bool:
+    """Person path for person phrases AND any phrase whose label is "person"."""
+    from src.voice_control.vision.phrases import wants_person
+    return wants_person(description)
 
 
 def _vision_object_target(session, description, speak):
-    """(nearest detection, label) of the go-to object, or None after saying why."""
+    """(nearest detection, label) of the go-to object, or None after saying why.
+    Never a person: those take the person path (R17/R19 stop distance and
+    fresh-range rules); a "person" label here is refused, nothing moves. When
+    several match, says which one it is going to (spec 6.4)."""
     hit = _vision_object_label(description)
-    if hit is None:
+    if hit is None or hit[1] == "person":
         _say(speak, CANT_SEE_THAT_LINE)
         return None
     kind, label = hit
     try:
         from src.voice_control.vision.cameras import BODY_SOURCES
-        from src.voice_control.vision.world import snapshot
+        from src.voice_control.vision.world import dedupe, snapshot
         model = "yoloe-26l-seg" if kind == "yoloe" else "yolo26l-seg"
         dets = [x for x in snapshot(session["robot"], list(BODY_SOURCES), model=model,
                                     labels={label}) if x.label == label]
+        dets = dedupe(dets)  # overlapping cameras see one object twice
     except Exception as e:
         print(f"[Spot] vision: looking for '{label}' failed: {e}")
         _say(speak, VISION_DOWN_LINE)
@@ -1806,7 +1806,44 @@ def _vision_object_target(session, description, speak):
         _say(speak, CANT_SEE_THAT_LINE)
         return None
     dets.sort(key=lambda x: (x.distance_m is None, x.distance_m or 0.0, -x.conf))
+    if len(dets) > 1:
+        from src.voice_control.vision.cameras import sector
+        where = sector(dets[0].bearing_deg)
+        where = "in front of me" if where == "in front" else where
+        _say(speak, _vision_spoken(SAY_WHICH_LINE.format(label=label, where=where)))
     return dets[0], label
+
+
+def _fresh_person(session, target, phrase, speak, gen):
+    """One fresh look at the selected person right before the first motion
+    (selection can take 5-25 s): the person detection within FRESH_MATCH_DEG
+    of the selected bearing, closest in bearing first, or None after saying
+    why (nothing moves). Silent after a stop."""
+    def say(text):
+        if not _aborted(gen):
+            _say(speak, _vision_spoken(text))
+    try:
+        from src.voice_control.vision.cameras import BODY_SOURCES
+        from src.voice_control.vision.world import _angle_diff, cameras_covering, snapshot
+        sources = cameras_covering(target.bearing_deg) or list(BODY_SOURCES)
+        dets = snapshot(session["robot"], sources, labels={"person"}, with_depth=True)
+    except Exception as e:
+        print(f"[Spot] vision: fresh look at the person failed: {e}")
+        say(VISION_DOWN_LINE)
+        return None
+    if _aborted(gen):
+        return None
+    near = [(_angle_diff(x.bearing_deg, target.bearing_deg), x) for x in dets or ()
+            if x.label == "person"]
+    near = [(off, x) for off, x in near if off <= FRESH_MATCH_DEG]
+    if not near:
+        from src.voice_control.vision.phrases import clean_phrase
+        from src.voice_control.vision.people import MSG_CANT_SEE_YOU
+        me = clean_phrase(phrase) in ("me", "myself", "us")
+        say(MSG_CANT_SEE_YOU if me else CANT_SEE_THAT_LINE)
+        return None
+    near.sort(key=lambda p: (p[0], p[1].distance_m is None, p[1].distance_m or 0.0))
+    return near[0][1]
 
 
 def _selection_gaze(bearing, gen) -> bool:
@@ -1871,7 +1908,8 @@ def _vision_person_target(session, phrase, speak, gen):
         from src.voice_control.vision.people import select_person
         target, msg = select_person(session["robot"], phrase, say,
                                     gaze=lambda b: _selection_gaze(b, gen),
-                                    clock=_gen_clock(gen), sleep=_gen_sleep(gen))
+                                    clock=_gen_clock(gen), sleep=_gen_sleep(gen),
+                                    abort=lambda: _aborted(gen))
     except Exception as e:
         print(f"[Spot] vision: person selection failed: {e}")
         say(VISION_DOWN_LINE)
@@ -1882,7 +1920,9 @@ def _vision_person_target(session, phrase, speak, gen):
         return None
     if target is None:
         say(msg or CANT_SEE_THAT_LINE)
-    return target
+        return None
+    # The selection may be seconds old: walk only toward a fresh sighting.
+    return _fresh_person(session, target, phrase, speak, gen)
 
 
 def _recentre_after_selection(session, gen):
@@ -1907,7 +1947,8 @@ def _start_vision_nav(session, gen, speak, token, mode, run, paused_text) -> boo
         ok = False
         try:
             from src.voice_control.vision.navio import SpotNavIO
-            io = SpotNavIO(session, gen, speak=lambda t: _say(speak, _vision_spoken(t)))
+            io = SpotNavIO(session, gen, speak=lambda t: _say(speak, _vision_spoken(t)),
+                           stop_event=ev)
             res = run(io, ev)
             ok = bool(res.ok)
             print(f"[Spot] vision {mode} ended: ok={ok}")
@@ -2397,13 +2438,12 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # (3) vision package: a person ("me", "person in red shirt") or the
             # nearest detected object. Not found -> say so, nothing moves.
             gen = _dispatch_gen
-            if not _vision_warm.is_set():  # a TensorRT build must never hold _dispatch_lock
-                _say(speak, WARMING_LINE)
+            if not _vision_ready(speak):
                 return False
             if not _standing_and_powered(session):
                 _say(speak, NOT_STANDING_LINE)
                 return False
-            if _is_person_phrase(description):
+            if _wants_person(description):  # incl. "persons", "the kids": never the object path
                 target = _vision_person_target(session, description, speak, gen)
                 label, is_person = "person", True
             else:
@@ -2484,8 +2524,7 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             token = _reset_nav_outcome()
             gen = _dispatch_gen
             print("[Spot] Starting follow mode...")
-            if not _vision_warm.is_set():
-                _say(speak, WARMING_LINE)
+            if not _vision_ready(speak):
                 return False
             if not _standing_and_powered(session):
                 _say(speak, NOT_STANDING_LINE)
