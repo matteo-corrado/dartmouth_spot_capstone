@@ -1,1 +1,1 @@
-"""Spot stt package (placeholder)."""
+"""Speech-to-text service (gRPC server, backends, generated protobuf stubs)."""
