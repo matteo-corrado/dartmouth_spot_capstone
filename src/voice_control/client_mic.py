@@ -332,12 +332,39 @@ def _vision_answer_action(actions):
     return next((a for a in actions or () if a.get("intent") in _VISION_ANSWER_INTENTS), None)
 
 
+EYES_OFF_LINE = "I can't see right now."
+_eyes_robot = None               # read-only robot for camera answers without a session
+_eyes_lock = threading.Lock()
+
+
 def _vision_ack(action) -> str:
     """Stock line spoken while the robot looks (never Gemma's guess)."""
-    what = str((action.get("params") or {}).get("what", "")).replace("_", " ").strip()
+    from src.voice_control.vision.speech import safe_words
+    what = safe_words(str((action.get("params") or {}).get("what", "")).replace("_", " "))
     if action.get("intent") == "find" and what:
         return _FIND_ACK.format(what=what)
     return random.choice(_DESCRIBE_ACKS)
+
+
+def _vision_robot():
+    """Robot for camera answers. Never brings up the motion session (that
+    stands the robot): the live session's robot if there is one, else one
+    cached read-only connection (no lease, no power, no stand). None if
+    neither is reachable."""
+    global _eyes_robot
+    try:
+        from src.voice_control import spot_dispatch as sd
+        sess = sd._spot_session
+        if sess is not None:
+            return sess["robot"]
+        with _eyes_lock:
+            if _eyes_robot is None:
+                from src.session import quick_robot  # same robot-IP setting as spot_session
+                _eyes_robot = quick_robot("spot-voice-eyes")
+            return _eyes_robot
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] no camera connection: {type(e).__name__}: {e}")
+        return None
 
 
 def _run_vision_answer(cmd, params, question):
@@ -345,8 +372,10 @@ def _run_vision_answer(cmd, params, question):
     # Submodule imports (looked up per call): vision.describe / vision.find.
     from src.voice_control.vision.describe import describe
     from src.voice_control.vision.find import find
-    from src.voice_control.spot_dispatch import ensure_spot_session
-    robot = ensure_spot_session()["robot"]
+    from src.voice_control.vision.types import ActionResult
+    robot = _vision_robot()
+    if robot is None:
+        return ActionResult(EYES_OFF_LINE, False)
     if cmd == "find":
         what = str(params.get("what") or params.get("query") or "").replace("_", " ").strip()
         if what:
@@ -2460,7 +2489,8 @@ def _refined_bearing(body):
     try:
         from src.voice_control import spot_dispatch as sd
         sess = sd._spot_session
-        if sess is None or sd.is_navigating() or sd.get_arm_pose() != "talk":
+        if (sess is None or sd.is_navigating() or sd.get_arm_pose() != "talk"
+                or sd._selecting):  # person selection owns the gaze: no GPU work for a no-op
             return body
         from src.voice_control.vision.speaker import refine_speaker_bearing
         b = refine_speaker_bearing(sess["robot"], body)
@@ -2498,10 +2528,16 @@ def _warm_vision_models():
         try:
             m = load_model(name)
             print(f"[Vision] {name} ready ({m.provider})")
-            if name == VISION_WARM_MODELS[0]:
-                _vision_warm.set()
         except Exception as e:  # noqa: BLE001
             print(f"[Vision] {name} warm-up failed: {type(e).__name__}: {e}")
+    # Only now: until every load has finished, the runtime's model lock may be
+    # held by a TensorRT build (go-to/follow refuse, gaze is not refined).
+    _vision_warm.set()
+    try:
+        from src.voice_control.spot_dispatch import mark_vision_warm
+        mark_vision_warm()
+    except Exception as e:  # noqa: BLE001
+        print(f"[Vision] dispatcher warm flag failed: {type(e).__name__}: {e}")
 
 
 def _setup_vision(dry_run: bool) -> None:
@@ -2908,10 +2944,12 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
                         try:
                             with (trace.span("vlm") if trace else nullcontext()):
                                 result = _run_vision_answer(cmd, params, clean)
-                            print(f"\nSPOT (vision): \"{result.text}\"")
+                            from src.voice_control.vision.speech import safe_words
+                            answer = safe_words(result.text)  # never a stop word (self-halt)
+                            print(f"\nSPOT (vision): \"{answer}\"")
                             if tts:
                                 tts.wait()
-                                _say(tts, result.text, voice_id)
+                                _say(tts, answer, voice_id)
                         except Exception as e:
                             beep.error()
                             vlm_error = True

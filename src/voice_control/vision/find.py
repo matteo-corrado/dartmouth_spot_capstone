@@ -5,6 +5,7 @@ import logging
 
 from .cameras import BODY_SOURCES, HAND_SOURCE, capture, distance_words, sector
 from .describe import FRONT_SOURCES, front_images, article
+from .speech import safe_words
 from .types import ActionResult
 from .vlm import ask_vlm
 from .vocab import resolve_label
@@ -35,7 +36,8 @@ def _vlm_check(robot, phrase: str) -> ActionResult:
     images = front_images(frames)
     answer = ask_vlm(FIND_PROMPT.format(phrase=phrase), images, max_tokens=40) if images else None
     if answer and answer.strip().lower().lstrip("\"' ").startswith("yes"):
-        return ActionResult(MAYBE_LINE.format(art=article(phrase), phrase=phrase), True,
+        said = safe_words(phrase) or "one"
+        return ActionResult(MAYBE_LINE.format(art=article(said), phrase=said), True,
                             {"detections": [], "uncertain": True})
     return ActionResult(NO_LINE, False, {"detections": []})
 
@@ -61,7 +63,8 @@ def find(robot, phrase: str) -> ActionResult:
                 dist = NEAR_DIST
             else:
                 dist = FAR_DIST.format(words=distance_words(best.distance_m))
-            text = YES_LINE.format(art=article(name), label=name,
+            said = safe_words(name)  # spoken: e.g. "stop sign" -> "road sign"
+            text = YES_LINE.format(art=article(said), label=said,
                                    where=sector(best.bearing_deg), dist=dist)
             return ActionResult(text, True, {"detections": dets})
     return _vlm_check(robot, phrase)

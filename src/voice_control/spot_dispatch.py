@@ -1105,6 +1105,8 @@ GAZE_MIN_INTERVAL_S = 2.0   # ... and at most this often
 GAZE_BEHIND_DEG = 150.0     # a speaker this far behind is ambiguous: ignore
 GAZE_HARD_MAX_DEG = 60.0    # code cap on tuning gaze_max_deg (arm reach, safety review)
 GAZE_RPC_TIMEOUT_S = 0.5    # < SAFETY_LOCK_TIMEOUT_S: a stop's stow never loses the lock race
+SELECT_AIM_TOL_DEG = 4.0    # person selection: re-aim unless already this close
+_selecting = False          # person selection owns the gaze: other gaze requests are no-ops
 
 
 def gaze_sh0_deg(body_deg, max_deg: float):
@@ -1124,7 +1126,7 @@ def gaze_sh0_deg(body_deg, max_deg: float):
     return max(-max_deg, min(max_deg, b))
 
 
-def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
+def gaze_at_bearing(body_deg: float | None, gen=None, *, selection: bool = False) -> bool:
     """Turn the folded arm (shoulder yaw sh0, slow joint move) toward a
     body-frame bearing. None -> back to centre.
 
@@ -1133,11 +1135,14 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
     > 15 deg and >= 2 s since the last gaze). Sent under _arm_lock after
     re-checking the pose and the safety generation, so a stop always wins and
     no gaze follows a stop's stow. Non-blocking; never brings up a session;
-    never raises.
+    never raises. While a person selection runs (_selecting) only its own
+    aims (selection=True, 4 deg min change) are sent; other requests no-op.
     """
     global _gaze_deg, _gaze_t
     sess = _spot_session
     if sess is None or _closing or _arm_pose != "talk" or is_navigating():
+        return False
+    if _selecting and not selection:
         return False
     try:
         import math
@@ -1156,7 +1161,8 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
             return False  # the arm is still folding / re-centring
         last = _gaze_deg
         if last is not None:
-            if abs(target - last) <= GAZE_MIN_CHANGE_DEG and not (target == 0.0 and last != 0.0):
+            min_change = SELECT_AIM_TOL_DEG if selection else GAZE_MIN_CHANGE_DEG
+            if abs(target - last) <= min_change and not (target == 0.0 and last != 0.0):
                 return False
             if now - _gaze_t < GAZE_MIN_INTERVAL_S:
                 return False
@@ -1165,7 +1171,7 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
         with _arm_lock:
             if (_aborted(gen) or _closing or _arm_pose != "talk" or is_navigating()
-                    or time.monotonic() < _arm_settle_until):
+                    or time.monotonic() < _arm_settle_until or (_selecting and not selection)):
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
             _gaze_deg, _gaze_t = target, now
@@ -1705,6 +1711,19 @@ def _dispatch_locomotion(intent, brain=None, speak=None):
 NOT_STANDING_LINE = "Ask me to stand up first."
 CANT_SEE_THAT_LINE = "I can't see that from here."
 VISION_DOWN_LINE = "I can't use my cameras right now."
+WARMING_LINE = "My eyes are still warming up. Ask me again in a minute."
+_vision_warm = threading.Event()  # client_mic sets it once every model warm-up finished
+
+
+def mark_vision_warm():
+    """client_mic: the vision models are loaded (or failed); no TensorRT build
+    can hold the runtime's model lock any more, so go-to/follow may start."""
+    _vision_warm.set()
+
+
+def _vision_spoken(text) -> str:
+    from src.voice_control.vision.speech import safe_words
+    return safe_words(text)
 SELECT_GAZE_WAIT_S = 5.0  # max wait for a pose move / the gaze rate limit before an aim
 
 _last_nav_ok = None          # how the latest vision go-to/follow ended (None = unknown)
@@ -1791,9 +1810,20 @@ def _vision_object_target(session, description, speak):
 
 
 def _selection_gaze(bearing, gen) -> bool:
-    """gaze_at_bearing for person selection (dispatch thread): first waits,
-    bounded and stop-aware, for a pose move in flight and the gaze rate limit;
-    an arm already aimed within GAZE_MIN_CHANGE_DEG counts as aimed."""
+    """gaze_at_bearing for person selection (dispatch thread). False (so
+    select_person falls back to a raised hand) for a bearing past the gaze
+    clamp, after a stop, or if the aim did not happen. First waits, bounded
+    and stop-aware, for a pose move in flight and the gaze rate limit; an arm
+    already within SELECT_AIM_TOL_DEG counts as aimed."""
+    import math
+    try:
+        from src.voice_control.tuning import get_tuning
+        max_deg = min(float(get_tuning().gaze_max_deg), GAZE_HARD_MAX_DEG)
+        b = ((float(bearing) + 180.0) % 360.0) - 180.0
+    except Exception:
+        return False
+    if not math.isfinite(b) or max_deg <= 0 or abs(b) > max_deg:
+        return False  # the gripper can't look there: never crop someone else
     end = time.monotonic() + SELECT_GAZE_WAIT_S
     while not _aborted(gen):
         now = time.monotonic()
@@ -1803,30 +1833,55 @@ def _selection_gaze(bearing, gen) -> bool:
         time.sleep(min(0.05, ready - now))
     if _aborted(gen):
         return False
-    if gaze_at_bearing(bearing, gen):
+    if gaze_at_bearing(b, gen, selection=True):
         return True
-    try:
-        from src.voice_control.tuning import get_tuning
-        target = gaze_sh0_deg(bearing, min(float(get_tuning().gaze_max_deg), GAZE_HARD_MAX_DEG))
-    except Exception:
-        return False
     last = _gaze_deg
-    return (target is not None and last is not None and _arm_pose == "talk"
-            and abs(target - last) <= GAZE_MIN_CHANGE_DEG)
+    return last is not None and _arm_pose == "talk" and abs(b - last) <= SELECT_AIM_TOL_DEG
+
+
+def _gen_sleep(gen):
+    """sleep(s) that returns early once a stop arrived since ``gen``."""
+    def sleep(secs):
+        end = time.monotonic() + max(0.0, float(secs))
+        while not _aborted(gen):
+            left = end - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(0.05, left))
+    return sleep
+
+
+def _gen_clock(gen):
+    """monotonic clock that jumps to +inf after a stop, ending any timed wait."""
+    import math
+    return lambda: math.inf if _aborted(gen) else time.monotonic()
 
 
 def _vision_person_target(session, phrase, speak, gen):
-    """The person ``phrase`` means, or None after saying why (people.select_person)."""
+    """The person ``phrase`` means, or None after saying why (people.select_person).
+    Selection owns the gaze meanwhile; after a stop nothing more is said."""
+    global _selecting
+
+    def say(text):
+        if not _aborted(gen):
+            _say(speak, _vision_spoken(text))
+
+    _selecting = True
     try:
         from src.voice_control.vision.people import select_person
-        target, msg = select_person(session["robot"], phrase, lambda t: _say(speak, t),
-                                    gaze=lambda b: _selection_gaze(b, gen))
+        target, msg = select_person(session["robot"], phrase, say,
+                                    gaze=lambda b: _selection_gaze(b, gen),
+                                    clock=_gen_clock(gen), sleep=_gen_sleep(gen))
     except Exception as e:
         print(f"[Spot] vision: person selection failed: {e}")
-        _say(speak, VISION_DOWN_LINE)
+        say(VISION_DOWN_LINE)
+        return None
+    finally:
+        _selecting = False
+    if _aborted(gen):
         return None
     if target is None:
-        _say(speak, msg or CANT_SEE_THAT_LINE)
+        say(msg or CANT_SEE_THAT_LINE)
     return target
 
 
@@ -1841,7 +1896,7 @@ def _recentre_after_selection(session, gen):
     _hold_gaze()
 
 
-def _start_vision_nav(session, gen, speak, token, mode, run) -> bool:
+def _start_vision_nav(session, gen, speak, token, mode, run, paused_text) -> bool:
     """Run ``run(io, stop_event) -> ActionResult`` as THE nav thread. ``gen`` is
     the safety generation taken at request time (never read at pickup). The
     thread speaks the outcome (not "I paused.": the stop path already
@@ -1851,14 +1906,13 @@ def _start_vision_nav(session, gen, speak, token, mode, run) -> bool:
         global _last_nav_ok
         ok = False
         try:
-            from src.voice_control.vision.goto import TEXTS as GOTO_TEXTS
             from src.voice_control.vision.navio import SpotNavIO
-            io = SpotNavIO(session, gen, speak=lambda t: _say(speak, t))
+            io = SpotNavIO(session, gen, speak=lambda t: _say(speak, _vision_spoken(t)))
             res = run(io, ev)
             ok = bool(res.ok)
             print(f"[Spot] vision {mode} ended: ok={ok}")
-            if res.text and res.text != GOTO_TEXTS["paused"] and not ev.is_set():
-                _say(speak, res.text)
+            if res.text and res.text != paused_text and not ev.is_set():
+                _say(speak, _vision_spoken(res.text))
         except Exception as e:
             print(f"[Spot] ✗ vision {mode} failed: {e}")
         finally:
@@ -2343,6 +2397,9 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             # (3) vision package: a person ("me", "person in red shirt") or the
             # nearest detected object. Not found -> say so, nothing moves.
             gen = _dispatch_gen
+            if not _vision_warm.is_set():  # a TensorRT build must never hold _dispatch_lock
+                _say(speak, WARMING_LINE)
+                return False
             if not _standing_and_powered(session):
                 _say(speak, NOT_STANDING_LINE)
                 return False
@@ -2356,12 +2413,13 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             if target is None or _aborted(gen):
                 return False
             _recentre_after_selection(session, gen)
-            from src.voice_control.vision.goto import goto as vision_goto
+            from src.voice_control.vision.goto import TEXTS as GOTO_TEXTS, goto as vision_goto
             print(f"[Spot] Going to the {label} ({target.bearing_deg:+.0f} deg, "
                   f"{target.distance_m} m)")
             return _start_vision_nav(
                 session, gen, speak, token, "visual_nav",
-                lambda io, ev: vision_goto(io, target, label, is_person, ev))
+                lambda io, ev: vision_goto(io, target, label, is_person, ev),
+                GOTO_TEXTS["paused"])
 
         elif name == "check_obstacles":
             # Query Spot's native LocalGrid obstacle field via the
@@ -2426,6 +2484,9 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             token = _reset_nav_outcome()
             gen = _dispatch_gen
             print("[Spot] Starting follow mode...")
+            if not _vision_warm.is_set():
+                _say(speak, WARMING_LINE)
+                return False
             if not _standing_and_powered(session):
                 _say(speak, NOT_STANDING_LINE)
                 return False
@@ -2433,10 +2494,11 @@ def _dispatch_core(intent, brain=None, speak=None, session=None):
             if target is None or _aborted(gen):
                 return False
             _recentre_after_selection(session, gen)
-            from src.voice_control.vision.follow import follow as vision_follow
+            from src.voice_control.vision.follow import TEXTS as FOLLOW_TEXTS, follow as vision_follow
             return _start_vision_nav(
                 session, gen, speak, token, "follow",
-                lambda io, ev: vision_follow(io, target, ev))
+                lambda io, ev: vision_follow(io, target, ev),
+                FOLLOW_TEXTS["paused"])
 
         elif name == "set_speed":
             # Set movement speed (affects subsequent commands)

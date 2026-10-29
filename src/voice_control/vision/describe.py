@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from .cameras import HAND_SOURCE, capture, sector
+from .speech import safe_words
 from .stitch import stitch_front
 from .types import ActionResult, CameraFrame, Detection
 from .vlm import ask_vlm, encode_jpeg
@@ -65,7 +66,8 @@ def also_line(dets: list[Detection], max_items: int = 3) -> str:
     ranked = sorted(best.values(), key=lambda d: (d.label != "person", -d.conf))[:max_items]
     if not ranked:
         return OFFER_LINE
-    items = [f"{article(d.label)} {d.label} {sector(d.bearing_deg)}" for d in ranked]
+    labels = [safe_words(d.label) for d in ranked]  # spoken: e.g. "stop sign" -> "road sign"
+    items = [f"{article(lab)} {lab} {sector(d.bearing_deg)}" for lab, d in zip(labels, ranked)]
     joined = items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
     return ALSO_LINE.format(items=joined)
 

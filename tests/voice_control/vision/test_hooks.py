@@ -86,6 +86,9 @@ def fake(monkeypatch):
     monkeypatch.setattr(d, "_list_saved_locations", lambda: {})
     wo = importlib.import_module("src.voice_control.world_objects")
     monkeypatch.setattr(wo, "find_navigation_target", lambda robot, desc: None)
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    d.mark_vision_warm()
+    monkeypatch.setattr(d, "_selecting", False)
     yield sess
     d._cancel_nav()
 
@@ -215,7 +218,7 @@ def test_go_to_object_person_uses_select_person(fake, monkeypatch):
     target = _det(label="person", dist=3.0)
     got = {}
 
-    def select(robot, phrase, speak, gaze):
+    def select(robot, phrase, speak, gaze, **kw):
         got.update(phrase=phrase, robot=robot)
         speak("Can you raise your hand?")
         return target, None
@@ -233,7 +236,7 @@ def test_go_to_object_person_uses_select_person(fake, monkeypatch):
 def test_select_person_message_spoken_and_no_motion(fake, monkeypatch):
     rec = Rec(ActionResult("I'm here.", True))
     monkeypatch.setattr(G, "goto", rec.goto)
-    monkeypatch.setattr(P, "select_person", lambda robot, phrase, speak, gaze: (None, P.MSG_CANT_SEE_YOU))
+    monkeypatch.setattr(P, "select_person", lambda robot, phrase, speak, gaze, **kw: (None, P.MSG_CANT_SEE_YOU))
     said = []
     assert d.dispatch_intent({"intent": "go_to_object", "params": {"description": "me"}},
                              speak=said.append) is False
@@ -246,7 +249,7 @@ def test_follow_me_selects_speaker_and_follows(fake, monkeypatch):
     target = _det(label="person", dist=2.5)
     phrases = []
     monkeypatch.setattr(P, "select_person",
-                        lambda robot, phrase, speak, gaze: phrases.append(phrase) or (target, None))
+                        lambda robot, phrase, speak, gaze, **kw: phrases.append(phrase) or (target, None))
     said = []
     gen = d._safety_gen
     assert d.dispatch_intent({"intent": "follow_me", "params": {}}, speak=said.append) is True
@@ -284,7 +287,7 @@ def test_stop_during_selection_prevents_motion(fake, monkeypatch):
     rec = Rec(ActionResult("I'm here.", True))
     monkeypatch.setattr(G, "goto", rec.goto)
 
-    def select(robot, phrase, speak, gaze):
+    def select(robot, phrase, speak, gaze, **kw):
         d.dispatch_intent({"intent": "stop", "params": {}})  # a stop lands mid-selection
         return _det(label="person"), None
     monkeypatch.setattr(P, "select_person", select)
@@ -297,7 +300,7 @@ def test_selection_gaze_recentred_before_walking(fake, monkeypatch):
     rec = Rec(ActionResult("I'm here.", True))
     monkeypatch.setattr(G, "goto", rec.goto)
 
-    def select(robot, phrase, speak, gaze):
+    def select(robot, phrase, speak, gaze, **kw):
         d._gaze_deg = 40.0  # the selection aimed the gripper at a candidate
         return _det(label="person"), None
     monkeypatch.setattr(P, "select_person", select)
@@ -333,22 +336,117 @@ def test_superseded_run_does_not_overwrite_outcome(fake, monkeypatch):
 
 def test_selection_gaze_waits_for_settle_and_counts_already_aimed(fake, monkeypatch):
     calls = []
-    monkeypatch.setattr(d, "gaze_at_bearing", lambda b, gen=None: calls.append(time.monotonic()) or True)
+    monkeypatch.setattr(d, "gaze_at_bearing",
+                        lambda b, gen=None, selection=False: calls.append((time.monotonic(), selection)) or True)
     t0 = time.monotonic()
     monkeypatch.setattr(d, "_arm_settle_until", t0 + 0.3)
     monkeypatch.setattr(d, "_gaze_t", 0.0)
     assert d._selection_gaze(20.0, d._safety_gen) is True
-    assert calls and calls[0] >= t0 + 0.3
-    # already looking within the min-change band: aimed, nothing sent
-    monkeypatch.setattr(d, "gaze_at_bearing", lambda b, gen=None: False)
-    monkeypatch.setattr(d, "_gaze_deg", 25.0)
+    assert calls and calls[0][0] >= t0 + 0.3 and calls[0][1] is True
+    # the aim was refused: aimed only if already within 4 deg
+    monkeypatch.setattr(d, "gaze_at_bearing", lambda b, gen=None, selection=False: False)
+    monkeypatch.setattr(d, "_gaze_deg", 23.0)
     assert d._selection_gaze(20.0, d._safety_gen) is True
-    assert d._selection_gaze(-30.0, d._safety_gen) is False
+    assert d._selection_gaze(12.0, d._safety_gen) is False   # 11 deg off: not the same person
     # a stop since the request: refused without waiting
     monkeypatch.setattr(d, "_arm_settle_until", time.monotonic() + 30)
     t = time.monotonic()
     assert d._selection_gaze(20.0, d._safety_gen - 1) is False
     assert time.monotonic() - t < 0.5
+
+
+def test_selection_gaze_refuses_past_the_clamp(fake, monkeypatch):
+    monkeypatch.setattr(d, "gaze_at_bearing", lambda *a, **k: pytest.fail("no aim past the clamp"))
+    from src.voice_control.tuning import get_tuning
+    limit = min(float(get_tuning().gaze_max_deg), d.GAZE_HARD_MAX_DEG)
+    monkeypatch.setattr(d, "_gaze_deg", limit)  # arm sits at the clamp
+    assert d._selection_gaze(limit + 5.0, d._safety_gen) is False
+    assert d._selection_gaze(-(limit + 20.0), d._safety_gen) is False
+    assert d._selection_gaze(400.0 + limit, d._safety_gen) is False  # wrapped: still past it
+
+
+def _gaze_ready(monkeypatch):
+    monkeypatch.setattr(d, "_arm_settle_until", 0.0)
+    monkeypatch.setattr(d, "_gaze_t", 0.0)
+    monkeypatch.setattr(d, "_standing_and_powered", lambda s: True)
+
+
+def test_gaze_requests_blocked_while_selecting(fake, monkeypatch):
+    _gaze_ready(monkeypatch)
+    monkeypatch.setattr(d, "_selecting", True)
+    assert d.gaze_at_bearing(10.0, d._safety_gen) is False          # e.g. the client_mic gaze worker
+    assert "arm_joints" not in fake["cmd"].kinds()
+    assert d.gaze_at_bearing(10.0, d._safety_gen, selection=True) is True  # selection's own aim
+    assert fake["cmd"].kinds() == ["arm_joints"]
+    # selection re-aims at 4+ deg (not the 15 deg band of speaker gaze)
+    monkeypatch.setattr(d, "_gaze_t", 0.0)
+    assert d.gaze_at_bearing(16.0, d._safety_gen, selection=True) is True
+
+
+def test_selecting_flag_held_during_selection_only(fake, monkeypatch):
+    seen = []
+
+    def select(robot, phrase, speak, gaze, **kw):
+        seen.append(d._selecting)
+        return None, P.MSG_NOT_SURE
+    monkeypatch.setattr(P, "select_person", select)
+    d.dispatch_intent({"intent": "go_to_object", "params": {"description": "me"}})
+    assert seen == [True] and d._selecting is False
+
+    def boom(*a, **k):
+        raise RuntimeError("cuda")
+    monkeypatch.setattr(P, "select_person", boom)
+    d.dispatch_intent({"intent": "go_to_object", "params": {"description": "me"}})
+    assert d._selecting is False
+
+
+def test_stop_during_selection_ends_waits_and_speech(fake, monkeypatch):
+    said, timing = [], {}
+
+    def select(robot, phrase, speak, gaze, clock, sleep):
+        d.dispatch_intent({"intent": "stop", "params": {}})
+        t = time.monotonic()
+        sleep(5.0)                       # e.g. the raised-hand wait / gaze settle
+        timing["slept"] = time.monotonic() - t
+        timing["clock"] = clock()
+        speak(P.ASK_HAND)
+        return None, P.MSG_FEW_PEOPLE
+    monkeypatch.setattr(P, "select_person", select)
+    assert d.dispatch_intent({"intent": "go_to_object", "params": {"description": "me"}},
+                             speak=said.append) is False
+    assert timing["slept"] < 0.5 and timing["clock"] == float("inf")
+    assert said == [] and not d.is_navigating()
+
+
+def test_go_to_and_follow_refuse_until_warm(fake, monkeypatch):
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
+    monkeypatch.setattr(W, "snapshot", lambda *a, **k: pytest.fail("must not look"))
+    monkeypatch.setattr(P, "select_person", lambda *a, **k: pytest.fail("must not look"))
+    for intent in ({"intent": "go_to_object", "params": {"description": "chair"}},
+                   {"intent": "follow_me", "params": {}}):
+        said = []
+        assert d.dispatch_intent(intent, speak=said.append) is False
+        assert said == [d.WARMING_LINE] and not d.is_navigating()
+    assert "mobility" not in fake["cmd"].kinds()
+
+
+def test_follow_paused_text_compared_with_follow_texts(fake, monkeypatch):
+    monkeypatch.setattr(FO, "TEXTS", dict(FO.TEXTS, paused="Holding still now."))
+    monkeypatch.setattr(FO, "follow", Rec(ActionResult("Holding still now.", False)).follow)
+    monkeypatch.setattr(P, "select_person", lambda *a, **k: (_det(label="person"), None))
+    said = []
+    d.dispatch_intent({"intent": "follow_me", "params": {}}, speak=said.append)
+    _join_nav()
+    assert said == []
+
+
+def test_spoken_vision_results_are_scrubbed(fake, monkeypatch):
+    monkeypatch.setattr(G, "goto", Rec(ActionResult("I reached the stop sign. Halting.", True)).goto)
+    monkeypatch.setattr(W, "snapshot", lambda *a, **k: [_det()])
+    said = []
+    d.dispatch_intent({"intent": "go_to_object", "params": {"description": "chair"}}, speak=said.append)
+    _join_nav()
+    assert said == ["I reached the road sign."]
 
 
 def test_new_spoken_lines_have_no_stop_words():
@@ -416,7 +514,8 @@ def _turn(monkeypatch, actions, response="", transcript="do you see a backpack",
 @pytest.fixture
 def robot(monkeypatch):
     r = object()
-    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: {"robot": r})
+    monkeypatch.setattr(d, "_spot_session", {"robot": r})
+    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("answers never stand the robot"))
     return r
 
 
@@ -472,6 +571,13 @@ def test_token_watch_suppresses_find_reply():
         w('{"actions": [{"action": "%s", "params": {}}], ' % name)
         w('"response": "Yes I see it')
         assert c.suppressed is True
+    # conversation-only and motion replies still stream
+    for head in ('{"actions": [], ', '{"actions": [{"action": "go_to_object", "params": {}}], '):
+        c = Chunker()
+        w = cm._TokenWatch(c)
+        w(head)
+        w('"response": "Sure thing')
+        assert c.suppressed is False and any("Sure" in g for g in c.got)
 
 
 def test_chain_breaks_on_failed_goto(monkeypatch):
@@ -560,18 +666,20 @@ def test_setup_vision_registers_getter_and_warms(monkeypatch):
 
     def load(name):
         loaded.append(name)
+        assert not cm._vision_warm.is_set() and not d._vision_warm.is_set()  # not warm mid-build
         if name == "yolo26l-pose":
             raise RuntimeError("engine build failed")
         return type("M", (), {"provider": "trt"})()
     monkeypatch.setattr(RT, "load_model", load)
     monkeypatch.setattr(cm, "_vision_warm", threading.Event())
+    monkeypatch.setattr(d, "_vision_warm", threading.Event())
     monkeypatch.setattr(cm.threading, "Thread", T)
     monkeypatch.setitem(cm._status, "locked_deg", 42.0)
     monkeypatch.setattr(SP, "_getter", None)
     cm._setup_vision(dry_run=False)
     assert SP.speaker_bearing() == 42.0
     assert loaded == ["yolo26l-seg", "yolo26l-pose", "yoloe-26l-seg"]  # errors don't end warm-up
-    assert started == [True] and cm._vision_warm.is_set()
+    assert started == [True] and cm._vision_warm.is_set() and d._vision_warm.is_set()
 
 
 def test_setup_vision_dry_run_skips_warmup(monkeypatch):
@@ -587,3 +695,86 @@ def test_package_reexports():
     for name in ("describe", "find", "refine_speaker_bearing", "set_speaker_bearing_getter",
                  "goto", "follow", "select_person"):
         assert callable(getattr(V, name)), name
+
+
+# ----------------------------------------------------------------- fix round 1
+SPW = importlib.import_module("src.voice_control.vision.speech")
+
+
+@pytest.mark.parametrize("text,out", [
+    ("stop sign", "road sign"), ("two Stop-Signs here", "two road signs here"),
+    ("Let me look for the stop...", "Let me look for the..."),
+    ("I halted near the e-stop, then froze.", "I near the, then."),
+    ("a backpack", "a backpack"), ("", "")])
+def test_safe_words(text, out):
+    assert SPW.safe_words(text) == out
+    assert not BAD.search(SPW.safe_words(text))
+
+
+def test_stop_sign_question_never_says_stop(monkeypatch, robot):
+    """"Do you see a stop sign?": ack, detector answer and VLM fallback stay clean."""
+    sign = _det(label="stop sign", dist=3.0, bearing=170.0, source="back_fisheye_image")
+    monkeypatch.setattr(FI, "snapshot", lambda *a, **k: [sign])
+    tts = FakeTTS()
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "stop sign"}}],
+          response="Yes, a stop sign!", transcript="do you see a stop sign", tts=tts)
+    assert len(tts.said) == 2 and "road sign" in tts.said[1]
+    assert not any(BAD.search(t) for t in tts.said), tts.said
+    # not detected -> VLM "yes" -> MAYBE line with the phrase
+    monkeypatch.setattr(FI, "snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(FI, "capture", lambda *a, **k: {})
+    monkeypatch.setattr(FI, "front_images", lambda f: [b"jpg"])
+    monkeypatch.setattr(FI, "ask_vlm", lambda *a, **k: "Yes.")
+    res = FI.find(robot, "big stop sign")
+    assert res.ok and "road sign" in res.text and not BAD.search(res.text)
+    # describe's also-line names YOLO labels
+    line = DE.also_line([sign])
+    assert "road sign" in line and not BAD.search(line)
+
+
+def test_vision_answer_text_scrubbed(monkeypatch, robot):
+    monkeypatch.setattr(DE, "describe", lambda rb, side="front", question="":
+                        ActionResult("There's a stop sign, so I'd halt here.", True))
+    tts = FakeTTS()
+    _turn(monkeypatch, [{"intent": "describe", "params": {}}], transcript="what do you see", tts=tts)
+    assert not any(BAD.search(t) for t in tts.said), tts.said
+
+
+@pytest.fixture
+def no_session(monkeypatch):
+    monkeypatch.setattr(d, "_spot_session", None)
+    monkeypatch.setattr(d, "ensure_spot_session", lambda *a, **k: pytest.fail("answers never stand the robot"))
+    monkeypatch.setattr(cm, "_eyes_robot", None)
+    sess_mod = importlib.import_module("src.session")
+    made = []
+
+    def quick(name, **kw):
+        made.append((name, kw))
+        return "EYES"
+    monkeypatch.setattr(sess_mod, "quick_robot", quick)
+    return made
+
+
+def test_vision_answers_use_read_only_robot_without_session(monkeypatch, no_session):
+    got = []
+    monkeypatch.setattr(FI, "find", lambda rb, what: got.append(rb) or ActionResult("No.", False))
+    monkeypatch.setattr(DE, "describe", lambda rb, side="front", question="":
+                        got.append(rb) or ActionResult("A wall.", True))
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=FakeTTS())
+    _turn(monkeypatch, [{"intent": "describe", "params": {}}], tts=FakeTTS())
+    _turn(monkeypatch, [{"intent": "look_around", "params": {}}], tts=FakeTTS())
+    assert got == ["EYES"] * 3
+    assert no_session == [("spot-voice-eyes", {})]  # one cached connection, default robot IP
+
+
+def test_vision_answer_without_any_robot_says_so(monkeypatch, no_session):
+    sess_mod = importlib.import_module("src.session")
+
+    def down(name, **kw):
+        raise ConnectionError("no route")
+    monkeypatch.setattr(sess_mod, "quick_robot", down)
+    monkeypatch.setattr(FI, "find", lambda *a: pytest.fail("no robot, no look"))
+    tts = FakeTTS()
+    _turn(monkeypatch, [{"intent": "find", "params": {"what": "cup"}}], tts=tts)
+    assert tts.said[-1] == cm.EYES_OFF_LINE
+    assert not BAD.search(cm.EYES_OFF_LINE) and not BAD.search(d.WARMING_LINE)
