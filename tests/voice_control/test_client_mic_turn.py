@@ -45,7 +45,7 @@ def test_raw_safety_first(monkeypatch):
 
 
 def test_filler_only_skipped(monkeypatch):
-    monkeypatch.setattr(cm, "is_filler_only", lambda t: True)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: True)
     r, sent, info = _run(monkeypatch, "um uh hmm", has_wake_detector=True)
     assert sent == [] and not info.get("reached_llm")
 
@@ -148,7 +148,7 @@ def test_fuzzy_wake_strip_reaches_regex(monkeypatch):
     seen = []
     monkeypatch.setattr(cm, "WAKE_PHRASES", ["HELLO SPOTTY"])
     monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
     r, sent, info = _run(monkeypatch, "hello spotted sit down", has_wake_detector=True)
     assert seen == ["sit down"] and info["reached_llm"]
 
@@ -161,7 +161,7 @@ def test_asr_fallback_bare_wake_phrase(monkeypatch):
 def test_no_strip_mid_sentence(monkeypatch):
     seen = []
     monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
     _run(monkeypatch, "is the spot free", has_wake_detector=True)
     assert seen == ["is the spot free"]
 

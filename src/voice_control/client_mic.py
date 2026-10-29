@@ -2400,7 +2400,7 @@ def process_utterance(stub, speech_buffer: bytearray, speech_float_buffer: list,
     # not a bare wake phrase) and is about to be dispatched to the brain — signal
     # THINKING now (not before STT) so noise/empty transcripts never chime.
     # B11: "uh um hmm" — nothing worth a turn.
-    if is_filler_only(clean):
+    if is_filler_only(clean, mid_conversation=not safety_only and not wake_activated):
         print(f"[Filler only {_heard(clean)} — skipping]")
         return "wake_detected" if wake_activated else None
 

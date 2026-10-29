@@ -43,7 +43,7 @@ def _turn(monkeypatch, brain, utt_t0, last_safety, transcript="what's your next 
     monkeypatch.setattr(cm, "get_recorder", lambda: None)
     monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: transcript)
     monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t: False)
+    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
     monkeypatch.setattr(cm, "execute_on_spot",
                         lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
     monkeypatch.setattr(cm, "_last_safety_at", last_safety)
