@@ -115,6 +115,20 @@ def test_describe_side_one_call():
     assert vlm.call_count == 1 and len(vlm.call_args[0][1]) == 1
 
 
+def test_side_prompts_name_the_side():
+    for side, words in (("left", "on your left"), ("right", "on your right"),
+                        ("back", "behind you")):
+        _, vlm = _run(lambda: D.describe(None, side))
+        prompt = vlm.call_args[0][0]
+        assert words in prompt and "in front" not in prompt, side
+    _, vlm = _run(lambda: D.describe(None, "around"))
+    prompts = [c[0][0] for c in vlm.call_args_list]
+    assert "in front of you" in prompts[0]
+    assert [p for p in prompts[1:] if "in front" in p] == []
+    _, vlm = _run(lambda: D.describe(None, "left", "is there a door?"))
+    assert vlm.call_args[0][0] == "is there a door?"   # the user's question wins
+
+
 def test_describe_around_four_calls():
     res, vlm = _run(lambda: D.describe(None, "around"))
     assert vlm.call_count == 4
@@ -126,6 +140,8 @@ def test_templates_have_no_stop_words():
     for name in ("NOTHING_LINE", "UNCLEAR_LINE", "OFFER_LINE", "ALSO_LINE",
                  "DESCRIBE_PROMPT", "HINT_PROMPT"):
         assert not bad.search(getattr(D, name)), name
+    for p in D.SIDE_PROMPTS.values():
+        assert not bad.search(p)
     F = importlib.import_module("src.voice_control.vision.find")
     for name in ("YES_LINE", "NEAR_DIST", "FAR_DIST", "NO_LINE", "MAYBE_LINE", "FIND_PROMPT"):
         assert not bad.search(getattr(F, name)), name

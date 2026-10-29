@@ -741,14 +741,14 @@ def test_safe_words(text, out):
 def test_stop_sign_question_never_says_stop(monkeypatch, robot):
     """"Do you see a stop sign?": ack, detector answer and VLM fallback stay clean."""
     sign = _det(label="stop sign", dist=3.0, bearing=170.0, source="back_fisheye_image")
-    monkeypatch.setattr(FI, "snapshot", lambda *a, **k: [sign])
+    monkeypatch.setattr(FI, "_detect", lambda *a, **k: [sign])
     tts = FakeTTS()
     _turn(monkeypatch, [{"intent": "find", "params": {"what": "stop sign"}}],
           response="Yes, a stop sign!", transcript="do you see a stop sign", tts=tts)
     assert len(tts.said) == 2 and "road sign" in tts.said[1]
     assert not any(BAD.search(t) for t in tts.said), tts.said
     # not detected -> VLM "yes" -> MAYBE line with the phrase
-    monkeypatch.setattr(FI, "snapshot", lambda *a, **k: [])
+    monkeypatch.setattr(FI, "_detect", lambda *a, **k: [])
     monkeypatch.setattr(FI, "capture", lambda *a, **k: {})
     monkeypatch.setattr(FI, "front_images", lambda f: [b"jpg"])
     monkeypatch.setattr(FI, "ask_vlm", lambda *a, **k: "Yes.")

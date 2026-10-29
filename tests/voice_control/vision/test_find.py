@@ -17,7 +17,7 @@ def _det(label, bearing, dist):
 
 
 def _find(phrase, dets, vlm_text="No."):
-    with mock.patch.object(F, "snapshot", return_value=dets), \
+    with mock.patch.object(F, "detect_frames", return_value=dets), \
          mock.patch.object(F, "capture", _capture()), \
          mock.patch.object(D, "stitch_front", lambda a, b: np.zeros((8, 8), np.uint8)), \
          mock.patch.object(F, "ask_vlm", return_value=vlm_text) as vlm:
@@ -55,3 +55,20 @@ def test_find_strips_article_from_phrase():
         res, vlm = _find(phrase, [], vlm_text="Yes.")
         assert res.text == f"I think I see a {expect} in front of me, but I'm not certain."
         assert f"do you see a {expect}?" in vlm.call_args[0][0]
+
+
+def test_find_uses_hand_frame_only_when_it_faces_forward():
+    seen = []
+
+    def detect(frames, model="yolo26l-seg", labels=None, **k):
+        seen.append(sorted(frames))
+        return []
+    for down in (False, True):
+        with mock.patch.object(F, "capture", _capture(down)), \
+             mock.patch.object(F, "detect_frames", detect), \
+             mock.patch.object(D, "stitch_front", lambda a, b: np.zeros((8, 8), np.uint8)), \
+             mock.patch.object(F, "ask_vlm", return_value="No."):
+            F.find(None, "backpack")
+    assert F.HAND_SOURCE in seen[0]          # facing forward: included
+    assert F.HAND_SOURCE not in seen[1]      # stowed / pointing down: dropped
+    assert set(F.BODY_SOURCES) <= set(seen[1])

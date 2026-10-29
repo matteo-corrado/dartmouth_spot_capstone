@@ -34,6 +34,11 @@ UNCLEAR_LINE = "I can't make out much right now."
 OFFER_LINE = "I can look around if you like."
 ALSO_LINE = "I can also spot {items}."
 DESCRIBE_PROMPT = "What do you see in front of you? Describe it in two or three sentences."
+SIDE_PROMPTS = {  # one camera, so name where it looks (not "in front of you")
+    "left": "What do you see on your left? Describe it in two or three sentences.",
+    "right": "What do you see on your right? Describe it in two or three sentences.",
+    "back": "What do you see behind you? Describe it in two or three sentences.",
+}
 HINT_PROMPT = " Things I can pick out: {labels}."
 
 FRONT_SECTORS = ("in front", "front-left", "front-right")  # covered by the stitched view
@@ -132,7 +137,7 @@ def _describe_side(robot, side: str, question: str) -> str | None:
     frame = frames.get(src)
     if frame is None:
         return None
-    return ask_vlm(question or DESCRIBE_PROMPT, [encode_jpeg(frame.image)])
+    return ask_vlm(question or SIDE_PROMPTS[side], [encode_jpeg(frame.image)])
 
 
 _KEEP_CAPS = ("I", "I'm", "I'll", "I've", "I'd")
