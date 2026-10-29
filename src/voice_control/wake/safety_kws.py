@@ -22,15 +22,33 @@ _SAFETY_KEYWORDS = "safety_keywords.txt"
 # Safety must over-recall: easier to trigger than the wake word. These are the
 # per-detector overrides; tuned by eval_safety_recall.py (P2).
 KEYWORDS_SCORE = 1.5  # 2026-10-29 fine sweep (ch1): gain 3, thr 0.2, score 1.5 = 14/14 incl. all quiet, 2 false in 6.4 min
-KEYWORDS_THRESHOLD = 0.20
+# 0.20 -> 0.25 with the staggered streams below: young streams over-fire at
+# 0.20 (5 vs 2 fires on fan+fan_babble); 0.25 holds fires at the old level.
+# (Single-stream, 0.10-0.20 gave identical recall: threshold wasn't binding.)
+KEYWORDS_THRESHOLD = 0.25
 NUM_TRAILING_BLANKS = 1
 INPUT_GAIN = 3.0  # see KEYWORDS_SCORE note (x4 score 2.0 was 12/14, 0 false; live quiet misses were common)
+
+# Staggered streams (kwsfix 2026-10-29). A sherpa stream that has already
+# heard ~0.5 s+ of audio misses quiet/far stop/freeze that a fresh stream
+# catches (fan prefix 0.78 s: 5/14 vs 14/14; reset_stream() does not help,
+# only create_stream() does - the loss is in the stream's feature/encoder
+# context, not the beam). A single long-lived stream was 6-8/14 on continuous
+# audio. So NUM_STREAMS streams run in parallel, stream i reborn at frames
+# i*STAGGER_FRAMES + m*NUM_STREAMS*STAGGER_FRAMES (lifetime 2.4 s), so one
+# stream is always young. A hit returns the first label. Measured on 6
+# random-pad continuous runs (14 clips each): mean 7.2-7.7 -> 9.0-10.7 / 14,
+# fires 1-2 -> 2 in 6.4 min of fan+fan_babble. ~4 ms/frame mean (3 streams).
+# Does NOT reach the fresh-stream 14/14: see kwsfix-report.md.
+NUM_STREAMS = 3
+STAGGER_FRAMES = 27  # 30 ms frames (0.81 s); 28 measured worse (9.0 vs 10.7 mean, 3 vs 2 fires)
 
 
 class SafetyKeywordDetector:
     def __init__(self, model_dir=None):
         self._spotter = None
-        self._stream = None
+        self._streams = [None] * NUM_STREAMS
+        self._frame = 0
         self._available = False
         self._sample_rate = 16000
         self._load(pathlib.Path(model_dir) if model_dir else _MODEL_DIR)
@@ -54,7 +72,6 @@ class SafetyKeywordDetector:
                 keywords_threshold=KEYWORDS_THRESHOLD,
                 num_trailing_blanks=NUM_TRAILING_BLANKS,
             )
-            self._stream = self._spotter.create_stream()
             self._available = True
             print("[SafetyKWS] ready — stop/freeze/estop always-on")
         except ImportError:
@@ -73,19 +90,36 @@ class SafetyKeywordDetector:
             return ""
         samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         samples = np.clip(samples * INPUT_GAIN, -1.0, 1.0)
-        self._stream.accept_waveform(self._sample_rate, samples)
-        while self._spotter.is_ready(self._stream):
-            self._spotter.decode_stream(self._stream)
-        result = self._spotter.get_result(self._stream).strip()
-        if result:
-            # Reset stream so the next safety word is independent.
-            self._stream = self._spotter.create_stream()
-            return result.lower()
+        self._rebirth()
+        self._frame += 1
+        hit = ""
+        for st in self._streams:
+            if st is None:
+                continue
+            st.accept_waveform(self._sample_rate, samples)
+            while self._spotter.is_ready(st):
+                self._spotter.decode_stream(st)
+            if not hit:
+                hit = self._spotter.get_result(st).strip()
+        if hit:
+            # Fresh streams so the next safety word is independent.
+            self.reset()
+            return hit.lower()
         return ""
 
+    def _rebirth(self):
+        """Create stream i at frames i*STAGGER + m*NUM_STREAMS*STAGGER."""
+        for i in range(NUM_STREAMS):
+            age = self._frame - i * STAGGER_FRAMES
+            if age >= 0 and age % (NUM_STREAMS * STAGGER_FRAMES) == 0:
+                self._streams[i] = self._spotter.create_stream()
+
     def reset(self):
+        """Drop all streams and restart the stagger schedule (stream 0 is
+        born on the next frame)."""
         if self._available:
-            self._stream = self._spotter.create_stream()
+            self._streams = [None] * NUM_STREAMS
+            self._frame = 0
 
 
 def make_safety_detector():
