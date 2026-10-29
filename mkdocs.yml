@@ -28,6 +28,7 @@ nav:
     - Spot SDK Primer: architecture/sdk-primer.md
     - Voice Pipeline: architecture/voice-pipeline.md
     - Services: architecture/services.md
+    - Pipeline Explainer: architecture/pipeline-explainer.md
   - Module Reference:
     - Voice Pipeline:
       - client_mic: modules/client-mic.md
