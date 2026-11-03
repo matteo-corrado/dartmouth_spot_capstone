@@ -107,13 +107,26 @@ def _handle_disable_mouth(params, session=None):
 AUTO_ARM_STAND_WAIT_S = 8.0  # how long a stand may take before we give up
 
 
+def _mouth_registered() -> bool:
+    """True when the mouth feature is in REGISTRY (listed in enabled.py and
+    loaded). The core binds this module whether or not mouth is enabled, so
+    the auto-arm hooks below check this: with mouth off, a stand or a session
+    bring-up never folds the arm or starts the jaw. Never raises."""
+    try:
+        from src.spot.features import REGISTRY
+        return REGISTRY.action("enable_mouth") is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def set_auto_arm(on: bool):
     """client_mic startup: fold the arm + enable the mouth once the robot is
     standing and powered (False = opt-out, e.g. --no-arm / tuning auto_arm)."""
     import src.spot.robot as _r
     global _auto_arm, _auto_arm_pending
-    _auto_arm = bool(on)
-    _auto_arm_pending = bool(on)
+    on = bool(on) and _mouth_registered()
+    _auto_arm = on
+    _auto_arm_pending = on
     if on and _r.CONNECTION._session is not None:  # e.g. --map brought it up at launch
         start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
 
@@ -166,7 +179,7 @@ def start_auto_arm(gen, wait_s: float = 0.0):
     thread, or None when nothing is owed."""
     import src.spot.robot as _r
     global _auto_arm_thread
-    if not _auto_arm_pending or _r.CONNECTION._session is None:
+    if not _auto_arm_pending or _r.CONNECTION._session is None or not _mouth_registered():
         return None
     t = _auto_arm_thread
     if t is not None and t.is_alive():
@@ -182,7 +195,7 @@ def _auto_arm_after_stand():
     """A stand succeeded: owe an automatic fold (if enabled) once it is up."""
     import src.spot.robot as _r
     global _auto_arm_pending
-    if not _auto_arm:
+    if not _auto_arm or not _mouth_registered():
         return
     _auto_arm_pending = True
     start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)

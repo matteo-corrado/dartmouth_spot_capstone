@@ -28,7 +28,9 @@ NAV = NavRunner()
 # them): the core reads ``_r.mouth_handlers.<name>`` -- a plain attribute
 # lookup, no import on a stop path -- so a test patch on the module is seen.
 # The module is imported whether or not "mouth" is in ENABLED: with the
-# feature disabled these calls still run (no-ops while nothing is owed).
+# feature disabled these calls still run, but the auto-arm ones are no-ops
+# (mouth handlers check the feature is registered; main's gate does too).
+# _handle_disable_mouth still stows the arm (spotctl stow).
 # Guarded: if the features package or the mouth modules raise at import,
 # src.spot.robot must still import (estop_run, spotctl, the stop path), so the
 # failure is printed loudly and a no-op stand-in is bound instead. In robot

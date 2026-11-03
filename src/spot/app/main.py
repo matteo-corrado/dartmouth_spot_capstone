@@ -181,6 +181,13 @@ def auto_arm_wanted(args, tuning) -> bool:
                 and not getattr(args, "dry_run", False))
 
 
+def auto_arm_on(args, tuning) -> bool:
+    """Safety condition C3, the auto-arm gate: auto_arm_wanted AND the mouth
+    feature is registered (removing "mouth" from enabled.py turns it off)."""
+    from src.spot.features import REGISTRY
+    return auto_arm_wanted(args, tuning) and REGISTRY.action("enable_mouth") is not None
+
+
 def _shutdown_runtime() -> None:
     """Stop the safety thread, ring, beams and mic, then the robot session
     and player. Safe to call on any exit path."""
@@ -329,12 +336,15 @@ def _start_features(args, bus, robot, tuning) -> bool:
     loudly ([Features] FAILED + traceback). On the robot that is fatal (False:
     main returns before any audio or robot bring-up); --dry-run only warns.
     Starts run before set_auto_arm (step 7), so the mouth start (the fold
-    after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted (C3).
+    after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted
+    plus "mouth is registered" (C3, step 7). The _NoMouth core-binding check
+    applies only while "mouth" is in ENABLED: with the feature removed (or its
+    folder deleted) the stand-in is expected and stow still stows the arm.
     """
     from src.spot.features import REGISTRY
     from src.spot.features.enabled import ENABLED
     failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
-    if isinstance(robot.mouth_handlers, robot._NoMouth):
+    if "mouth" in ENABLED and isinstance(robot.mouth_handlers, robot._NoMouth):
         # The core bound the no-op stand-in at import (mouth import failed
         # then): even if the retry above loaded the real handlers, the core
         # and the feature would be split. Same loud C6 path.
@@ -670,8 +680,9 @@ def _start_conversation(args, C, audio, services, tuning):
     # the gripper mouth turns on automatically once Spot is standing + powered
     # (session bring-up, a stand, or the next turn) -- never before. Opt out
     # with --no-arm or tuning auto_arm: false. Skipped in dry-run.
-    # Safety condition C3: this is THE auto-arm gate.
-    _auto = auto_arm_wanted(args, tuning)
+    # Safety condition C3: this is THE auto-arm gate. Mouth removed from
+    # enabled.py (enable_mouth not registered) = never fold, never jaw.
+    _auto = auto_arm_on(args, tuning)
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
