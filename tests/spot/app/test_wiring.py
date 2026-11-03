@@ -52,7 +52,9 @@ def _patch_pipeline(monkeypatch, seen, load_result=()):
     real_tuning, real_owners = _app.get_tuning, _app._robot_owners
     monkeypatch.setattr(_app, "get_tuning", lambda: seen.append("tuning") or real_tuning())
     monkeypatch.setattr(_app, "EventBus", lambda: seen.append("bus") or EventBus())
-    monkeypatch.setattr(_app, "_robot_owners", lambda: seen.append("robot") or real_owners())
+    monkeypatch.setattr(_app, "_robot_owners", lambda *a, **k: seen.append("robot") or real_owners(*a, **k))
+    # Robot-mode runs: the step-3b TCP probe never touches the network (reachable)
+    monkeypatch.setattr(_app, "_tcp_probe", lambda host: None)
     monkeypatch.setattr(REGISTRY, "load", rec("features", list(load_result)))
     monkeypatch.setattr(_cap.CAPTURE, "calibrate_floor", rec("audio", 1e-3))
     monkeypatch.setattr(_app, "AudioPlayer", lambda **k: object())
@@ -549,8 +551,9 @@ def test_no_sdk_degrades_to_dry_run_in_fresh_process():
     """Fix round 1: with bosdyn missing, _bring_up_robot's --map branch hits
     ModuleNotFoundError and _close_session_if_up never imports the robot
     package (never raises), so the branch degrades to dry-run. This exercises
-    that branch in isolation only: a full main() without bosdyn dies earlier,
-    at step 3 (_robot_owners imports src.spot.robot)."""
+    that branch in isolation only: a full main() without bosdyn stops earlier,
+    at step 3 (_robot_owners: robot mode fails loudly, --dry-run continues
+    without the robot package; see the CR #1 tests below)."""
     code = ("import sys; sys.modules['bosdyn'] = None; "
             "import os, src.spot.app.main as m; from types import SimpleNamespace as N; "
             "print('CLOSE', m._close_session_if_up()); "
@@ -562,6 +565,89 @@ def test_no_sdk_degrades_to_dry_run_in_fresh_process():
     assert "CLOSE True" in out.stdout
     assert "SDK not installed" in out.stdout
     assert "BRINGUP True True 1" in out.stdout
+
+
+def test_unreachable_robot_with_failed_feature_degrades_and_only_warns(monkeypatch, capsys):
+    """CR #1: the no-map TCP probe runs before the C6 decision, so an
+    unreachable robot (auto dry-run) with a failed feature starts, warning."""
+    seen = []
+    _patch_pipeline(monkeypatch, seen, load_result=[("bogus", ImportError("nope"), "tb\n")])
+
+    def unreachable(host):
+        raise OSError("no route")
+    monkeypatch.setattr(_app, "_tcp_probe", unreachable)
+    monkeypatch.setattr(_app, "_probe_host", lambda: "192.0.2.1")
+    assert _app.main(["--device", "0", "--output-device", "0"]) == 0
+    out = capsys.readouterr().out
+    assert out.index("Auto-enabling dry-run") < out.index("[Features] FAILED: bogus")
+    assert "WARNING: --dry-run continues" in out
+    assert "refusing to start on the robot" not in out
+    assert os.environ["SPOT_DRY_RUN"] == "1"
+    assert seen == STEPS
+
+
+def test_map_run_with_failed_feature_refuses_before_any_session(monkeypatch, capsys):
+    """CR #1: --map has no early probe; C6 refuses at step 4, before the
+    eager session / stand (step 6b) and before anything opens."""
+    import src.spot.robot as _r
+    seen, ensured = [], []
+    _patch_pipeline(monkeypatch, seen, load_result=[("bogus", ImportError("nope"), "tb\n")])
+    monkeypatch.setattr(_r.CONNECTION, "ensure", lambda *a, **k: ensured.append(1))
+    probed = []
+    monkeypatch.setattr(_app, "_tcp_probe", lambda host: probed.append(host))
+    assert _app.main(["--map", "m", "--device", "0", "--output-device", "0"]) == 1
+    assert "refusing to start on the robot" in capsys.readouterr().out
+    assert seen == ["tuning", "bus", "robot", "features"]
+    assert ensured == [] and probed == []
+
+
+_NO_SDK_MAIN = """
+import sys
+sys.modules['bosdyn'] = None
+from _pytest.monkeypatch import MonkeyPatch
+import tests.spot.app.test_wiring as w
+from src.spot.features import REGISTRY
+mp = MonkeyPatch()
+seen = []
+w._patch_pipeline(mp, seen)
+mp.setattr(REGISTRY, "load", REGISTRY.__class__.load.__get__(REGISTRY))  # the real load
+try:
+    rc = w._app.main(ARGV)
+    print('RC', rc)
+except ModuleNotFoundError as e:
+    print('RAISED', e)
+print('SEEN', seen)
+print('FEATURES', sorted(f.name for f in REGISTRY.features))
+print('ROBOT', 'src.spot.robot' in sys.modules, 'src.spot.robot.dispatcher' in sys.modules)
+"""
+
+
+def test_dry_run_without_sdk_runs_with_all_features_in_fresh_process():
+    """CR #1: with bosdyn blocked, --dry-run gets past step 3 with a clear
+    line (base behaviour), all 8 features load, and the robot package is
+    never imported."""
+    out = _fresh(_NO_SDK_MAIN.replace("ARGV", repr(ARGS)), SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    o = out.stdout
+    assert "[dry-run] Spot SDK not installed" in o and "continuing in dry-run" in o
+    assert "RC 0" in o
+    assert f"SEEN {['tuning', 'bus', 'robot', 'audio', 'ring', 'wake', 'safety', 'stt', 'tts', 'brain', 'vision', 'conversation', 'control', 'run']}" in o
+    assert ("FEATURES ['dance', 'follow', 'gaze', 'mouth', 'navigation', 'settings', "
+            "'visual_nav', 'walk']") in o
+    assert "[Features] FAILED" not in o
+    assert "ROBOT False False" in o
+
+
+def test_robot_mode_without_sdk_fails_loudly_in_fresh_process():
+    """CR #1: robot mode still needs the SDK: a loud line and the
+    ModuleNotFoundError at step 3, before features, audio or any probe."""
+    out = _fresh(_NO_SDK_MAIN.replace("ARGV", repr(["--device", "0", "--output-device", "0"])),
+                 SPOT_DRY_RUN="0")
+    assert out.returncode == 0, out.stderr[-2000:]
+    o = out.stdout
+    assert "[Spot] FATAL: Spot SDK not installed" in o
+    assert "RAISED" in o and "SEEN ['tuning', 'bus', 'robot']" in o
+    assert "TCP-probing" not in o
 
 
 def test_mouth_stand_in_refuses_robot_start(monkeypatch, capsys):

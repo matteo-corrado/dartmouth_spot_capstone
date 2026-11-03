@@ -193,10 +193,10 @@ def start_auto_arm(gen, wait_s: float = 0.0):
 
 def _auto_arm_after_stand():
     """A stand succeeded: owe an automatic fold (if enabled) once it is up."""
-    import src.spot.robot as _r
     global _auto_arm_pending
     if not _auto_arm or not _mouth_registered():
         return
+    import src.spot.robot as _r  # after the gate: the dry-run start needs no SDK
     _auto_arm_pending = True
     start_auto_arm(_r.SAFETY_GEN.current(), wait_s=AUTO_ARM_STAND_WAIT_S)
 

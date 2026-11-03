@@ -343,14 +343,53 @@ def _make_bus():
     return bus
 
 
-def _robot_owners():
+def _robot_owners(dry_run: bool = False):
     """The robot owner singletons (SAFETY_GEN, CONNECTION, ARM, NAV), created
-    at import of src.spot.robot (Task 9). Importing connects nothing."""
-    import src.spot.robot as _r
+    at import of src.spot.robot (Task 9). Importing connects nothing.
+
+    The robot package needs the bosdyn SDK. Without it, --dry-run continues
+    with no robot owners (None), as base did; robot mode fails loudly."""
+    try:
+        import src.spot.robot as _r
+    except ModuleNotFoundError as e:
+        if not dry_run:
+            print(f"[Spot] FATAL: Spot SDK not installed ({e}); robot mode needs it "
+                  "(use --dry-run for the voice pipeline only).", flush=True)
+            raise
+        print(f"[dry-run] Spot SDK not installed ({e}); continuing in dry-run "
+              "without the robot package.", flush=True)
+        return None
     # Preload: the first stop (safety thread / spotctl) must not pay the
     # dispatcher import before send_stop (base imported it eagerly here too).
     import src.spot.robot.dispatcher  # noqa: F401
     return _r
+
+
+def _tcp_probe(host: str) -> None:
+    """Connect to host:443 and close (no power, no lease). Raises OSError."""
+    import socket
+    with socket.create_connection((host, 443), timeout=2.0):
+        pass
+
+
+def _probe_robot(args) -> None:
+    """No --map: a light TCP probe to the robot, before the features step so
+    the C6 decision (step 4) sees the real mode. Unreachable: auto-enable
+    dry-run (voice pipeline only). --map / --dry-run: nothing here (--map's
+    eager bring-up runs at step 6b, after C6 refused any failed feature)."""
+    if args.dry_run or args.map:
+        return
+    spot_host = _probe_host()
+    try:
+        print(f"\n[Spot] TCP-probing {spot_host}:443 ...")
+        _tcp_probe(spot_host)
+        print(f"[Spot] {spot_host} reachable; full session deferred to first command.")
+    except OSError as e:
+        print(f"[Spot] {spot_host} not reachable ({type(e).__name__}: {e})")
+        print("[Spot] Auto-enabling dry-run mode (voice pipeline "
+              "only; no robot dispatch, no e-stop required).")
+        os.environ["SPOT_DRY_RUN"] = "1"
+        args.dry_run = True
 
 
 def _print_feature_failure(name, exc, tb):
@@ -364,6 +403,9 @@ def _start_features(args, bus, robot, tuning) -> bool:
     Safety condition C6: a feature that fails to import or start is printed
     loudly ([Features] FAILED + traceback). On the robot that is fatal (False:
     main returns before any audio or robot bring-up); --dry-run only warns.
+    The no-map TCP probe (step 3b) runs first, so an unreachable robot that
+    auto-degraded to dry-run only warns. robot is None in a dry-run without
+    the SDK: the features get no owners and the core-binding check is skipped.
     Starts run before set_auto_arm (step 7), so the mouth start (the fold
     after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted
     plus "mouth is registered" (C3, step 7). The _NoMouth core-binding check
@@ -373,15 +415,18 @@ def _start_features(args, bus, robot, tuning) -> bool:
     from src.spot.features import REGISTRY
     from src.spot.features.enabled import ENABLED
     failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
-    if "mouth" in ENABLED and isinstance(robot.mouth_handlers, robot._NoMouth):
+    if robot is not None and "mouth" in ENABLED and isinstance(robot.mouth_handlers, robot._NoMouth):
         # The core bound the no-op stand-in at import (mouth import failed
         # then): even if the retry above loaded the real handlers, the core
         # and the feature would be split. Same loud C6 path.
         failures.append(("mouth (core binding)", ImportError(robot.mouth_handlers.error),
                          "src.spot.robot bound the _NoMouth stand-in at import\n"))
     global _FEATURE_CTX
-    ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
-              nav=robot.NAV, bus=bus, tuning=tuning)
+    if robot is None:
+        ctx = Ctx(connection=None, arm=None, safety=None, nav=None, bus=bus, tuning=tuning)
+    else:
+        ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
+                  nav=robot.NAV, bus=bus, tuning=tuning)
     _FEATURE_CTX = ctx
     for feature in REGISTRY.features:
         for event, handler in feature.subscriptions:
@@ -587,10 +632,10 @@ def _bring_up_robot(args, audio) -> bool:
         on the robot and requires e-stop to be running already. If it
         fails (missing SDK, unreachable, lease conflict), we auto-
         degrade to dry-run.
-      no --map: light TCP probe to SPOT_IP:443 only — does NOT power
-        on, does NOT acquire lease, does NOT require e-stop. The real
-        session bring-up happens lazily on first dispatch_intent.
-        If the probe fails, auto-degrade.
+      no --map: the light TCP probe already ran at step 3b (_probe_robot,
+        before the C6 decision) — it does NOT power on, does NOT acquire
+        lease, does NOT require e-stop. The real session bring-up happens
+        lazily on first dispatch_intent. Here only the safety-KWS gate.
 
     Caller can opt out by passing --dry-run explicitly (skips everything).
     """
@@ -620,22 +665,8 @@ def _bring_up_robot(args, audio) -> bool:
                     return False
                 os.environ["SPOT_DRY_RUN"] = "1"
                 args.dry_run = True
-        else:
-            import socket
-            spot_host = _probe_host()
-            try:
-                print(f"\n[Spot] TCP-probing {spot_host}:443 ...")
-                with socket.create_connection((spot_host, 443), timeout=2.0):
-                    pass
-                print(f"[Spot] {spot_host} reachable; full session deferred to first command.")
-            except OSError as e:
-                print(f"[Spot] {spot_host} not reachable ({type(e).__name__}: {e})")
-                print("[Spot] Auto-enabling dry-run mode (voice pipeline "
-                      "only; no robot dispatch, no e-stop required).")
-                os.environ["SPOT_DRY_RUN"] = "1"
-                args.dry_run = True
 
-    # No-map path: the TCP probe above only connects (no power/stand); the
+    # No-map path: the TCP probe (step 3b) only connected (no power/stand); the
     # check runs after it so an unreachable robot (auto dry-run) still starts.
     if not args.map and not _sl.safety_startup_ok(audio.have_safety_kws, args.dry_run,
                                                   args.allow_no_safety_kws):
@@ -784,8 +815,11 @@ def main(argv: list[str] | None = None) -> int:
         return args
     # 2. Event bus
     bus = _make_bus()
-    # 3. Robot owners
-    robot = _robot_owners()
+    # 3. Robot owners (None in a dry-run without the SDK)
+    robot = _robot_owners(args.dry_run)
+    # 3b. No --map: TCP probe; unreachable auto-degrades to dry-run, so the
+    # C6 decision at step 4 is made for the run this really is
+    _probe_robot(args)
     # 4. Features: REGISTRY.load(ENABLED), subscriptions, start(ctx)
     if not _start_features(args, bus, robot, tuning):
         return 1
