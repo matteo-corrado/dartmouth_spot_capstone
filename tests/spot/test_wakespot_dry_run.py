@@ -101,3 +101,14 @@ def test_real_emergency_message_unchanged(ws, monkeypatch, capsys):
     monkeypatch.setattr(ws, "_DRY_RUN", False)
     ws._emergency_cut(_FakeProc(), ws._NoEstop())
     assert "E-Stop CUT issued" in capsys.readouterr().out
+
+
+def test_dry_run_signal_messages_never_mention_cutting(ws, monkeypatch, capsys):
+    monkeypatch.setattr(ws, "_DRY_RUN", True)
+    monkeypatch.setattr(ws, "_sigint_count", 0)
+    ws._on_sigint(None, None)
+    ws._on_sigint(None, None)
+    ws._on_sigquit(None, None)
+    out = capsys.readouterr().out
+    assert "cutting motors" not in out and "sit, power off" not in out
+    assert ws._shutdown_requested.is_set() and ws._emergency_requested.is_set()

@@ -59,26 +59,38 @@ def _on_sigint(signum, frame):
     global _sigint_count
     _sigint_count += 1
     if _sigint_count == 1:
-        print(
-            "\n[wakespot] Graceful shutdown requested — sit, power off, then "
-            "release E-Stop. Hit Ctrl+C again or Ctrl+\\ for an emergency cut.",
-            flush=True,
-        )
+        if _DRY_RUN:
+            print("\n[wakespot] Stopping voice control (dry run: no robot, no E-Stop).",
+                  flush=True)
+        else:
+            print(
+                "\n[wakespot] Graceful shutdown requested — sit, power off, then "
+                "release E-Stop. Hit Ctrl+C again or Ctrl+\\ for an emergency cut.",
+                flush=True,
+            )
         _shutdown_requested.set()
     else:
-        print(
-            "\n[wakespot] EMERGENCY E-Stop (second Ctrl+C) — cutting motors NOW.",
-            flush=True,
-        )
+        if _DRY_RUN:
+            print("\n[wakespot] Force-stopping voice control (dry run: nothing to cut).",
+                  flush=True)
+        else:
+            print(
+                "\n[wakespot] EMERGENCY E-Stop (second Ctrl+C) — cutting motors NOW.",
+                flush=True,
+            )
         _emergency_requested.set()
 
 
 def _on_sigquit(signum, frame):
     """Ctrl+\\ is always an immediate emergency cut, no second-press needed."""
-    print(
-        "\n[wakespot] EMERGENCY E-Stop (SIGQUIT) — cutting motors NOW.",
-        flush=True,
-    )
+    if _DRY_RUN:
+        print("\n[wakespot] Force-stopping voice control (dry run: nothing to cut).",
+              flush=True)
+    else:
+        print(
+            "\n[wakespot] EMERGENCY E-Stop (SIGQUIT) — cutting motors NOW.",
+            flush=True,
+        )
     _emergency_requested.set()
     # Pre-spawn there is no robot to cut yet, so also trip the shutdown event
     # estop_session watches as its abort_event — otherwise Ctrl+\ during the
