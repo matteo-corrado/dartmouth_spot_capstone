@@ -2,6 +2,8 @@
 
 Every input, through the models and features, to what Spot does, on the poster-demo branch (`demo-poster-2026-10-29`). Solid arrows are the live path; dotted arrows are optional, off by default, or fallbacks. Stage detail with file references is in the [pipeline explainer](pipeline-explainer.md); current state is in [status.md](../project/status.md).
 
+PNG renders: [wide](system-diagram.png) (slides/poster) and [tall](system-diagram-tall.png) (screen reading). Re-render after editing the mermaid source below.
+
 ```mermaid
 flowchart LR
     %% ---------------- INPUTS ----------------
