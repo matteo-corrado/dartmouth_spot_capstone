@@ -25,4 +25,5 @@ FEATURE = Feature(
     intent_rules=(
         IntentRule(priority=240, pattern=r"\b(?:follow me|come with me|tag along)\b", build=_build),
     ),
+    requires=("visual_nav",),  # handlers.py runs visual_nav.navigator.follow_person
 )

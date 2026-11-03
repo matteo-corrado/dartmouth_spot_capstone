@@ -585,3 +585,24 @@ def test_mouth_stand_in_only_warns_in_dry_run(monkeypatch, capsys):
     _app.main(ARGS)
     assert "WARNING: --dry-run continues" in capsys.readouterr().out
     assert seen == STEPS
+
+
+def test_feature_stop_runs_after_session_close_and_never_raises(monkeypatch, capsys):
+    """I3: Feature.stop(ctx) runs once per loaded feature, after cleanup_spot
+    (the robot close order is untouched); a raising stop is printed only."""
+    import src.spot.features as _f
+    from src.spot.core.registry import Feature, Registry
+    order = []
+    reg = Registry()
+    reg.add(Feature("a", stop=lambda ctx: order.append(("a", ctx))))
+    reg.add(Feature("b", stop=lambda ctx: (_ for _ in ()).throw(RuntimeError("boom"))))
+    reg.add(Feature("c", stop=lambda ctx: order.append(("c", ctx))))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    monkeypatch.setattr(_app, "_FEATURE_CTX", "CTX")
+    monkeypatch.setattr(_app._sl.LISTENER, "stop", lambda: None)
+    monkeypatch.setattr(_app._ring.RING, "_anim", None)
+    monkeypatch.setattr(_app._cap.CAPTURE, "_mic", None)
+    monkeypatch.setattr(_app, "cleanup_spot", lambda: order.append("cleanup"))
+    _app._shutdown_runtime()
+    assert order == ["cleanup", ("a", "CTX"), ("c", "CTX")]
+    assert "[Features] b stop failed: RuntimeError: boom" in capsys.readouterr().out

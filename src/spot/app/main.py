@@ -189,8 +189,9 @@ def auto_arm_on(args, tuning) -> bool:
 
 
 def _shutdown_runtime() -> None:
-    """Stop the safety thread, ring, beams and mic, then the robot session
-    and player. Safe to call on any exit path."""
+    """Stop the safety thread, the gaze worker, ring, beams and mic, then the
+    robot session and player, then each feature's stop. Safe to call on any
+    exit path."""
     _sl.LISTENER.stop()
     try:
         _loop.stop_gaze_worker()  # C5: the one gaze worker exits; none restarts
@@ -213,6 +214,27 @@ def _shutdown_runtime() -> None:
         except Exception:
             pass
     cleanup_spot()
+    _stop_features()
+
+
+_FEATURE_CTX = None  # the Ctx _start_features gave each feature's start
+
+
+def _stop_features() -> None:
+    """Each loaded feature's stop(ctx), after the robot session is closed.
+    A raising stop is printed, never propagated."""
+    try:
+        from src.spot.features import REGISTRY
+        features = list(REGISTRY.features)
+    except Exception:
+        return
+    for feature in features:
+        if feature.stop is None:
+            continue
+        try:
+            feature.stop(_FEATURE_CTX)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Features] {feature.name} stop failed: {type(e).__name__}: {e}", flush=True)
 
 
 # ============================================================================
@@ -354,8 +376,10 @@ def _start_features(args, bus, robot, tuning) -> bool:
         # and the feature would be split. Same loud C6 path.
         failures.append(("mouth (core binding)", ImportError(robot.mouth_handlers.error),
                          "src.spot.robot bound the _NoMouth stand-in at import\n"))
+    global _FEATURE_CTX
     ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
               nav=robot.NAV, bus=bus, tuning=tuning)
+    _FEATURE_CTX = ctx
     for feature in REGISTRY.features:
         if feature.name not in _UNSUBSCRIBED_FEATURES:
             for event, handler in feature.subscriptions:
