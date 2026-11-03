@@ -71,7 +71,7 @@ XVF3800 (ch0) -> frame VAD + noise floor + SNR gate -> wake KWS (4 phrases) -> s
 - Voice "estop" is a motion stop, not the E-Stop.
 - Named arm poses are not speed-limited.
 - Vision (VLM image rotation, CPU YOLO) unchanged and weak.
-- Code health: giant functions in `spot_dispatch.py` and `client_mic.py`, double-imported modules (E2).
+- Code health: giant functions in the old `spot_dispatch.py` and `client_mic.py` (since split into `src/spot/`), double-imported modules (E2).
 
 ---
 

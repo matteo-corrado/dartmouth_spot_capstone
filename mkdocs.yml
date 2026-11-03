@@ -31,9 +31,9 @@ nav:
     - Pipeline Explainer: architecture/pipeline-explainer.md
   - Module Reference:
     - Voice Pipeline:
-      - client_mic: modules/client-mic.md
+      - voice client (client_mic): modules/client-mic.md
       - llm_brain: modules/llm-brain.md
-      - spot_dispatch: modules/spot-dispatch.md
+      - dispatcher (spot_dispatch): modules/spot-dispatch.md
       - intent: modules/intent.md
     - Audio:
       - wake_word: modules/wake-word.md
@@ -57,6 +57,7 @@ nav:
     - Dartmouth Setup: project/dartmouth-setup.md
     - Post-Flash Migration: POST_FLASH_MIGRATION.md
     - System Status: project/status.md
+    - Restructure Notes: project/restructure-notes.md
     - Roadmap: project/roadmap.md
     - Bug Register: project/bugs.md
 

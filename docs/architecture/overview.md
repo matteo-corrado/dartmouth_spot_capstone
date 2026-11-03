@@ -12,7 +12,7 @@ graph LR
     VAD --> KWS[Wake Word<br/>sherpa-onnx KWS]
     KWS --> ASR[ASR Bridge<br/>server.py :50055]
     ASR --> BRAIN[LLM Brain<br/>qwen2.5:7b<br/>Ollama :11434]
-    BRAIN --> DISPATCH[Spot Dispatcher<br/>spot_dispatch.py]
+    BRAIN --> DISPATCH[Spot Dispatcher<br/>robot/dispatcher.py]
     DISPATCH --> SPOT[Spot Robot<br/>192.168.80.3]
 
     BRAIN --> TTS[TTS<br/>Kokoro via<br/>sherpa-onnx]
@@ -102,10 +102,10 @@ speech at normal conversational distance.
 
 | Component | File | Purpose |
 |---|---|---|
-| Voice Client | `src/voice_control/client_mic.py` | Main audio loop: VAD, speech detection, ASR dispatch, LLM orchestration |
+| Voice Client | `src/spot/app/main.py` (launched via the `src/voice_control/client_mic.py` stub) | Wiring and startup; the audio loop, VAD, ASR dispatch and LLM orchestration live in `src/spot/{audio,conversation}` |
 | ASR Bridge Server | `src/spot/stt/server.py` (`src/voice_control/server.py` is a shim) | gRPC ASR bridge (server.py wrapper) with hallucination filtering |
 | LLM Brain | `src/spot/brain/llm_brain.py` | Ollama structured JSON for intent parsing + conversational response |
-| Spot Dispatcher | `src/voice_control/spot_dispatch.py` | Executes robot commands via BD SDK (movement, nav, vision) |
+| Spot Dispatcher | `src/spot/robot/dispatcher.py` and `src/spot/features/*/handlers.py` | Executes robot commands via BD SDK (movement, nav, vision) |
 | Wake Word Detector | `src/spot/wake/sherpa_onnx.py` | sherpa-onnx keyword spotter for "Hey Spot" |
 | TTS | `src/spot/tts/speaker.py` | sherpa-onnx Kokoro TTS (non-blocking, speaker af_sarah) |
 | Audio Feedback | `src/spot/audio/chimes.py` | Short beep/chime tones for user feedback |

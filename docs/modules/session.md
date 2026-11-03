@@ -4,7 +4,7 @@
 
 Wraps the full lifecycle of a Spot connection: authentication, time sync,
 lease acquisition, power-on, stand, and cleanup on exit. Used by
-`spot_dispatch.py` to maintain a persistent robot session.
+`src/spot/robot/connection.py` to maintain a persistent robot session.
 
 ## Key Function
 

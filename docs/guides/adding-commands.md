@@ -1,238 +1,130 @@
 # Adding New Voice Commands
 
-How to add new voice commands to the system. There are two layers: the LLM brain (primary) and the regex parser (fallback).
+How to add a new voice command. After the 2026-10 restructure a command is a **feature**: one folder under `src/spot/features/` plus one line in `src/spot/features/enabled.py`. The LLM prompt line, the GBNF grammar, the regex table and the dispatcher routing are all generated from the feature declaration, so you no longer edit `llm_brain.py`, `intent.py` or the dispatcher by hand.
+
+The full checklist is in [package-map.md](../architecture/package-map.md) (How to add a feature). This page is the short version with a worked example.
 
 ---
 
-## Architecture Overview
+## How a command flows
 
-When a user speaks a command, it flows through:
-
-1. **Safety regex** (`client_mic.py`) — instant match for stop/freeze/estop
-2. **LLM Brain** (`llm_brain.py`) — structured JSON output with actions + response
-3. **Regex fallback** (`intent.py`) — used in `--no-brain` mode or as LLM backup
-
-To add a new command, you typically modify all three layers.
+1. **Safety** (`src/spot/safety/`): stop/freeze/estop are matched at frame level by the safety keyword spotter and again on the transcript. Core intents are declared only in `src/spot/core/core_intents.py`; do not add safety behaviour in a feature.
+2. **LLM brain** (`src/spot/brain/llm_brain.py`): structured JSON with actions and a response. The prompt action list and the grammar come from the enabled features.
+3. **Regex fallback** (`src/spot/brain/intent.py`): used with `--no-brain` and as backup. Rows come from each feature's `intent_rules`.
+4. **Dispatcher** (`src/spot/robot/dispatcher.py`): core actions are handled there; any other action is routed to the feature's handler.
 
 ---
 
-## Step 1: Add to the LLM System Prompt
+## Step 1: Declare the feature
 
-Edit `src/voice_control/llm_brain.py`, find the `SYSTEM_PROMPT` string.
-
-### Add the action definition
-
-In the `AVAILABLE ACTIONS:` section, add a line:
-
-```
-- my_action: Description of what it does. Params: {"param1": "<type>", "param2": <type>}.
-```
-
-### Add a non-obvious example (optional)
-
-Only add an example if the mapping is ambiguous. Simple commands like "do X" → `my_action` don't need examples.
-
-Add examples for:
-- Commands where multiple actions could match
-- Commands with unusual parameter extraction
-- Commands that differ from similar-sounding ones
-
-### Add rules (if needed)
-
-If there's disambiguation logic (like go_to vs go_to_object), add a RULES entry.
-
----
-
-## Step 2: Add to the Regex Parser
-
-Edit `src/voice_control/intent.py`, add a pattern to the `COMMANDS` list:
+Create `src/spot/features/spin/__init__.py`:
 
 ```python
-COMMANDS = [
-    # ... existing patterns ...
+from src.spot.core.registry import ActionSpec, Feature, IntentRule
+from src.spot.features.spin import handlers as _h
 
-    # === MY NEW COMMAND ===
-    (r"\b(?:do something|activate widget)\s+(?P<target>.+?)(?:\s*\.|$)",
-     "my_action", {"target": "$target"}),
-]
+
+def _spin_rule(m):
+    return {"intent": "spin", "params": {"speed": "fast"}}
+
+
+FEATURE = Feature(
+    name="spin",
+    actions=(
+        ActionSpec(
+            name="spin", handler=_h.handle_spin, grammar_params=None,
+            prompt_line='- spin: Spin in a circle. Params: {"speed": "slow"|"fast"}. Default "fast".',
+            locomotion=True, grammar_rank=300, prompt_rank=300),
+    ),
+    intent_rules=(
+        IntentRule(priority=300, pattern=r"\b(?:spin|do a spin|pirouette)\b", build=_spin_rule),
+    ),
+)
 ```
 
-Pattern syntax:
-- Use `\b` word boundaries
-- Use `(?:...)` non-capturing groups for alternatives
-- Use `(?P<name>...)` named groups for parameter extraction
-- Use `$name` in params to reference captured groups
+- `prompt_line` is the line the LLM sees. Leave it `None` to keep the action regex-only.
+- The `grammar_rank` / `prompt_rank` values order the generated lists. Copy `features/walk/__init__.py` or `features/dance/__init__.py` as a starting point; they show the full set of flags (`locomotion`, `info`, `short_path_blocked`, ...).
+- `Registry.add` rejects a bad declaration at load (an action named like a core intent, or contradictory flags). Check the registry source for the rules.
 
-The parser returns `{"intent": "my_action", "params": {"target": "..."}, "raw": "original text"}`.
+## Step 2: Write the handler
 
----
-
-## Step 3: Add the Executor
-
-Edit `src/voice_control/spot_dispatch.py`, find the `dispatch_intent()` function.
-
-Add a new case:
+Create `src/spot/features/spin/handlers.py`. A handler is `(params, ctx) -> bool`:
 
 ```python
-def dispatch_intent(intent):
-    cmd = intent["intent"]
-    params = intent.get("params", {})
-
-    # ... existing cases ...
-
-    elif cmd == "my_action":
-        target = params.get("target", "default")
-        return _execute_my_action(target)
-```
-
-Then implement the handler function:
-
-```python
-def _execute_my_action(target):
-    """Execute my custom action."""
-    session = ensure_spot_session()
-    if not session:
-        return False
-
-    # Use BD SDK to control Spot
-    robot = session["robot"]
+def handle_spin(params, ctx):
+    # Import robot owners at call time, not module level (avoids an import
+    # cycle while the registry loads).
+    import src.spot.robot as _r
+    session = _r.CONNECTION.ensure()
     cmd_client = session["cmd"]
-
-    # ... your implementation ...
-    return True
-```
-
----
-
-## Step 4: Test
-
-### Test LLM understanding (no robot needed)
-
-```bash
-python src/voice_control/llm_brain.py
-```
-
-Type your command and verify the JSON output contains the correct action and params.
-
-### Test regex parsing
-
-```python
-from src.voice_control.intent import parse_intent
-result = parse_intent("do something with the widget")
-print(result)
-# Should output: {"intent": "my_action", "params": {"target": "widget"}, "raw": "..."}
-```
-
-### Test full pipeline
-
-```bash
-python scripts/run_voice_control.py
-```
-
-Say the command and verify it executes correctly.
-
----
-
-## Example: Adding a "spin" Command
-
-### 1. LLM Prompt (llm_brain.py)
-
-```
-- spin: Spin in a circle. Params: {"speed": "slow"|"fast"}. Default "fast".
-```
-
-### 2. Regex (intent.py)
-
-```python
-(r"\b(?:spin|do a spin|pirouette)\b", "spin", {"speed": "fast"}),
-(r"\bslow spin\b", "spin", {"speed": "slow"}),
-```
-
-### 3. Executor (spot_dispatch.py)
-
-```python
-elif cmd == "spin":
     speed = params.get("speed", "fast")
-    deg_per_sec = 180 if speed == "fast" else 60
-    # Turn 360 degrees using existing turn logic
-    from bosdyn.client.robot_command import RobotCommandBuilder
-    cmd_client = session["cmd"]
-    # ... build and send rotation command ...
+    # ... build and send the rotation command with the BD SDK ...
     return True
 ```
+
+See `features/walk/handlers.py` for a real locomotion handler. Handlers marked `locomotion` are wrapped by the dispatcher (arm tuck before, restore after a natural finish, abort checks on the safety generation).
+
+## Step 3: Enable it
+
+Add one line to `ENABLED` in `src/spot/features/enabled.py`:
+
+```python
+    "spin",
+```
+
+Nothing else to edit. To turn it off again, delete that line.
 
 ---
 
 ## Adding a Background (Threaded) Command
 
-Some commands run for an extended time — navigation, following, patrols. These run in a background thread so the voice pipeline can keep listening for "stop" or other commands.
-
-The pattern used by `go_to`, `follow_me`, and `tour`:
-
-### 1. Thread + stop event in spot_dispatch.py
+Some commands run for an extended time (navigation, following, patrols). They run in a background thread so the voice pipeline keeps listening for "stop". Use the navigation runner (`NavRunner` in `src/spot/nav/runner.py`, owner `NAV` in `src/spot/robot/__init__.py`) instead of creating your own thread:
 
 ```python
-import threading
+def handle_my_long_action(params, ctx):
+    import src.spot.robot as _r
+    from src.spot.robot import motion as _motion
 
-# Module-level globals (already exist in spot_dispatch.py)
-_nav_thread = None
-_nav_stop_event = threading.Event()
+    def _worker(stop_event):
+        while not stop_event.is_set():
+            # work in small increments; check stop_event often so "stop" is responsive
+            stop_event.wait(0.5)
 
-def _execute_my_long_action(target):
-    """Background action that can be cancelled."""
-    global _nav_thread, _nav_stop_event
-
-    # Cancel any existing background action
-    _cancel_nav()
-
-    session = ensure_spot_session()
-    if not session:
-        return False
-
-    _nav_stop_event.clear()
-
-    def _worker():
-        # Your long-running logic here
-        while not _nav_stop_event.is_set():
-            # Do work in small increments
-            # Check _nav_stop_event frequently so "stop" is responsive
-            time.sleep(0.5)
-
-    _nav_thread = threading.Thread(target=_worker, daemon=True)
-    _nav_thread.start()
-    return True
+    _r.NAV.cancel()                      # cancel any prior background action
+    return _r.NAV.spawn(
+        lambda ev: _motion.thread_then_restore(lambda: _worker(ev), ev),
+        mode="my_mode", gen=_r.SAFETY_GEN.dispatch_current())
 ```
 
-### 2. Cancellation support
+This is the pattern used by `features/follow/handlers.py`. Key rules:
 
-The `_cancel_nav()` function (already in `spot_dispatch.py`) sets the stop event and waits for the thread:
+- Check the stop event in your worker loop every 0.5-1 s.
+- Call `NAV.cancel()` first so an earlier background action is stopped.
+- Pass the safety generation (`gen`) so a stop issued before the thread starts wins.
+- A stop from the safety path cancels the runner; you do not wire that yourself.
+
+---
+
+## Step 4: Test (no robot, nothing that opens the mic)
+
+Check the generated outputs against the committed copies in the repo tests, and add a declaration test next to the existing ones, `tests/spot/features/test_<name>_declared.py`. See `tests/spot/test_registry_identity.py` for how the generated grammar, prompt and intent table are compared with golden copies. `src/spot/brain/grammar/spot_action.gbnf` is a committed snapshot of the generated grammar; it is produced from `spot_action.gbnf.tmpl` by `build_grammar` in `src/spot/brain/grammar/generate.py`, so do not edit it by hand.
+
+For regex parsing:
 
 ```python
-def _cancel_nav():
-    global _nav_thread
-    if _nav_thread and _nav_thread.is_alive():
-        _nav_stop_event.set()
-        _nav_thread.join(timeout=5)
-    _nav_thread = None
+from src.spot.brain.intent import parse_intent
+print(parse_intent("do a spin"))
+# {"intent": "spin", "params": {"speed": "fast"}, "raw": "do a spin"}
 ```
 
-When the user says "stop", `dispatch_intent` calls `_cancel_nav()` which signals the background thread to exit.
-
-### 3. Key rules for background commands
-
-- Always check `_nav_stop_event.is_set()` in your worker loop (every 0.5-1s)
-- Call `_cancel_nav()` at the start to cancel any prior background action
-- Use `daemon=True` threads so they don't block program exit
-- Store the thread in `_nav_thread` so the stop system knows about it
+For the full pipeline, run `python scripts/run_voice_control.py` (on the robot machine, when the demo pipeline is not already running) and say the command.
 
 ---
 
 ## Tips
 
-- Keep action names lowercase with underscores
-- Match the intent name across all three files (prompt, regex, dispatch)
-- The LLM is the primary path — regex is fallback for `--no-brain` mode
-- Test the LLM interactively before adding regex patterns
-- For reading robot state in your handler, use `session["state"].get_robot_state()`
-- For capturing camera images, see `capture_frame()` in `spot_dispatch.py`
-- To test without a physical robot, use `--no-spot` in test scripts that support it
+- Keep action names lowercase with underscores, and never reuse a core intent name.
+- The LLM is the primary path; regex is the fallback for `--no-brain` mode.
+- To read robot state, use `get_robot_state_dict()` in `src/spot/robot/state.py`.
+- To capture camera images, see `capture_frame()` in `src/spot/robot/state.py`.
+- To test without a physical robot, run with `--dry-run`.

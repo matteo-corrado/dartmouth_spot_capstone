@@ -1,13 +1,23 @@
-# client_mic.py
+# client_mic (voice client)
 
-> **Being split.** This file is being broken up into the `src/spot/` packages (see [package-map.md](../architecture/package-map.md)). The path below stays valid as the launch path; internals are moving.
+> **Split into packages.** The old `client_mic.py` no longer owns any code. The voice client now lives in `src/spot/` (see [package-map.md](../architecture/package-map.md)). `src/voice_control/client_mic.py` is a stateless launch stub: it fixes `sys.path` and calls `src.spot.app.main.main()`. `scripts/run_voice_control.py` still launches that path, so the command line below is unchanged.
 
-`src/voice_control/client_mic.py` -- Main voice control loop.
+The voice client captures audio from the microphone, runs VAD to detect speech, sends audio to ASR, and routes the transcript through the LLM brain (or regex fallback) for action dispatch on Spot. Safety commands (stop/freeze/estop) bypass the LLM for zero-latency execution.
 
-Captures audio from the microphone, runs VAD to detect speech, sends audio to
-ASR, and routes the transcript through the LLM brain (or regex fallback) for
-action dispatch on Spot. Safety commands (stop/freeze/estop) bypass the LLM
-for zero-latency execution.
+## Where the old client_mic code went
+
+| Old `client_mic.py` job | Now in |
+|---|---|
+| `main()`, argument parsing, startup order, shutdown | `src/spot/app/main.py` (`main`, `_parse_args`, `_start_audio`, `_bring_up_robot`, `_ShutdownOnce`) |
+| `audio_callback`, audio queue, mute interlock, `calibrate_noise_floor`, device lookup, endpointing | `src/spot/audio/capture.py` (`AudioCapture`, `CAPTURE`; `calibrate_floor`) |
+| LED ring control | `src/spot/mic/ring_control.py` (`Ring`) |
+| Safety keyword listener, `check_safety_command`-style rescue | `src/spot/safety/listener.py` (`SafetyListener`, `rescue_safety`) |
+| State machine, `process_utterance`, `execute_on_spot`, `get_spot_state`, chaining waits, gaze worker | `src/spot/conversation/loop.py` (`Conversation`, `CONVERSATION`) |
+| Speaker gate, conversation timeout helpers, filler | `src/spot/conversation/{gate,filler}.py` |
+| Speaker lock, voiceprint, session state, logs | `src/spot/conversation/{speaker_lock,voiceprint,session_state,conversation_log,utterance_log}.py` |
+| `send_to_asr` | `src/spot/stt/client.py` |
+| Status snapshot and spotctl immediate commands | `src/spot/operator/control.py` (server in `control_server.py`) |
+| `VoiceState` enum | `src/spot/core/voice_state.py` |
 
 ## State Machine
 
@@ -18,105 +28,88 @@ VoiceState.WAKE_WORD  -->  VoiceState.LISTENING  -->  VoiceState.RECORDING
                                                      --> process_utterance()
 ```
 
+The loop is `Conversation.run()` in `src/spot/conversation/loop.py`.
+
 - **WAKE_WORD**: Waiting for "Hey Spot". Only safety commands execute.
-- **LISTENING**: Wake word heard, waiting for speech onset. Times out after
-  `LISTENING_TIMEOUT` (300s) and returns to WAKE_WORD.
-- **RECORDING**: Speech detected, accumulating audio frames until silence
-  timeout or max duration.
+- **LISTENING**: Wake word heard, waiting for speech onset. The conversation expires after `Tuning.lock_timeout_s` (20 s default; `conversation_expired` in `conversation/gate.py`) and returns to WAKE_WORD.
+- **RECORDING**: Speech detected, accumulating audio frames until the silence timeout or the maximum duration.
 
 ## Key Functions
 
-### `main()`
+### `main(argv=None)` -- `src/spot/app/main.py`
 
-CLI entry point. Parses arguments, initializes all services (ASR, LLM brain,
-TTS, wake word detector, YOLO), opens the audio stream, and runs the main
-event loop.
+CLI entry point. Parses arguments, initializes all services (ASR, LLM brain, TTS, wake word detector, vision), opens the audio stream, and runs the conversation loop. The startup order is documented in [restructure-notes.md](../project/restructure-notes.md).
 
 ```
-Args (argparse):
-    --list-devices     List audio devices and exit
-    --device INT       Audio device index (default: 24, XVF3800)
-    --no-brain         Disable LLM brain, use regex-only mode
-    --no-tts           Disable text-to-speech
-    --no-wake-word     Always listening, skip wake word requirement
-    --debug-audio      Print audio levels each status tick
+Args (argparse, see _parse_args):
+    --list-devices         List audio devices and exit
+    --device INT           Input device index
+    --output-device INT    Output device index
+    --no-brain             Disable LLM brain, use regex-only mode
+    --no-tts               Disable text-to-speech
+    --tts-backend NAME     kokoro | elevenlabs
+    --no-wake-word         Always listening, skip wake word requirement
+    --dry-run              No robot connection
+    --map NAME             Open a GraphNav session with this map
+    --no-arm / --enable-arm
+    --mic-channel N, --volume, --no-transcript-log, --allow-no-safety-kws
+    --debug-audio          Print audio levels each status tick
 ```
 
-### `process_utterance(stub, speech_buffer, speech_float_buffer, brain, safety_only, tts, has_wake_detector)`
+### `Conversation.process_utterance(stub, speech_buffer, speech_float_buffer, brain, ...)` -- `conversation/loop.py`
 
-Core NLP pipeline: ASR -> safety check -> wake phrase strip -> LLM -> dispatch.
+Core NLP pipeline: ASR -> safety check -> wake phrase strip -> LLM -> dispatch. Returns `"wake_detected"` if the wake phrase was found via the ASR fallback, `None` otherwise. Read the signature in the source; it has grown since the monolith.
 
-```python
-def process_utterance(
-    stub,                    # ASRStub gRPC channel
-    speech_buffer: bytearray,       # Raw PCM16 bytes
-    speech_float_buffer: list,      # List of float32 numpy arrays
-    brain=None,              # SpotBrain instance (None = regex mode)
-    safety_only=False,       # True when in WAKE_WORD state
-    tts=None,                # SpotTTS instance
-    has_wake_detector=False  # True if dedicated KWS is active
-) -> str | None
-```
+### `send_to_asr(stub, pcm_bytes, timeout=None) -> str` -- `stt/client.py`
 
-Returns `"wake_detected"` if wake phrase found via ASR fallback, `None` otherwise.
+Stream PCM16 audio to the ASR gRPC server. Sends config first, then audio chunks. Returns the final transcript.
 
-### `send_to_asr(stub, pcm_bytes) -> str`
+### Safety rescue -- `safety/listener.py`
 
-Stream PCM16 audio to the ASR gRPC server. Sends config first, then
-audio chunks. Returns the final transcript string.
+`rescue_safety(stub, pcm_bytes, ...)` runs the safety regex on a transcript. The always-on safety keyword spotter (`safety_kws_loop`, `SafetyListener`) calls the halt directly, never through the event bus.
 
-### `check_safety_command(text) -> dict | None`
+### `execute_on_spot(intent, brain=None, speak=None) -> bool` -- `conversation/loop.py`
 
-Regex check for stop/freeze/estop. Returns intent dict on match, None otherwise.
-Patterns: `stop|halt`, `freeze`, `emergency stop|e-stop`.
+Calls `src.spot.robot.dispatcher.dispatch_intent` (see [spot-dispatch.md](spot-dispatch.md)). Returns a success boolean.
 
-### `execute_on_spot(intent) -> bool`
+### `get_spot_state() -> dict` -- `conversation/loop.py`
 
-Import and call `spot_dispatch.dispatch_intent`. Returns success boolean.
+Wraps `robot/state.get_robot_state_dict` for LLM context (battery, posture, location, estop).
 
-### `get_spot_state() -> dict`
+### `AudioCapture.calibrate_floor(duration_sec, device) -> float` -- `audio/capture.py`
 
-Import and call `spot_dispatch.get_robot_state_dict`. Returns state dict for
-LLM context (battery, posture, location, estop).
+Record ambient audio for `duration_sec` seconds and compute RMS to seed the adaptive noise floor.
 
-### `calibrate_noise_floor(duration_sec, device) -> float`
+### `AudioCapture.callback(indata, frames, time_info, status)` -- `audio/capture.py`
 
-Record ambient audio for `duration_sec` seconds, compute RMS. Caps high noise
-(>0.003, likely motor noise) to 0.001. Seeds the adaptive noise tracker.
+sounddevice stream callback. Selects the mono channel (`Tuning.mic_channel`, `--mic-channel`), converts to PCM16 and pushes to a bounded audio queue (`AUDIO_QUEUE_MAX = 33`; on overflow frames are dropped, never blocking PortAudio). Frames are discarded while the audio player is busy (TTS or chime), plus `Tuning.speaker_tail_s` afterwards.
 
-### `audio_callback(indata, frames, time_info, status)`
+## Configuration
 
-sounddevice stream callback. Selects mono channel from stereo input
-(`MIC_CHANNEL`, default 0 = left/beamformed), converts to PCM16, pushes
-to `audio_queue`. Discards audio when `_mic_muted` is True (during TTS).
+Most knobs are now tuning keys in `config/tuning.yaml` (class `Tuning` in `src/spot/core/tuning.py`). The constants that remain are module-level.
 
-## Configuration Constants
+| Name | Value | Where |
+|------|---------|-------|
+| `SAMPLE_RATE` | 16000 | `audio/capture.py` |
+| `FRAME_MS` | 30 | `audio/capture.py` |
+| `NOISE_CALIBRATION_SECONDS` | 2 | `audio/capture.py` |
+| VAD | Silero ONNX (`SILERO_VAD_PATH`), no longer webrtcvad | `audio/capture.py` |
+| `Tuning.onset_frames` | 3 | consecutive speech frames to confirm onset |
+| `Tuning.end_silence_s_short` / `end_silence_s` | 1.0 / 1.2 | silence timeout for short / longer utterances |
+| `SILENCE_CROSSOVER` | 2.0 | `conversation/loop.py`: speech length that switches timeouts |
+| `PREROLL_FRAMES` | 25 (0.75 s) | `conversation/loop.py`: audio kept before onset |
+| `Tuning.max_utterance_s` | 20 | force-send after this duration |
+| `Tuning.min_speech_dbfs` | -50 | speech level floor; `NAV_SPEECH_DB_BOOST` (+6 dB) is added while the robot moves |
+| `MIN_SPEECH_DURATION` | 0.3 | `conversation/loop.py`: reject shorter utterances |
+| `Tuning.lock_timeout_s` | 20 | conversation timeout (replaced the fixed 300 s `LISTENING_TIMEOUT`) |
+| `Tuning.speaker_tail_s` | 0.15 | mic mute grace period after playback |
 
-| Name | Default | Description |
-|------|---------|-------------|
-| `SAMPLE_RATE` | 16000 | Audio sample rate (Hz) |
-| `FRAME_MS` | 30 | Frame duration (ms) |
-| `VAD_LEVEL` | 1 | webrtcvad aggressiveness (0-3) |
-| `SILENCE_TIMEOUT_SHORT` | 0.8 | Silence timeout for short utterances (<2s) |
-| `SILENCE_TIMEOUT_LONG` | 1.5 | Silence timeout for longer utterances (>2s) |
-| `SILENCE_CROSSOVER` | 2.0 | Speech duration threshold to switch timeouts |
-| `SPEECH_ONSET_FRAMES` | 3 | Consecutive VAD+energy frames to confirm onset (~90ms) |
-| `NAV_ONSET_FRAMES` | 5 | Higher onset threshold during navigation (~150ms) |
-| `PREROLL_FRAMES` | 5 | Pre-onset ring buffer size (~150ms) |
-| `MAX_UTTERANCE_SECONDS` | 20 | Force-send after this duration |
-| `ENERGY_THRESHOLD_MULTIPLIER` | 2.0 | Speech energy must exceed noise floor by this factor |
-| `NAV_ENERGY_MULT` | 5.0 | Extra energy multiplier during navigation |
-| `NOISE_EMA_ALPHA` | 0.03 | EMA smoothing for adaptive noise floor |
-| `NOISE_FLOOR_MIN` | 0.001 | Minimum noise floor |
-| `NOISE_FLOOR_MAX` | 0.05 | Maximum noise floor |
-| `NOISE_CALIBRATION_SECONDS` | 2 | Initial calibration recording duration |
-| `LISTENING_TIMEOUT` | 300.0 | Seconds idle before returning to WAKE_WORD |
-| `MIN_SPEECH_DURATION` | 0.3 | Reject utterances shorter than this |
+The old webrtcvad energy multipliers and the EMA noise tracker constants were replaced by the Silero VAD, the floor tracker (`floor_*` tuning keys) and the `min_snr_db` gate; check `core/tuning.py` for current values.
 
 ## Usage Example
 
 ```bash
-# Default: LLM brain + TTS + wake word on device 24
+# Default: LLM brain + TTS + wake word (launch stub forwards to src/spot/app/main.py)
 python src/voice_control/client_mic.py --device 24
 
 # Regex-only mode, no TTS, always listening
@@ -128,7 +121,6 @@ python src/voice_control/client_mic.py --debug-audio
 
 ## Dependencies
 
-**Project modules:** `intent`, `llm_brain`, `spot_tts`, `audio_feedback`,
-`spot_dispatch`, `visual_nav`, `wake_word`, `asr_pb2`, `asr_pb2_grpc`
+**Project packages:** `src.spot.audio`, `mic`, `safety`, `conversation`, `operator`, `stt`, `brain`, `tts`, `wake`, `robot`, `core`
 
-**External packages:** `sounddevice`, `numpy`, `webrtcvad`, `grpc`
+**External packages:** `sounddevice`, `numpy`, `grpc` (Silero VAD runs through `src/spot/audio/frontend.py`)
