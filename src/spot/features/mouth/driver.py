@@ -1,7 +1,7 @@
 """Stage 2E.2 — gripper puppet mouth.
 
-`envelope()` turns a TTS chunk's PCM into a per-frame gripper_open_fraction
-array. `MouthDriver` paces those fractions to the arm in sync with playback.
+`envelope()` (src/spot/tts/envelope.py, re-exported here) turns a TTS chunk's
+PCM into a per-frame gripper_open_fraction array. `MouthDriver` paces those fractions to the arm in sync with playback.
 
 MOUTH_FPS is set from the Task 0 feasibility spike — the proven smooth
 gripper command rate on our Spot. Default 20; lower it if the spike found a
@@ -28,36 +28,8 @@ except Exception:  # bosdyn not importable in unit-test env
 MOUTH_FPS = 20  # set from spike_gripper_rate.py measurement
 
 
-ENV_RANGE_DB = 12.0  # loudness range (below the chunk's loud level) mapped onto 0..1 opening
-ENV_CURVE = 2.0      # >1 keeps the claw mostly shut, opening fully only on loud syllables
-
-
-def envelope(samples: np.ndarray, rate: int, fps: int = MOUTH_FPS,
-             gate: float = 0.2, intensity: float = 1.0) -> np.ndarray:
-    """PCM float32 in [-1,1] -> per-frame gripper_open_fraction in [0,1].
-
-    Per-frame RMS in dB relative to the chunk's loud level (95th percentile),
-    mapped over ENV_RANGE_DB, shaped by ENV_CURVE, noise gate, intensity.
-    (Operator 2026-10-29: the old peak-sample envelope kept the claw open for
-    most of the sentence; on Kokoro speech this is closed ~50% vs ~18% before.)
-    """
-    if samples.size == 0:
-        return np.zeros(0, dtype=np.float32)
-    fps = max(1, int(fps))
-    hop = max(1, int(round(rate / fps)))
-    n_frames = int(np.ceil(samples.size / hop))
-    x = samples.astype(np.float32)
-    if x.size < n_frames * hop:  # zero-pad the trailing partial window
-        x = np.concatenate([x, np.zeros(n_frames * hop - x.size, dtype=np.float32)])
-    rms = np.sqrt((x.reshape(n_frames, hop) ** 2).mean(axis=1))
-    voiced = rms > 1e-4
-    if not voiced.any():
-        return np.zeros(n_frames, dtype=np.float32)
-    db = 20.0 * np.log10(rms + 1e-9)
-    ref = float(np.percentile(db[voiced], 95))
-    frames = np.clip((db - (ref - ENV_RANGE_DB)) / ENV_RANGE_DB, 0.0, 1.0) ** ENV_CURVE
-    frames[frames < gate] = 0.0
-    return np.clip(frames * intensity, 0.0, 1.0).astype(np.float32)
+# envelope() is pure DSP and lives in tts/ so TTS imports without this folder.
+from src.spot.tts.envelope import ENV_CURVE, ENV_RANGE_DB, envelope  # noqa: F401,E402
 
 
 def _max_open() -> float:

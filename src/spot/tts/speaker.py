@@ -49,7 +49,7 @@ from src.spot.core.latency import get_recorder
 import src.spot.tts.kokoro      # noqa: F401  (registers backend)
 import src.spot.tts.elevenlabs  # noqa: F401  (registers backend)
 from src.spot.tts import get_backend, get_fallback_backend, synthesize_with_fallback
-from src.spot.features.mouth.driver import envelope
+from src.spot.tts.envelope import envelope
 
 
 def _default_voice_for_backend(backend) -> str:
