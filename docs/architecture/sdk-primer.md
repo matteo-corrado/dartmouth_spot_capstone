@@ -60,12 +60,12 @@ lease_client = robot.ensure_client(LeaseClient.default_service_name)
 
 | Client | Purpose | Used in |
 |--------|---------|---------|
-| `RobotCommandClient` | Send movement commands (walk, turn, stand, sit) | `spot_dispatch.py` |
-| `RobotStateClient` | Read battery, pose, motor state, faults | `spot_dispatch.py` |
+| `RobotCommandClient` | Send movement commands (walk, turn, stand, sit) | `src/spot/robot/dispatcher.py`, `src/spot/features/*/handlers.py` |
+| `RobotStateClient` | Read battery, pose, motor state, faults | `src/spot/robot/state.py` |
 | `LeaseClient` | Acquire control of the robot | `session.py` |
 | `PowerClient` | Power motors on/off | `session.py` |
-| `ImageClient` | Capture camera images | `spot_dispatch.py` |
-| `GraphNavClient` | Autonomous navigation to waypoints | `spot_dispatch.py` |
+| `ImageClient` | Capture camera images | `src/spot/robot/state.py` |
+| `GraphNavClient` | Autonomous navigation to waypoints | `src/spot/nav/runner.py` |
 | `EstopClient` | Software emergency stop | `estop_run.py`, `web_panel.py` |
 
 ## Leases
@@ -97,7 +97,7 @@ keepalive = LeaseKeepAlive(lease_client, must_acquire=False, return_at_exit=True
 ```
 
 !!! warning "Lease contention"
-    If someone picks up the Spot tablet and takes control, the tablet acquires the lease and the Jetson loses it. The voice pipeline will re-take the lease on the next command (since `spot_dispatch.py` maintains a persistent session), but any in-progress navigation will be interrupted.
+    If someone picks up the Spot tablet and takes control, the tablet acquires the lease and the Jetson loses it. The voice pipeline will re-take the lease on the next command (since `src/spot/robot/connection.py` maintains a persistent session), but any in-progress navigation will be interrupted.
 
 ## Time Sync
 
@@ -282,7 +282,7 @@ while True:
     time.sleep(0.5)
 ```
 
-This pattern is exactly what `spot_dispatch.py` implements in `_navigate_waypoint_sequence()`, with re-localization and backtrack-on-stuck recovery.
+This pattern is exactly what `src/spot/nav/runner.py` implements in `NavRunner.navigate_sequence()`, with re-localization and backtrack-on-stuck recovery.
 
 ## Keepalive Policies
 

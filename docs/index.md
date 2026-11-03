@@ -89,7 +89,7 @@ dartmouth_spot_capstone/
             client_mic.py       # Microphone listener + VAD + main loop
             server.py           # gRPC ASR bridge (server.py wrapper)
             llm_brain.py        # LLM/VLM inference via Ollama
-            spot_dispatch.py    # Intent-to-robot-action executor
+            dispatcher.py        # (robot/) Intent-to-robot-action executor
             intent.py           # Regex intent parser (legacy fallback)
             spot_tts.py         # Kokoro TTS playback
             wake_word.py        # sherpa-onnx keyword spotter

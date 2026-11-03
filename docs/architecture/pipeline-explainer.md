@@ -2,7 +2,7 @@
 
 How a spoken sentence becomes a robot action and a spoken reply, stage by stage: which module does each job, what goes in and out, what you can tune, how each stage fails, and how to debug it.
 
-Written for someone who has not seen this code. Line references (`file:line`) are against the poster-demo branch at commit `cd4528d` ("startup status template: say safety switch instead of e-stop"). They drift as code changes; the function names are the stable handle. Paths are relative to the repo root; `src/voice_control/` is shortened to `vc/`. Modules that moved in the 2026-10 restructure are written with their new `src/spot/...` paths (line numbers were taken before the move and may be off); `client_mic.py` and `spot_dispatch.py` are still under `vc/` while they are being split, and `server.py` there is a shim that forwards to `src/spot/stt/server.py` (see [package-map.md](package-map.md)).
+Written for someone who has not seen this code. Paths are relative to the repo root and use the post-restructure layout under `src/spot/` (see [package-map.md](package-map.md)). Function names are the stable handle; most old `file:line` numbers were dropped because they were taken before the move, and the few that remain may drift. `src/voice_control/` now holds only two launch stubs: `client_mic.py` (calls `src/spot/app/main.py`) and `server.py` (forwards to `src/spot/stt/server.py`).
 
 Operators: the day-of runbook is [daily-operations.md](../getting-started/daily-operations.md). This page explains *why* things behave as they do.
 
@@ -14,18 +14,18 @@ Operators: the day-of runbook is [daily-operations.md](../getting-started/daily-
  PEOPLE ──voice──►  reSpeaker XVF3800 (USB, 16 kHz, 2 ch; ch0 = beamformed)
                      │  audio ─────────────────────────────┐    │ USB control: DoA 20 Hz, LED ring
                      ▼                                     │    ▼
-        sounddevice callback  vc/client_mic.py:642         │  MicArray (src/spot/mic/xvf3800.py) ◄── RingAnimator (LED writes)
+        sounddevice callback  audio/capture.py callback         │  MicArray (src/spot/mic/xvf3800.py) ◄── RingAnimator (LED writes)
           1. tap ► safety queue ─► SAFETY-KWS THREAD ──┐   │        │ DoA history
              (every state; ignores mute and gates)     │   │        ▼
           2. drop if muted / Spot speaking / gated     │   │  SpeakerLock (src/spot/conversation/speaker_lock.py)
           3. ► audio_queue (30 ms frames)              │   │
                      ▼                                 │   │
-   MAIN LOOP (client_mic.main, 30 ms frames)           │   │
+   MAIN LOOP (conversation/loop.py, 30 ms frames)           │   │
      dBFS + Silero VAD every frame ► FloorTracker      │   │
      wake KWS (WAKE_WORD + LISTENING) ─ wake! ─► lock on DoA at wake time ─► LISTENING
      Endpointer ► utterance ► SNR gate ► lock check (±35°, else red flash + drop)
                      ▼                                 │
-     gRPC :50055 ► server.py ► Parakeet ASR (GPU)      │
+     gRPC :50055 ► stt/server.py ► Parakeet ASR (GPU)      │
                      ▼ transcript                      │
      safety rule (intent.py) ──stop/freeze/estop──────►├──► dispatch_intent ► stop FIRST ► stow arm
      strip wake phrase ► filler filter                 │            ▲
@@ -34,11 +34,11 @@ Operators: the day-of runbook is [daily-operations.md](../getting-started/daily-
         │ response tokens stream ► TTSChunker ► SpotTTS ► AudioPlayer ► USB speaker (mic gated)
         │                           ElevenLabs (4.5 s budget) ─fail─► Kokoro (local)   │ envelope
         │                                                                              ▼
-        └─ actions ► spot_dispatch.dispatch_intent ► Spot SDK (folded arm ► walk ≤0.5 m/s, emote, nav, ...)
+        └─ actions ► robot/dispatcher.dispatch_intent ► Spot SDK (folded arm ► walk ≤0.5 m/s, emote, nav, ...)
                                                        mouth (gripper) follows speech
 
- OPERATOR ─ssh─► scripts/spotctl ─HTTP 127.0.0.1:8770─► control_server.py ─► client_mic._on_immediate / _on_queued
- LAUNCH:  scripts/wakespot ─► E-Stop claim ─► run_voice_control.py ─► server.py (ASR) + client_mic.py (everything else)
+ OPERATOR ─ssh─► scripts/spotctl ─HTTP 127.0.0.1:8770─► control_server.py ─► operator/control.py _on_immediate / queued
+ LAUNCH:  scripts/wakespot ─► E-Stop claim ─► run_voice_control.py ─► server.py stub → stt/server.py (ASR) + client_mic.py stub → app/main.py (everything else)
  LOGS:    logs/utterances/<date>.jsonl   logs/conversations/<date>.jsonl   logs/latency-<ts>.jsonl (with --latency file|all)
 ```
 
@@ -69,16 +69,16 @@ Ring limits measured on the device (2026-10-28): 12 LEDs 30 degrees apart; **no 
 | Layer | File | Job |
 |---|---|---|
 | `scripts/wakespot` (shell) → `scripts/wakespot.py` | `wakespot.py:main` | Lockfile `/tmp/wakespot.pid` (refuses a second copy); resolves the map (`--no-map` skips; no argument = last-used map); **claims the software E-Stop** (`estop_session`, keep-alive heartbeat thread); spawns `run_voice_control.py` in its own process group; waits. Ctrl+C = graceful (sit, power off, release E-Stop without cutting; 45 s limit then escalate). Ctrl+C twice or Ctrl+\\ = immediate E-Stop CUT and SIGKILL |
-| `scripts/run_voice_control.py` | `main`, `start_asr_server` | Loads `.env`; kills stale `voice_control/server.py`; starts the ASR gRPC bridge and waits for "listening on"; starts `client_mic.py` as a child and forwards shutdown signals. Only touches Ollama when `SPOT_BRAIN_BACKEND=ollama` |
-| `vc/server.py` | `ASRServicer.StreamingRecognize` (`server.py:28`) | gRPC `:50055`; backend from `SPOT_ASR_BACKEND` (`src/spot/stt/backends/__init__.py:14`, default `parakeet`; `nemotron` is the rollback). The `server.py` docstring still says nemotron is the default; the code says parakeet |
-| `vc/client_mic.py` | `main` (`client_mic.py:1266`) | Everything else: devices, 2 s noise calibration, brain + warm-up, audio player, TTS, VAD, wake + safety detectors, robot probe, mic array, ring, control server, main loop |
+| `scripts/run_voice_control.py` | `main`, `start_asr_server` | Loads `.env`; kills stale `voice_control/server.py`; starts the ASR gRPC bridge and waits for "listening on"; starts the `client_mic.py` stub (which runs `src/spot/app/main.py`) as a child and forwards shutdown signals. Only touches Ollama when `SPOT_BRAIN_BACKEND=ollama` |
+| `src/spot/stt/server.py` (stub: `src/voice_control/server.py`) | `ASRServicer.StreamingRecognize` | gRPC `:50055`; backend from `SPOT_ASR_BACKEND` (`src/spot/stt/backends/__init__.py:14`, default `parakeet`; `nemotron` is the rollback). The `stt/server.py` docstring still says nemotron is the default; the code says parakeet |
+| `src/spot/app/main.py` (stub: `src/voice_control/client_mic.py`) | `main` | Everything else: devices, 2 s noise calibration, brain + warm-up, audio player, TTS, VAD, wake + safety detectors, robot probe, mic array, ring, control server, main loop |
 
-Startup order inside `client_mic.main`: auto-detect devices by name (`XVF3800` mic, `UACDemoV1.0` speaker, `client_mic.py:112`) → calibrate noise (2 s, **stay quiet**) → connect ASR → `LLMBrain.wait_available(90 s)` then `warm_up()` → `AudioPlayer` → `SpotTTS` (warms Kokoro fallback) → Silero VAD → wake KWS → safety KWS → robot probe → open `MicArray` + `RingAnimator` → start safety thread → open input stream → `beep.ready()` (power-on chime) → `set_auto_arm` (automatic fold + mouth once standing, unless `--no-arm` / `auto_arm: false`) → control server → main loop.
+Startup order inside `app/main.py` `main` (9 steps): tuning and CLI → event bus → robot owners → features (`REGISTRY.load`) → audio: auto-detect devices by name (`XVF3800` mic, `UACDemoV1.0` speaker; `_find_device_by_name` in `audio/capture.py`), calibrate noise (2 s, **stay quiet**), `AudioPlayer`, Silero VAD, `MicArray` + `RingAnimator`, wake KWS, safety KWS and its thread → services: connect ASR, `SpotTTS` (warms Kokoro fallback), `LLMBrain.wait_available(90 s)` then `warm_up()`, vision → robot bring-up (safety-KWS gate, probe or `--map` session) → conversation (open input stream, power-on chime, automatic fold + mouth once standing unless `--no-arm` / `auto_arm: false`) → control server → `Conversation.run()`. Safety, mic, ring and wake start before ASR, TTS and brain; see [restructure-notes](../project/restructure-notes.md).
 
 Robot bring-up has two paths:
 
-- **With a map** (`wakespot` default, or `wakespot <name>`): `ensure_spot_session(map_path)` runs *at startup* (`client_mic.py:1521`) and **powers on and stands the robot**, uploads the map, localises. Fails closed first: refuses to start without the safety KWS.
-- **`--no-map`**: only a TCP probe to `SPOT_IP:443` (`_probe_host`, `client_mic.py:962`). The real session is created lazily by the **first command that needs the robot**, which stands it (about 30 s).
+- **With a map** (`wakespot` default, or `wakespot <name>`): `ensure_spot_session(map_path)` runs *at startup* (`_bring_up_robot` in `app/main.py`) and **powers on and stands the robot**, uploads the map, localises. Fails closed first: refuses to start without the safety KWS.
+- **`--no-map`**: only a TCP probe to `SPOT_IP:443` (`_probe_host` in `app/main.py`). The real session is created lazily by the **first command that needs the robot**, which stands it (about 30 s).
 
 **Inputs/outputs.** Flags in; a running process group out. Flags: `--no-map`, `--no-arm` (`--enable-arm` is a no-op kept for old launch lines), `--no-transcript-log`, `--latency off|summary|file|all`, `--mic-channel N`, `--tts-backend kokoro|elevenlabs`, `--no-tts`, `--no-wake-word`, `--volume`, `--device/--output-device`, `--skip-services`, `--debug-audio`, `--debug-crash`. `run_voice_control.py` additionally accepts `--dry-run`, `--latency-out`, `--allow-no-safety-kws`, `--no-brain` (wakespot does not forward those four).
 
@@ -100,7 +100,7 @@ Robot bring-up has two paths:
 
 **What it does.** The reSpeaker XVF3800 (firmware 2.1.1) is both the microphone (USB audio) and a controllable device (USB vendor control transfers): it reports **direction of arrival (DoA)** of speech and drives the 12-LED ring.
 
-- Audio: stereo 16 kHz. `MIC_CHANNEL` (`Tuning.mic_channel`, default 0) picks ch0 (processed: noise suppression + AGC, beamformed) or ch1 (ASR beam, no NS/AGC). Selection happens in `audio_callback` (`client_mic.py:642`).
+- Audio: stereo 16 kHz. `MIC_CHANNEL` (`Tuning.mic_channel`, default 0) picks ch0 (processed: noise suppression + AGC, beamformed) or ch1 (ASR beam, no NS/AGC). Selection happens in `AudioCapture.callback` (`audio/capture.py`).
 - Control: `MicArray` (`src/spot/mic/xvf3800.py:62`): `open()` (`:73`, returns `None` if absent), `read_doa()` (`:118`, degrees plus a speech flag), `start_poller(20 Hz)` (`:149`) keeping a timestamped history, `samples_between(t0, t1)` (`:171`), `set_led_effect`, `set_ring(12 colours)` (`:127`, `:133`), `set_fixed_beams` (beam steering, off by default).
 - Ring: `RingAnimator` (`src/spot/mic/ring_animator.py:21`) is the **single owner of all ring writes**. `show(spec)` never blocks; one daemon thread loops `spec.frames` at `frame_s`, capped to `ring_max_hz`. Specs come from `ring_for(state, lock_deg, muted, ...)` (`src/spot/mic/state_feedback.py:143`).
 
@@ -125,15 +125,15 @@ Robot bring-up has two paths:
 
 **What it does.** Turns a continuous 30 ms frame stream into discrete utterances and drops the ones that are too quiet or too close to the room's noise.
 
-Per frame in the main loop (`client_mic.py:1915-1990`):
+Per frame in the main loop (`Conversation.run` in `conversation/loop.py`):
 
 1. `frame_dbfs` (`src/spot/audio/frontend.py:7`) = level of the frame.
-2. **Silero VAD on every frame** (via sherpa-onnx; `client_mic.py:1921`). Old bug A1 fed it only loud frames; fixed.
-3. `ChimeMask` (`client_mic.py:612`): while one of Spot's own *chimes* plays (and `speaker_tail_s` after), VAD speech is masked so a chime can never start an utterance. Spot's *speech* is handled by the audio callback (frames dropped).
-4. `FloorTracker.update` (`audio_frontend.py:20`): the noise floor is the 10th percentile of the last 5 s of non-speech frames; falls instantly, rises at most 1 dB/s (so steady crowd noise cannot ratchet it up out of reach), and is **seeded once** by the 2 s startup calibration.
+2. **Silero VAD on every frame** (via sherpa-onnx; `conversation/loop.py`). Old bug A1 fed it only loud frames; fixed.
+3. `ChimeMask` (`audio/capture.py`): while one of Spot's own *chimes* plays (and `speaker_tail_s` after), VAD speech is masked so a chime can never start an utterance. Spot's *speech* is handled by the audio callback (frames dropped).
+4. `FloorTracker.update` (`audio/frontend.py`): the noise floor is the 10th percentile of the last 5 s of non-speech frames; falls instantly, rises at most 1 dB/s (so steady crowd noise cannot ratchet it up out of reach), and is **seeded once** by the 2 s startup calibration.
 5. Frame goes into a **pre-roll** deque (25 + onset frames) on every frame in every state, so the first syllable is never clipped.
-6. `Endpointer.feed` (`audio_frontend.py:48`): "start" after `onset_frames` (3) consecutive speech frames; "end" after `end_silence_s_short` (1.2 s) of silence, lengthened to `end_silence_s` (1.5 s) once the utterance passes 2 s; "cap" at `max_utterance_s` (20 s). A frame counts as silence only if the VAD says non-speech *and* its level is under floor + 6 dB.
-7. At the end, `_finish_utterance` (`client_mic.py:1709`) applies the **SNR gate** `passes_gate` (`audio_frontend.py:116`): median speech level must be at least `min_speech_dbfs` (-50, plus 6 dB while the robot is moving) **and** at least `min_snr_db` (10) above the floor. Failing utterances are logged with `drop_reason: "gate"` and discarded without ASR.
+6. `Endpointer.feed` (`audio/frontend.py`): "start" after `onset_frames` (3) consecutive speech frames; "end" after `end_silence_s_short` (1.2 s) of silence, lengthened to `end_silence_s` (1.5 s) once the utterance passes 2 s; "cap" at `max_utterance_s` (20 s). A frame counts as silence only if the VAD says non-speech *and* its level is under floor + 6 dB.
+7. At the end, `Conversation.finish_utterance` (`conversation/loop.py`) applies the **SNR gate** `passes_gate` (`audio/frontend.py`): median speech level must be at least `min_speech_dbfs` (-50, plus 6 dB while the robot is moving) **and** at least `min_snr_db` (10) above the floor. Failing utterances are logged with `drop_reason: "gate"` and discarded without ASR.
 
 Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 
@@ -166,7 +166,7 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 - "Hey Spot, stand up" in one breath: the wake fires mid-sentence, a fresh endpointer starts, the pre-roll holds the tail, and `strip_wake_phrase` (`phrases.py:48`, fuzzy `difflib` 0.75, tolerates one leading filler such as "hey/hi/say") removes the phrase from the transcript (`process_utterance`, step 1c). A bare wake phrase with no command is ignored.
 - Keyword token files are generated by `scripts/setup_kws.py` (sentencepiece fallback if sherpa's `text2token` needs `pypinyin`). Do not hand-edit `models/kws/keywords.txt`; edit `config/wake_phrases.txt` and re-run the script.
 
-**Inputs/outputs.** PCM16 frame in; bool out → `_on_wake(t_wake)` (`client_mic.py:1669`).
+**Inputs/outputs.** PCM16 frame in; bool out → `Conversation.on_wake(t_wake)` (`conversation/loop.py`).
 
 **Tunables.** `kws_peak_target`. Detection constants live in `wake/sherpa_onnx.py:30-34` (`KEYWORDS_SCORE` 1.5, `KEYWORDS_THRESHOLD` 0.05, `NUM_TRAILING_BLANKS` 1). The `kws_score` and `kws_threshold` keys in `tuning.yaml` are **not read by any code yet**; editing them does nothing.
 
@@ -187,9 +187,9 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 - `crowd` mode (`spotctl crowd`): after every reply drop back to `WAKE_WORD`, so each turn needs a fresh wake.
 - Optional `beam_steering` points the mic's fixed beam at the locked angle (off by default; untested at the event).
 
-**Voiceprint (not live).** `src/spot/conversation/voiceprint.py` (WeSpeaker ResNet34-LM embedding, cosine similarity, `accept_combined`) exists and `scripts/setup_wespeaker.py` fetches the model, but **nothing in `client_mic.py` calls it**. `spotctl voiceprint` only toggles a status flag and the `voiceprint_enabled` / `voiceprint_threshold` tuning keys are unused. Direction is the only speaker gate at the demo.
+**Voiceprint (not live).** `src/spot/conversation/voiceprint.py` (WeSpeaker ResNet34-LM embedding, cosine similarity, `accept_combined`) exists and `scripts/setup_wespeaker.py` fetches the model, but **nothing in the voice client calls it**. `spotctl voiceprint` only toggles a status flag and the `voiceprint_enabled` / `voiceprint_threshold` tuning keys are unused. Direction is the only speaker gate at the demo.
 
-**Gaze (live, folded arm).** On a wake lock, an accepted lock update and a release (→ centre), client_mic queues `(body_deg, safety_gen)` to one gaze worker (newest request only; the gen is taken at request time, so a stop before pickup wins). `gaze_at_bearing` (`vc/spot_dispatch.py`) turns shoulder yaw sh0 of the folded joints pose with a slow joint move (`ARM_MAX_ANGULAR_VEL`), clamped to ±`gaze_max_deg` (tuning, default 20, capped at 60 in code; `gaze_sh0_sign` flips the direction), ignoring speakers > 150° behind. It only runs in the talk pose, standing + powered, not walking/dancing/closing, at least 3 s after any pose move, when the target moved > 15° and ≥ 2 s since the last gaze. It is sent under `_arm_lock` after re-checking pose and safety gen, with a 0.5 s RPC timeout. `src/spot/features/gaze/math.py` (old arm_gaze_command math) is unused.
+**Gaze (live, folded arm).** On a wake lock, an accepted lock update and a release (→ centre), the conversation loop queues `(body_deg, safety_gen)` to one gaze worker (newest request only; the gen is taken at request time, so a stop before pickup wins). `gaze_at_bearing` (`src/spot/features/gaze/handlers.py`) turns shoulder yaw sh0 of the folded joints pose with a slow joint move (`ARM_MAX_ANGULAR_VEL`), clamped to ±`gaze_max_deg` (tuning, default 20, capped at 60 in code; `gaze_sh0_sign` flips the direction), ignoring speakers > 150° behind. It only runs in the talk pose, standing + powered, not walking/dancing/closing, at least 3 s after any pose move, when the target moved > 15° and ≥ 2 s since the last gaze. It is sent under `_arm_lock` after re-checking pose and safety gen, with a 0.5 s RPC timeout. `src/spot/features/gaze/math.py` (old arm_gaze_command math) is unused.
 
 **Tunables.** `lock_window_deg`, `lock_timeout_s`, `lock_nudge`, `mic_yaw_*`, `beam_steering`.
 
@@ -203,9 +203,9 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 
 **What it does.** Converts one finished utterance to text. Not streaming: the client sends the whole utterance (PCM16 @ 16 kHz) after endpointing.
 
-- Client: `send_to_asr` (`client_mic.py:838`) opens a gRPC stream to `localhost:50055`.
-- Server: `ASRServicer.StreamingRecognize` (`vc/server.py:28`) concatenates chunks and calls `backend.transcribe`. Backends: `ParakeetBackend` (`src/spot/stt/backends/parakeet.py`, default, GPU, about 190 ms) and `NemotronBackend` (`asr/nemotron.py`, rollback), chosen by `SPOT_ASR_BACKEND`.
-- `process_utterance` (`client_mic.py:2188`) then cleans punctuation, rejects empty/one-character transcripts, and runs the safety and wake-strip steps (below).
+- Client: `send_to_asr` (`src/spot/stt/client.py`) opens a gRPC stream to `localhost:50055`.
+- Server: `ASRServicer.StreamingRecognize` (`src/spot/stt/server.py`) concatenates chunks and calls `backend.transcribe`. Backends: `ParakeetBackend` (`src/spot/stt/backends/parakeet.py`, default, GPU, about 190 ms) and `NemotronBackend` (`asr/nemotron.py`, rollback), chosen by `SPOT_ASR_BACKEND`.
+- `Conversation.process_utterance` (`conversation/loop.py`) then cleans punctuation, rejects empty/one-character transcripts, and runs the safety and wake-strip steps (below).
 
 **Inputs/outputs.** PCM16 bytes in; transcript string out (logged as `HEARD: ...`).
 
@@ -213,7 +213,7 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 
 **Failure modes.** ASR server dead (gRPC error; the turn is dropped, loop continues); empty transcript (`[No speech recognized]`, no THINKING signal); hallucinated text on noise.
 
-**Debug.** `[Timing] ASR: x.xxs`, `HEARD:`/`CLEAN:` lines; `pgrep -af voice_control/server.py`; run `scripts/run_voice_control.py --server-only`.
+**Debug.** `[Timing] ASR: x.xxs`, `HEARD:`/`CLEAN:` lines; `pgrep -af voice_control/server.py` (the stub's path, which the launcher matches); run `scripts/run_voice_control.py --server-only`.
 
 ---
 
@@ -221,11 +221,11 @@ Utterances shorter than 0.3 s (`MIN_SPEECH_DURATION`) are dropped before ASR.
 
 Spot should stop within a second of a spoken "stop" **in any state**. Five independent layers:
 
-1. **Always-on safety keyword spotter** (own thread). `audio_callback` pushes every frame into `_safety_q` *before* any mute/gate check (`client_mic.py:652-655`). `safety_kws_loop` (`:443`) feeds `SafetyKeywordDetector` (`src/spot/safety/kws.py:30`: stop / freeze / estop, easier to trigger than the wake word, fixed x8 gain); on a hit `_on_safety_kw` (`:502`) marks the safety event (aborts any action chain), starts a **hush** (cut speech) on a daemon thread, and dispatches the halt intent immediately. It runs in all states and **operator mute does not silence it**. 1.5 s refractory after a hit. Health is exposed as `safety_kws_ok` in `spotctl status`.
+1. **Always-on safety keyword spotter** (own thread). `AudioCapture.callback` pushes every frame into the safety queue *before* any mute/gate check (`audio/capture.py`). `safety_kws_loop` (`safety/listener.py`) feeds `SafetyKeywordDetector` (`src/spot/safety/kws.py:30`: stop / freeze / estop, easier to trigger than the wake word, fixed x8 gain); on a hit `SafetyListener.on_keyword` (`safety/listener.py`) marks the safety event (aborts any action chain), starts a **hush** (cut speech) on a daemon thread, and dispatches the halt intent immediately. It runs in all states and **operator mute does not silence it**. 1.5 s refractory after a hit. Health is exposed as `safety_kws_ok` in `spotctl status`.
 2. **Transcript rule** (`check_safety_command`, `src/spot/brain/intent.py:129`), applied to every transcript before wake handling and again after the wake phrase is stripped, short-circuiting before the LLM. *"stop" fires unless every "stop" is a noun use* directly after `next, last, bus, pit, first, final, another` (and never after sentence punctuation); `estop`/`emergency stop` always wins; `halt` and `freeze` always fire. Errs toward stopping: "come to a stop" and "press the stop button" halt Spot; "what's the next stop" does not.
-3. **`spotctl` immediate commands** (`_on_immediate`, `client_mic.py:1191`): `stop`, `freeze`, `sit`, `stand`, `stow`, `hush` run on HTTP threads without taking any lock the main loop might hold.
-4. **Dispatcher** (`vc/spot_dispatch.py`): `SAFETY_INTENTS` (`:74`) bypass the dispatch lock. `_dispatch_safety` (`:1368`) sends the SDK **stop command first**, then the original branch, then stows the arm (`_stow_now`, `:194`) without waiting; `_safety_gen` aborts locomotion still being set up on another thread; with **no session** it does nothing (it never powers on a parked robot just to stop it). "Freeze" holds a stand only if already standing. Mouth is latched shut.
-5. **Fail closed.** `safety_startup_ok` (`client_mic.py:552`): on a reachable robot, startup refuses unless the safety KWS loaded (`--allow-no-safety-kws` overrides; dry-run only warns).
+3. **`spotctl` immediate commands** (`_on_immediate`, `operator/control.py`): `stop`, `freeze`, `sit`, `stand`, `stow`, `hush` run on HTTP threads without taking any lock the main loop might hold.
+4. **Dispatcher** (`robot/dispatcher.py`): `SAFETY_INTENTS` (`core/core_intents.py`) bypass the dispatch lock. `dispatch_safety` sends the SDK **stop command first**, then the original branch, then stows the arm (`ARM.stow_now`, `robot/arm.py`) without waiting; `_safety_gen` aborts locomotion still being set up on another thread; with **no session** it does nothing (it never powers on a parked robot just to stop it). "Freeze" holds a stand only if already standing. Mouth is latched shut.
+5. **Fail closed.** `safety_startup_ok` (`safety/listener.py`): on a reachable robot, startup refuses unless the safety KWS loaded (`--allow-no-safety-kws` overrides; dry-run only warns).
 
 Important distinctions:
 
@@ -267,7 +267,7 @@ Important distinctions:
 
 **What it does.** Executes each action from the brain (or from regex fallback / spotctl) on the robot, thread-safely.
 
-- Entry: `execute_on_spot` (`client_mic.py:873`) → `dispatch_intent` (`vc/spot_dispatch.py:1312`). Honors `SPOT_DRY_RUN`. Chains run in order with waits between steps (`CHAIN_MOVEMENT_WAIT_S` 3 s, `CHAIN_POSTURE_WAIT_S` 4 s, or until navigation completes); an operator/voice stop cancels the rest.
+- Entry: `execute_on_spot` (`conversation/loop.py`) → `dispatch_intent` (`robot/dispatcher.py`). Honors `SPOT_DRY_RUN`. Chains run in order with waits between steps (`CHAIN_MOVEMENT_WAIT_S` 3 s, `CHAIN_POSTURE_WAIT_S` 4 s, or until navigation completes); an operator/voice stop cancels the rest.
 - Routing: safety intents → `_dispatch_safety`; "unlocked" intents (persona, volume, backend, battery/status/obstacle/list info) → `_dispatch_core` directly; locomotion (`intent_names("locomotion")` from the feature registry, with the core constants in `src/spot/core/core_intents.py`) → `_dispatch_locomotion`; everything else under `_dispatch_lock`. `ensure_spot_session` (`:460`) brings the session up lazily.
 - **Arm policy** (`arm_policy_for`, `:101`), pure and unit-tested:
   - The talk pose **is** the walking pose: the folded joints pose `WALK_JOINTS` (`src/spot/robot/session.py`, `WALK_POSE = "joints"`, operator decision 2026-10-28). Locomotion (walk, strafe, turn, go_to, tour, patrol, come_back, go_to_object, follow_me) from the talk pose sends **no arm command** and the mouth keeps animating (a gaze-yawed shoulder is re-centred first, without waiting). With another `WALK_POSE` the old path applies: tuck first, refuse to move if the tuck fails, restore only after a natural finish.
@@ -275,7 +275,7 @@ Important distinctions:
   - emote: mouth off, arm stows; after the routine the arm folds back and the mouth comes back on.
   - Automatic fold: once the robot is standing + powered (after bring-up, a stand, or at the next turn) the arm folds and the mouth turns on (`auto_arm_if_ready`). E-stop, sit, power-off and close cancel a pending fold; "disable mouth" / `spotctl stow` turn it off for the run.
 - **Walk speed cap**: `walk_speed_cap` (`src/spot/nav/graph_nav_utils.py:17`) = `Tuning.walk_speed_cap` (0.5 m/s) on every velocity, trajectory and GraphNav command; turning limited to 1 rad/s. Named arm poses (stow/carry) keep the SDK's default speed; the joints pose uses a 2.5 s move capped at `ARM_MAX_ANGULAR_VEL`.
-- **Emotes** (`src/spot/features/dance/emotes.py`, `_handle_emote` `spot_dispatch.py:1209`): routines `hey_join_me`, `performance_bow`, `smooth_sailing` (dances), `happy_gesture`, `tail_wag`, `upright_sit`, `wanna_play`; "dance"/"random" picks a random dance different from the last. Runs via the Choreography client (works without a license). It **refuses**: while navigating or walking ("I can't dance while I'm on the move"), unless powered and standing ("Ask me to stand up first"), if the floor-clearance scan finds an obstacle inside `dance_clearance_m` (1.5 m; "I need a little more room to dance"), or if there is **no usable obstacle grid** ("I can't check my surroundings right now", fail closed). A stop cancels the routine and stows.
+- **Emotes** (`src/spot/features/dance/emotes.py`, `_handle_emote` in `src/spot/features/dance/handlers.py`): routines `hey_join_me`, `performance_bow`, `smooth_sailing` (dances), `happy_gesture`, `tail_wag`, `upright_sit`, `wanna_play`; "dance"/"random" picks a random dance different from the last. Runs via the Choreography client (works without a license). It **refuses**: while navigating or walking ("I can't dance while I'm on the move"), unless powered and standing ("Ask me to stand up first"), if the floor-clearance scan finds an obstacle inside `dance_clearance_m` (1.5 m; "I need a little more room to dance"), or if there is **no usable obstacle grid** ("I can't check my surroundings right now", fail closed). A stop cancels the routine and stows.
 - Info actions (battery, status, obstacles, locations, maps) speak their results through the `speak=` callback rather than letting the LLM guess.
 - **Gripper mouth** (`src/spot/features/mouth/driver.py`): `enable_mouth` (or the automatic fold) moves the arm to the folded "talk" pose (standing + powered only) and opens/closes the gripper from the speech loudness envelope at 20 fps. The `mouth_*` keys in `tuning.yaml` (cap, attack, release, rest, lead) are **not wired yet**; the mouth uses the envelope's built-in 0.06 gate and per-sentence normalisation.
 
@@ -312,7 +312,7 @@ Important distinctions:
 
 **What it does.** Makes the turn state obvious to a crowd. The cheat-sheet at the top lists the signals; this section says where they come from.
 
-- `_enter_state(new_state)` (`client_mic.py:1017`) is the single hook: plays the state's chime (`chime_for`, `src/spot/mic/state_feedback.py:46` → `audio_feedback.beep.<cue>`), updates Spot's onboard AV LEDs (`StateLeds`, `src/spot/mic/spot_leds.py`, only after a robot session exists), records the state for `spotctl status`, and calls `_update_ring`.
+- `_enter_state(new_state)` (`conversation/loop.py`) is the single hook: plays the state's chime (`chime_for`, `src/spot/mic/state_feedback.py:46` → `audio_feedback.beep.<cue>`), updates Spot's onboard AV LEDs (`StateLeds`, `src/spot/mic/spot_leds.py`, only after a robot session exists), records the state for `spotctl status`, and calls `_update_ring`.
 - `_update_ring` → `_current_ring_spec` → `ring_for(state, lock_angle, muted, ...)` → `_show_ring` → `RingAnimator.show` (the only place ring writes happen). Frames: `sweep_frames` (listening), `breathe_frames` (thinking), solid specs otherwise.
 - Release/timeouts call `_release(cue=True)` which plays `released_cue`.
 - `_signal_reject` flashes red for 200 ms for off-lock speakers.
@@ -327,10 +327,10 @@ Important distinctions:
 
 ## 12. spotctl: operator control
 
-**What it does.** A laptop-side CLI for the running pipeline. The operator ssh's into the Jetson and runs `scripts/spotctl`, which POSTs to a **localhost-only** HTTP server (`127.0.0.1:8770`) started by `client_mic` (`_start_control_server`, `client_mic.py:1249`; `src/spot/operator/control_server.py:117`).
+**What it does.** A laptop-side CLI for the running pipeline. The operator ssh's into the Jetson and runs `scripts/spotctl`, which POSTs to a **localhost-only** HTTP server (`127.0.0.1:8770`) started by the app (`_start_control_server` in `src/spot/operator/control.py`; server in `src/spot/operator/control_server.py`).
 
-- **Immediate** commands run on HTTP threads and take effect now: `hush`, `stop`, `freeze`, `sit`, `stand`, `stow`, `status`, `mute`, `unmute` (`_on_immediate`, `client_mic.py:1191`).
-- **Queued** commands are handled by the main loop between frames (`_on_queued`, `:1790`): `listen`, `release`, `reset`, `say <text>`, `persona <name>`, `crowd [on|off]`, `voiceprint [on|off]`. The reply `{"queued": true}` means *accepted*, not *done*; a busy turn delays them.
+- **Immediate** commands run on HTTP threads and take effect now: `hush`, `stop`, `freeze`, `sit`, `stand`, `stow`, `status`, `mute`, `unmute` (`_on_immediate`, `operator/control.py`).
+- **Queued** commands are handled by the main loop between frames (`on_queued` in `conversation/loop.py`): `listen`, `release`, `reset`, `say <text>`, `persona <name>`, `crowd [on|off]`, `voiceprint [on|off]`. The reply `{"queued": true}` means *accepted*, not *done*; a busy turn delays them.
 - CLI: `scripts/spotctl.py` (stdlib only). One-shot `spotctl <name> [arg...]` prints JSON (exit codes: 0 ok, 1 error reply, 2 unreachable, 3 no reply in time). With no arguments it enters hotkey mode (needs `ssh -t`). Full command table is in [daily-operations.md](../getting-started/daily-operations.md).
 - Motion commands (`stop/freeze/sit/stand/stow`) also set the abort flag so a chain in progress stops; `stop`/`freeze` also hush speech.
 
@@ -346,7 +346,7 @@ Important distinctions:
 
 | File | Written by | Contents |
 |---|---|---|
-| `logs/utterances/<date>.jsonl` | `UtteranceLog` (`client_mic.py:262`) | One record per finished utterance (`kind: utterance`: floor, speech median/p90 dBFS, SNR, endpoint, duration, lock and utterance angles in mic and body frames, `accepted`, `drop_reason` = `gate`/`lock`, transcript, `reached_llm`, `latency_s`) plus a 1 Hz `kind: idle` record (state, floor, frame level, lock angle) |
+| `logs/utterances/<date>.jsonl` | `UtteranceLog` (`src/spot/conversation/utterance_log.py`) | One record per finished utterance (`kind: utterance`: floor, speech median/p90 dBFS, SNR, endpoint, duration, lock and utterance angles in mic and body frames, `accepted`, `drop_reason` = `gate`/`lock`, transcript, `reached_llm`, `latency_s`) plus a 1 Hz `kind: idle` record (state, floor, frame level, lock angle) |
 | `logs/conversations/<date>.jsonl` | `ConversationLog` (`chatbot/conversation_log.py`) | One record per brain turn: transcript, response, actions, persona, TTS backend, voice id, LLM latency |
 | `logs/latency-<ts>.jsonl` | `src/spot/core/latency.py`, with `--latency file|all` (`--latency summary` prints a percentile table at shutdown) | Per-utterance stage timestamps: VAD, ASR, LLM, dispatch, TTS render/play |
 

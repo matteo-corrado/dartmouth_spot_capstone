@@ -121,7 +121,7 @@ python3 -c "import sounddevice; print('sounddevice OK')"
 
 ## Phase 3: ASR Backend ~~(NVIDIA Riva — removed in Stage 1)~~
 
-> **Superseded:** Riva has been removed in Stage 1. The ASR backend is now `src/voice_control/server.py` auto-started by `run_voice_control.py`. No manual setup required. This section is kept as a historical record of the original Riva-based setup.
+> **Superseded:** Riva has been removed in Stage 1. The ASR backend is now `src/spot/stt/server.py` (launched via the `src/voice_control/server.py` stub) auto-started by `run_voice_control.py`. No manual setup required. This section is kept as a historical record of the original Riva-based setup.
 
 ---
 
@@ -196,8 +196,8 @@ Look for the XVF3800 device. Note its index number.
 
 ### 6.3 Configure device in client_mic.py (if needed)
 
-The default device is hardcoded in `src/voice_control/client_mic.py`. If your
-device index differs from `24`, update the `INPUT_DEVICE` constant.
+The default device is set by the `--device` flag of the voice client (`src/spot/app/main.py`). If your
+device index differs from `24`, pass `--device N`.
 
 ---
 
@@ -350,7 +350,7 @@ python client_mic.py
 ### Test LLM Brain (no robot needed)
 
 ```bash
-python src/voice_control/llm_brain.py
+python -m src.spot.brain.llm_brain
 ```
 
 Type commands and verify JSON output:
@@ -363,7 +363,7 @@ Type commands and verify JSON output:
 ### Test TTS
 
 ```bash
-python src/voice_control/spot_tts.py af_heart "Testing Kokoro TTS on Spot"
+python -m src.spot.tts.speaker af_heart "Testing Kokoro TTS on Spot"
 ```
 
 ### Test ASR Bridge

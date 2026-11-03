@@ -57,8 +57,8 @@ SPOT_WAKE_BACKEND=livekit spot-env/bin/python scripts/run_voice_control.py
 If TTS sentence chunker mis-segments or skips text:
 
 ```bash
-# In src/voice_control/client_mic.py, set `chunker = None` at the brain.process
-# guard (around line 1135). Existing post-process tts.speak(response) then
+# In src/spot/conversation/loop.py (process_utterance), set `chunker = None` where it is created
+# (`tts.enqueue_streaming(...)` in process_utterance). Existing post-process tts.speak(response) then
 # fires for every utterance (legacy non-streaming path).
 ```
 
@@ -158,7 +158,7 @@ Remove `| "\"enable_mouth\"" | "\"disable_mouth\""` from the `action-name` rule 
 
 ### Layer: full feature off (code)
 
-The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver is only created inside `enable_mouth`, simply never enabling it leaves the feature dormant. To hard-disable, comment out the `enable_mouth`/`disable_mouth` branches in `dispatch_intent` (`spot_dispatch.py`).
+The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver is only created inside `enable_mouth`, simply never enabling it leaves the feature dormant. To hard-disable, remove `"mouth"` from `ENABLED` in `src/spot/features/enabled.py`.
 
 ### Hard rollback (full 2E.2 revert)
 
@@ -166,4 +166,4 @@ The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver 
 git revert ac9c227 26610db 40bf3a2 b849a44 a00d9e7
 ```
 
-Touches only the 2E.2 surface (`animation/mouth.py`, `spot_tts.py` play-callback hooks, `spot_dispatch.py` actions, `session.py` arm helpers, `audio_player.py` on_play_end-on-error guard, `session_state.py`, `persona.py`, `personas.yaml`, grammar). Pre-2E.2 commit: `7f875ac`.
+Touches only the 2E.2 surface (`animation/mouth.py`, `spot_tts.py` play-callback hooks, the former `spot_dispatch.py` actions (now `src/spot/features/mouth/`), `session.py` arm helpers, `audio_player.py` on_play_end-on-error guard, `session_state.py`, `persona.py`, `personas.yaml`, grammar). Pre-2E.2 commit: `7f875ac`.

@@ -34,7 +34,7 @@ graph LR
     ROUTER{Intent Router<br/>regex/keyword}
     BRAIN_ACTION[llama-server<br/>action.gbnf<br/>NO thinking<br/>~1-2s warm]
     BRAIN_FREE[llama-server<br/>no grammar<br/>thinking ON<br/>~3-6s warm]
-    DISPATCH[Spot Dispatcher<br/>spot_dispatch.py]
+    DISPATCH[Spot Dispatcher<br/>robot/dispatcher.py]
     SPOT[Spot Robot<br/>192.168.80.3]
     TTS[Kokoro TTS<br/>ONNX CUDA<br/>~330 MB VRAM]
     YOLO[YOLO26-N + YOLOE26-S<br/>TensorRT FP16<br/>~200 MB VRAM]
@@ -142,7 +142,7 @@ graph TB
     end
     subgraph "Dispatcher (Python)"
         BRAIN[llm_brain.py<br/>SPOT_BRAIN_BACKEND env var]
-        DISPATCH[spot_dispatch.py]
+        DISPATCH[robot/dispatcher.py]
         WAKE[wake_word.py<br/>SPOT_WAKE_BACKEND env var]
         ASR[asr/parakeet.py + riva_backend.py<br/>SPOT_ASR_BACKEND env var]
     end
