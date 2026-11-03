@@ -623,7 +623,7 @@ def _close_session_if_up() -> bool:
 
 
 def _bring_up_robot(args, audio) -> bool:
-    """Safety-KWS startup gate and the robot probe / --map bring-up.
+    """Safety-KWS startup gate and the --map bring-up (the no-map probe is step 3b).
     False when startup is refused (main then shuts down what is running).
 
     Two paths:
@@ -834,7 +834,7 @@ def main(argv: list[str] | None = None) -> int:
         audio = _start_audio(args, tuning)
         # 6. Services: stt, tts, brain, vision
         services = _make_services(args, C)
-        # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
+        # 6b. Robot bring-up: safety-KWS gate, --map session
         if not _bring_up_robot(args, audio):
             shutdown()
             return 1
