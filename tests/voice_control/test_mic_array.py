@@ -128,3 +128,10 @@ def test_led_values_masked_not_struct_error():
 def test_poller_rejects_nonpositive_hz():
     with pytest.raises(ValueError):
         MicArray(FakeDev()).start_poller(hz=0)
+
+
+def test_read_beams_reads_azimuths_then_energies():
+    dev = FakeDev([bytes([0]) + struct.pack("<4f", 0.0, 1.0, 2.0, 3.0),
+                   bytes([0]) + struct.pack("<4f", 0.5, 0.0, 0.25, 0.5)])
+    az, en = MicArray(dev).read_beams()
+    assert az == pytest.approx([0.0, 1.0, 2.0, 3.0]) and en == pytest.approx([0.5, 0.0, 0.25, 0.5])
