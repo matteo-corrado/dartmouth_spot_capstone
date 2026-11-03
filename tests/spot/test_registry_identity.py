@@ -217,13 +217,42 @@ def test_disabling_walk_removes_its_rules_and_sets():
 
 
 def test_grammar_params_refused_until_wired():
-    """M3: per-action params rules are not wired into `action ::=`."""
+    """M3: per-action params rules are not wired into `action ::=`. CR #2:
+    the refusal is a registry flag rule, so add() rejects the feature; the
+    build_grammar check stays as a defensive guard behind it."""
     from src.spot.core.registry import ActionSpec, Feature
     reg = Registry()
-    reg.add(Feature("p", actions=(ActionSpec("probe", lambda p, c: True, 'probe-params ::= "{}"',
-                                             "- probe: x"),)))
+    feat = Feature("p", actions=(ActionSpec("probe", lambda p, c: True, 'probe-params ::= "{}"',
+                                            "- probe: x"),))
+    with pytest.raises(ValueError, match="grammar_params"):
+        reg.add(feat)
+    assert reg.features == [] and "grammar_params" not in build_grammar(reg)
+    # defensive guard: an action that bypassed add() still never reaches the GBNF
+    reg.features.append(feat)
+    reg._actions["probe"] = feat.actions[0]
     with pytest.raises(ValueError, match="grammar_params"):
         build_grammar(reg)
+
+
+def test_grammar_params_is_a_per_feature_load_failure():
+    """CR #2: a feature declaring grammar_params is reported by Registry.load
+    (the C6 path), the other features load, and the grammar still builds."""
+    import types
+    from src.spot.core.registry import ActionSpec, Feature
+
+    def fake_import(modname):
+        name = modname.rsplit(".", 1)[-1]
+        if name == "bad":
+            spec = ActionSpec("probe", lambda p, c: True, 'probe-params ::= "{}"', "- probe: x")
+            return types.SimpleNamespace(FEATURE=Feature("bad", actions=(spec,)))
+        return types.SimpleNamespace(FEATURE=Feature(name))
+
+    reg = Registry()
+    failed = reg.load(["good", "bad"], import_fn=fake_import)
+    assert [n for n, _, _ in failed] == ["bad"]
+    assert "grammar_params" in str(failed[0][1])
+    assert [f.name for f in reg.features] == ["good"]
+    assert '"\\"probe\\""' not in build_grammar(reg)
 
 
 def test_safety_intent_raise_never_reads_registry(monkeypatch):
@@ -269,6 +298,29 @@ def test_brain_drops_non_allowlisted_actions(monkeypatch, tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "[Brain] dropped non-allowlisted action 'walk_to'" in printed
     assert "[Brain] dropped non-allowlisted action 'quack'" in printed
+
+
+@pytest.mark.parametrize("response", ["null", "5", "[\"hi\"]"])
+def test_brain_non_string_response_keeps_actions(monkeypatch, tmp_path, response):
+    """CR #5: a non-string "response" (e.g. null on ollama, no GBNF) becomes ""
+    and the valid actions still reach the dispatcher."""
+    from src.spot.conversation import conversation_log
+
+    class Fake:
+        name = "ollama"
+
+        def is_available(self):
+            return True
+
+        def chat(self, *a, **k):
+            return ('{"actions": [{"action": "sit", "params": {}}], "response": %s, '
+                    '"thinking": null}' % response)
+
+    monkeypatch.setattr(conversation_log, "DEFAULT_LOG_DIR", tmp_path / "conversations")
+    monkeypatch.setattr(llm_brain, "_BACKEND", Fake())
+    out = llm_brain.LLMBrain().process("sit down", state={})
+    assert out["response"] == ""
+    assert out["actions"] == [{"intent": "sit", "params": {}}]
 
 
 def test_allowlist_is_the_grammar_action_names():

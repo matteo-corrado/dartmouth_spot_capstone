@@ -281,6 +281,93 @@ def test_main_finally_turns_beams_off_before_close(monkeypatch, tmp_path):
     assert order == [("beams", None), ("close",)]
 
 
+class _SteerMic(_FakeBeamMic):
+    """A fake MicArray for --beam clips: never touches USB. die_on_write: the
+    beams-on write marks the link dead (MicArray._write never raises)."""
+
+    def __init__(self, die_on_write=False, reconnect_on_write=False):
+        super().__init__()
+        self.die_on_write = die_on_write
+        self.reconnect_on_write = reconnect_on_write
+        self.reconnects = 0
+
+    def set_fixed_beams(self, az):
+        if self.dead:
+            return
+        self.calls.append(az)
+        if az is not None and self.die_on_write:
+            self.dead = True
+        if az is not None and self.reconnect_on_write:
+            self.reconnects += 1
+
+    def read_beams(self):
+        return [0.0] * 4, [0.0] * 4
+
+    def samples_between(self, a, b):
+        return []
+
+
+def _beam_session(monkeypatch, tmp_path, mic, rec=None):
+    import dataclasses
+    import types
+    fake_sd = types.SimpleNamespace(rec=rec or (lambda n, **kw: np.zeros((n, 2), dtype=np.int16)),
+                                    wait=lambda: None)
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(rdc.time, "sleep", lambda s: None)
+    p = dataclasses.replace(build_prompts(["Hey Spot"])[0], duration_s=0.05)
+    n = rdc.run_session([p], tmp_path, lambda q: rdc.record_clip(0, q, mic, beam_mic_deg=90.0),
+                        input_fn=_seq(["", "q"]),
+                        manifest_extra={"beam_steered": True, "interferer_body_deg": 90.0})
+    return n, p
+
+
+@pytest.mark.parametrize("kw", [{"die_on_write": True}, {"reconnect_on_write": True}])
+def test_beam_write_on_dead_link_is_record_failed_not_steered(monkeypatch, tmp_path, capsys, kw):
+    """CR #4: set_fixed_beams on a dead (or reconnected) link silently does not
+    steer; record_clip raises, run_session prints RECORD FAILED, and no clip
+    or beam_steered: true manifest entry is written. Beams-off still runs."""
+    mic = _SteerMic(**kw)
+    n, p = _beam_session(monkeypatch, tmp_path, mic)
+    out = capsys.readouterr().out
+    assert n == 0
+    assert "RECORD FAILED" in out and "BeamNotSteered" in out
+    assert not (tmp_path / f"{p.clip}.wav").exists()
+    assert not (tmp_path / "manifest.json").exists()
+    if kw.get("die_on_write"):
+        assert "beams-off write skipped" in out  # G10 finally reached; dead link says so
+    else:
+        assert mic.calls[-1] is None  # G10 beams-off write
+
+
+def test_beam_link_dying_mid_clip_is_record_failed(monkeypatch, tmp_path, capsys):
+    mic = _SteerMic()
+
+    def rec(n, **kw):
+        mic.dead = True  # link lost while recording
+        return np.zeros((n, 2), dtype=np.int16)
+    n, p = _beam_session(monkeypatch, tmp_path, mic, rec=rec)
+    out = capsys.readouterr().out
+    assert n == 0 and "RECORD FAILED" in out and "during the clip" in out
+    assert not (tmp_path / "manifest.json").exists()
+
+
+def test_beam_steered_clip_is_written_when_link_stays_up(monkeypatch, tmp_path, capsys):
+    import dataclasses
+    import types
+    mic = _SteerMic()
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace(
+        rec=lambda n, **kw: np.full((n, 2), 1000, dtype=np.int16), wait=lambda: None))
+    monkeypatch.setattr(rdc.time, "sleep", lambda s: None)
+    p = dataclasses.replace(build_prompts(["Hey Spot"])[0], duration_s=0.05)
+    n = rdc.run_session([p], tmp_path, lambda q: rdc.record_clip(0, q, mic, beam_mic_deg=90.0),
+                        input_fn=_seq(["", ""]),
+                        manifest_extra={"beam_steered": True, "interferer_body_deg": 90.0})
+    assert n == 1
+    assert mic.calls[0] == pytest.approx(rdc.math.radians(90.0)) and mic.calls[-1] is None
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert m[0]["beam_steered"] is True
+
+
 def types_ns(**kw):
     import types
     return types.SimpleNamespace(**kw)

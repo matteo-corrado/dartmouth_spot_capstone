@@ -146,6 +146,28 @@ def _is_robot_moving() -> bool:
         return False
 
 
+# Chain waits (between actions of one LLM reply). Movement and posture have
+# no generated flag, so they stay literal; the nav wait is every generated
+# locomotion intent that is not timed movement, so a new locomotion feature
+# action gets the nav wait. walk_to is locomotion but had no wait in base:
+# it stays excluded (G1 replaces walk_to with the vision port; its chain
+# timing is not changed before that). Read at call time: a disabled
+# feature's intents drop out.
+_CHAIN_MOVEMENT = frozenset({"walk", "strafe", "turn"})
+_CHAIN_POSTURE = frozenset({"sit", "stand", "selfright", "body_height"})
+_CHAIN_NO_WAIT_LOCOMOTION = frozenset({"walk_to"})
+
+
+def chain_wait_kind(cmd: str):
+    """"nav", "movement", "posture" or None: the wait after `cmd` in a chain."""
+    if cmd in _CHAIN_MOVEMENT:
+        return "movement"
+    if cmd in _CHAIN_POSTURE:
+        return "posture"
+    nav = (intent_names("locomotion") - _CHAIN_MOVEMENT - _CHAIN_NO_WAIT_LOCOMOTION) | {"emote"}
+    return "nav" if cmd in nav else None
+
+
 def _wait_for_nav_complete(timeout: float = 120.0):
     """Block until current navigation finishes (for command chaining)."""
     start = time.time()
@@ -1248,12 +1270,12 @@ class Conversation:
 
                             # Wait for movement/posture to complete before next action in chain
                             if len(actions) > 1 and i < len(actions) - 1:
-                                if cmd in ("go_to", "go_to_object", "follow_me", "tour", "patrol", "come_back",
-                                           "emote"):
+                                wait_kind = chain_wait_kind(cmd)
+                                if wait_kind == "nav":
                                     _wait_for_nav_complete()
-                                elif cmd in ("walk", "strafe", "turn"):
+                                elif wait_kind == "movement":
                                     self._abort_chain.wait(CHAIN_MOVEMENT_WAIT_S)
-                                elif cmd in ("sit", "stand", "selfright", "body_height"):
+                                elif wait_kind == "posture":
                                     self._abort_chain.wait(CHAIN_POSTURE_WAIT_S)
                     if trace:
                         trace.mark("dispatch_complete")

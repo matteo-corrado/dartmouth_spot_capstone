@@ -6,6 +6,9 @@ GraphNav plumbing (navigate_sequence, start_thread, ensure_localized,
 save_home_waypoint) stays in src/spot/nav/runner.py; handlers reach it via
 _r.NAV. The owner singletons are looked up at call time (import inside the
 functions: src.spot.robot must not be imported when the feature loads).
+The bosdyn SDK (and graph_nav_utils, which imports it) is imported at call
+time too, as in walk/handlers.py: the feature must register without the
+SDK so its regex intents and grammar never depend on it.
 
 Each handler gets (params, ctx). Errors that escape a handler are caught by
 dispatcher._dispatch_feature, the same catch-all the legacy branches had.
@@ -14,19 +17,11 @@ import pathlib
 import re
 import time
 
-from bosdyn.client.robot_command import RobotCommandBuilder
-from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
-from bosdyn.client.math_helpers import SE2Pose
 from src.spot.nav.location_manager import (
     list_locations as _list_saved_locations,
     normalize_location_name as _normalize_location_name,
 )
 from src.spot.nav.map_loader import list_available_maps, read_last_used, resolve_map_path, write_last_used
-from src.spot.nav.graph_nav_utils import (
-    upload_graph_and_snapshots,
-    initialize_localization,
-    capped_mobility_params,
-)
 
 project_root = pathlib.Path(__file__).resolve().parents[4]
 
@@ -110,6 +105,10 @@ def handle_list_locations(params, ctx):
 
 def handle_walk_to(params, ctx):
     import src.spot.robot as _r
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    from bosdyn.client.frame_helpers import ODOM_FRAME_NAME
+    from bosdyn.client.math_helpers import SE2Pose
+    from src.spot.nav.graph_nav_utils import capped_mobility_params
     session, cmd_client = _session()
     # Walk to relative position
     relative = params.get("relative", [0.0, 0.0, 0.0])
@@ -135,6 +134,7 @@ def handle_walk_to(params, ctx):
 
 def handle_load_map(params, ctx):
     import src.spot.robot as _r
+    from src.spot.nav.graph_nav_utils import upload_graph_and_snapshots, initialize_localization
     session, cmd_client = _session()
     # Failure to localize after upload is non-fatal — the robot ends up
     # graph-loaded-but-not-localized; the user can drive in front of a

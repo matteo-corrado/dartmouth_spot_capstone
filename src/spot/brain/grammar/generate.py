@@ -11,7 +11,7 @@ from pathlib import Path
 from src.spot.core.core_intents import all_actions
 
 TEMPLATE_PATH = Path(__file__).with_name("spot_action.gbnf.tmpl")
-# One generic params rule pair (grammar_params is rejected: see build_grammar).
+# One generic params rule pair (grammar_params is rejected: registry._check_flags).
 _GENERIC_PARAMS = ('params ::= "{" ws ( param ( "," ws param )* )? ws "}"\n'
                    'param ::= string ":" ws value')
 
@@ -25,8 +25,9 @@ def llm_actions(registry, key: str, exclude=frozenset()):
 def build_grammar(registry) -> str:
     acts = llm_actions(registry, "grammar_rank")
     # Per-action params rules are not wired into `action ::=` (which uses the
-    # generic `params`); none exist today, so refuse one rather than emit a
-    # rule the grammar never reaches.
+    # generic `params`). registry._check_flags refuses grammar_params on a
+    # feature action (Registry.load reports it per feature), so this is only
+    # a defensive check: a registered feature can never reach it.
     custom = [a.name for a in all_actions(registry) if a.grammar_params is not None]
     if custom:
         raise ValueError(f"grammar_params is not supported yet (action-specific params "

@@ -72,6 +72,12 @@ def _check_flags(feature: str, a: ActionSpec) -> None:
     if a.locomotion and (a.unlocked or a.motion_free or a.state_only):
         raise ValueError(f"{where}: locomotion=True cannot be combined with "
                          "unlocked, motion_free or state_only")
+    if a.grammar_params is not None:
+        # build_grammar has no per-action params rules (one generic `params`);
+        # refusing here makes Registry.load report it per feature (C6) instead
+        # of build_grammar raising at llm_brain import.
+        raise ValueError(f"{where}: grammar_params is not supported yet (action-specific "
+                         "params rules are not wired into the GBNF `action ::=`)")
 
 
 class Registry:
