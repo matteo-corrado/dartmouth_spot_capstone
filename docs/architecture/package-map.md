@@ -52,7 +52,7 @@ If a feature fails to import, or a feature it `requires` is not loaded, the regi
 
 1. Delete its name from `src/spot/features/enabled.py`. That turns it off: its actions disappear from the grammar, prompt and intent rules, and its subscriptions, `start` and `stop` never run. Three features are also reached by core code, and each path checks `REGISTRY.has(<name>)`:
    - `mouth`: the automatic arm fold + gripper mouth (`app/main.py` `auto_arm_on`, and the mouth handlers' auto-arm hooks behind the dispatcher stand and the session bring-up) runs only while `mouth` is loaded. `stow` still stows the arm.
-   - `gaze`: the conversation loop's `_gaze_at_speaker` returns at once unless `gaze` is loaded.
+   - `gaze`: the conversation loop's `_gaze_at_speaker` returns at once unless `gaze` is loaded. Gaze has no bus subscriptions: the loop calls it directly and hands the arm RPC to the one gaze worker thread, never the main/audio loop (C5).
    - `settings`: `spotctl persona <name>` (conversation loop) prints `persona: settings feature not enabled` instead of switching.
 2. Check that no other feature lists it in `requires` (`grep -rn requires src/spot/features`). Today `follow` requires `visual_nav`, and `visual_nav` requires `navigation`. If one does, remove that feature too, or startup refuses on the robot (C6).
 3. If it has a spotctl command, edit the hand-written help in `scripts/spotctl.py` (spotctl help is not generated).

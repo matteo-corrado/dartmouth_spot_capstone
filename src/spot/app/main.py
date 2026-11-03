@@ -249,14 +249,6 @@ def _stop_features() -> None:
 # ============================================================================
 # Startup steps (called in order by main)
 # ============================================================================
-# Features whose declared subscriptions main does NOT put on the bus.
-# gaze: on_speaker_locked sends the arm RPC on the caller's thread and the
-# bus calls it on the publisher's (the main/audio loop), so the conversation
-# loop keeps its direct _gaze_at_speaker call, which hands off to the one
-# gaze worker thread (safety condition C5, Task 15).
-_UNSUBSCRIBED_FEATURES = frozenset({"gaze"})
-
-
 def _parse_args(argv, tuning):
     """CLI args and the process env they set; device auto-detect.
     An int exit code when main should return now: 0 after --list-devices,
@@ -392,13 +384,12 @@ def _start_features(args, bus, robot, tuning) -> bool:
               nav=robot.NAV, bus=bus, tuning=tuning)
     _FEATURE_CTX = ctx
     for feature in REGISTRY.features:
-        if feature.name not in _UNSUBSCRIBED_FEATURES:
-            for event, handler in feature.subscriptions:
-                try:
-                    bus.subscribe(event, handler)
-                except Exception as exc:  # noqa: BLE001 - e.g. unknown event name (C6)
-                    import traceback
-                    failures.append((feature.name, exc, traceback.format_exc()))
+        for event, handler in feature.subscriptions:
+            try:
+                bus.subscribe(event, handler)
+            except Exception as exc:  # noqa: BLE001 - e.g. unknown event name (C6)
+                import traceback
+                failures.append((feature.name, exc, traceback.format_exc()))
         if feature.start is not None:
             try:
                 feature.start(ctx)

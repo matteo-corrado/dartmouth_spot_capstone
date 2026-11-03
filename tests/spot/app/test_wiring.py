@@ -1,5 +1,5 @@
 """Task 15: main builds the pipeline in the 9-step order; features load
-loudly (C6); gaze is not put on the bus (C5); the auto-arm gate stays
+loudly (C6); gaze has no bus subscription (C5); the auto-arm gate stays
 set_auto_arm(auto_arm_wanted(...)) (C3); events publish after the change."""
 import os
 import threading
@@ -127,9 +127,10 @@ def test_feature_start_failure_is_loud(monkeypatch, capsys):
 
 
 def test_gaze_not_on_bus_and_mouth_start_does_not_fold(monkeypatch):
-    """C5: gaze's speaker_locked handler is never subscribed (it would run the
-    arm RPC on the publisher's thread). C3: the mouth start at step 4 is a
-    no-op while auto-arm is off; only set_auto_arm (step 7) turns it on."""
+    """C5: nothing subscribes speaker_locked (gaze declares no subscription;
+    the conversation loop calls gaze directly, off the publisher's thread).
+    C3: the mouth start at step 4 is a no-op while auto-arm is off; only
+    set_auto_arm (step 7) turns it on."""
     import src.spot.features.mouth.handlers as mouth_h
     monkeypatch.setattr(mouth_h, "_auto_arm", False)
     monkeypatch.setattr(mouth_h, "_auto_arm_pending", False)
