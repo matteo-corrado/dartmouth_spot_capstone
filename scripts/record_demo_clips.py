@@ -275,17 +275,37 @@ def beams_off(mic) -> None:
         print(f"  beams-off write failed: {e}")
 
 
+class BeamNotSteered(RuntimeError):
+    """The fixed-beam write did not take (dead / reconnected control link)."""
+
+
+def check_beam_link(mic, reconnects_before, when: str) -> None:
+    """Raise BeamNotSteered unless the control link stayed up since the
+    beams-on write. MicArray._write never raises: a failed write only marks
+    the link dead, and a reconnect resets the chip (beams off). Raising makes
+    run_session print RECORD FAILED and skip the manifest entry, so an
+    un-steered clip is never saved as beam_steered: true."""
+    if getattr(mic, "dead", False):
+        raise BeamNotSteered(f"XVF3800 control link dead {when}: fixed beams not steered")
+    if getattr(mic, "reconnects", 0) != reconnects_before:
+        raise BeamNotSteered(f"XVF3800 control link reconnected {when}: fixed beams not steered")
+
+
 def record_clip(device: int, prompt: Prompt, mic, output_device=None, beam_mic_deg=None):
     """Returns (audio (N,2) int16, t0, doa_samples, chime_info | None, beam_samples).
 
-    beam_mic_deg: point both fixed beams there (mic frame) for this clip, off after."""
+    beam_mic_deg: point both fixed beams there (mic frame) for this clip, off after.
+    Raises BeamNotSteered when the control link is dead or reconnected after
+    the beams-on write or by the end of the clip (CR #4)."""
     import threading
     import sounddevice as sd
     # G10: the beams-on write sits inside the try, so a Ctrl-C in the
     # countdown still reaches the beams-off finally.
+    reconnects = getattr(mic, "reconnects", 0)
     try:
         if beam_mic_deg is not None:
             mic.set_fixed_beams(math.radians(beam_mic_deg))
+            check_beam_link(mic, reconnects, "after the beams-on write")
             time.sleep(0.3)  # let the beamformer settle before GO
         for n in (3, 2, 1):
             print(f"    {n}...", end="", flush=True)
@@ -325,6 +345,8 @@ def record_clip(device: int, prompt: Prompt, mic, output_device=None, beam_mic_d
             th.join(timeout=2.0)
         if bt is not None:
             bt.join(timeout=2.0)
+        if beam_mic_deg is not None:
+            check_beam_link(mic, reconnects, "during the clip")
     finally:
         if beam_mic_deg is not None:
             beams_off(mic)
