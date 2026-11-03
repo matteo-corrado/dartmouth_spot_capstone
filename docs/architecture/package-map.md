@@ -14,7 +14,7 @@ Status note: the split is done. `src/voice_control/client_mic.py` and `src/voice
 | `wake/` | Wake word ("Hey Spot") | Detector with `process_frame`; `WakeDetector` protocol (`api.py`) and `make_wake()` (`factory.py`) | New engine: add a file next to `sherpa_onnx.py` and `livekit.py`, pick it by `SPOT_WAKE_BACKEND` |
 | `safety/` | Stop/freeze/e-stop: safety keyword spotter, safety generation counter, e-stop, the safety listener | `SafetyGen.bump/aborted`, `kws.py`, `estop.py`; `SafetyListener` (`listener.py`) | Do not add a bus hop here. See the safety note below |
 | `stt/` | Speech to text: the ASR gRPC server and its backends (Parakeet, Nemotron) | `SpeechToText.transcribe(pcm16, timeout)` and `make_stt()`; server in `stt/server.py` | New model: add `stt/backends/<name>.py`, choose with `SPOT_ASR_BACKEND` |
-| `tts/` | Text to speech: Kokoro (local), ElevenLabs (cloud), the speaker, sentence chunker | `TextToSpeech.speak(text, voice, cue)` and `make_tts()` | New voice engine: add a file and register it in `tts/__init__.py`, choose with `SPOT_TTS_BACKEND` |
+| `tts/` | Text to speech: Kokoro (local), ElevenLabs (cloud), the speaker, sentence chunker, the mouth loudness envelope (`envelope.py`, pure DSP) | `TextToSpeech.speak(text, voice, cue)` and `make_tts()` | New voice engine, four edits: add `tts/<name>.py` that calls `register_backend("<name>", factory)` (from `tts/__init__.py`); import it in `tts/speaker.py` next to the `kokoro` / `elevenlabs` imports (that import is the registration); add `<name>` to `--tts-backend` `choices` in `app/main.py`; give it a default voice in `speaker._default_voice_for_backend`. Choose with `SPOT_TTS_BACKEND` |
 | `conversation/` | Turn-taking: speaker lock, voiceprint, session state, conversation log; the gate, filler and main loop (`gate.py`, `filler.py`, `loop.py`) | `Conversation.run()` and `.process_utterance()` (`loop.py`) | Change who Spot listens to in `speaker_lock.py` / `voiceprint.py` |
 | `brain/` | Intent parsing (regex), the LLM brain and its backends, personas, grammar, knowledge packs | `LLMBrain`, `intent.parse_intent`; `Brain` protocol and `make_brain()` | New LLM server: add `brain/backends/<name>_backend.py`, choose with `SPOT_BRAIN_BACKEND`. Event facts go in `brain/knowledge/` |
 | `robot/` | Everything that talks to Spot: connection, arm, motion, state, the dispatcher | `CONNECTION`, `ARM`, `SAFETY_GEN`, `NAV`; `dispatcher.dispatch_intent` / `dispatch_safety` | New core command: add a handler in `dispatcher.py`. New optional behaviour: make a feature instead |
@@ -40,20 +40,23 @@ Stop, freeze and e-stop never go through the event bus. The listener calls the h
 
 A feature is one folder under `src/spot/features/`. Example: a `wave` feature.
 
-1. Make the folder `src/spot/features/wave/` with `__init__.py` exporting `FEATURE = Feature(name="wave", actions=(ActionSpec(...),), intent_rules=(...), ...)`, and a `handlers.py` next to it. Each `ActionSpec` names the action, its handler `(params, ctx) -> bool` (from `handlers.py`), a `prompt_line` (the line the LLM sees; leave it `None` to keep the action regex-only), grammar and prompt ranks, and flags such as `locomotion` or `info`. The `Ctx` object (`features/ctx.py`) gives the handler the connection, arm, nav, speak and the event bus. Copy `features/walk/` or `features/dance/` as a starting point.
+1. Make the folder `src/spot/features/wave/` with `__init__.py` exporting `FEATURE = Feature(name="wave", actions=(ActionSpec(...),), intent_rules=(...), ...)`, and a `handlers.py` next to it. Optional `Feature` fields: `requires=("other_feature",)` when a handler uses another feature's code or actions (checked at load), `subscriptions` (bus events), `start(ctx)` (called at startup) and `stop(ctx)` (called once at shutdown, after the robot session is closed; a raising stop is printed, never propagated). Each `ActionSpec` names the action, its handler `(params, ctx) -> bool` (from `handlers.py`), a `prompt_line` (the line the LLM sees; leave it `None` to keep the action regex-only), grammar and prompt ranks, and flags such as `locomotion` or `info`. The `Ctx` object (`features/ctx.py`) gives the handler the connection, arm, nav, speak and the event bus. Copy `features/walk/` or `features/dance/` as a starting point.
 2. Add one line, `"wave",`, to `ENABLED` in `src/spot/features/enabled.py`.
-3. `Registry.add` rejects a bad declaration at load: an action named like a core intent, `aborting=True`, `unlocked` without `motion_free`, or `locomotion` combined with `unlocked`, `motion_free` or `state_only`. Core intents (stop, freeze, estop, stand, sit, ...) live only in `core/core_intents.py`.
+3. `Registry.load` refuses a feature whose `requires` are not loaded (not in `ENABLED`, or failed themselves); the order in `ENABLED` does not matter. `Registry.add` rejects a bad declaration at load: an action named like a core intent, `aborting=True`, `unlocked` without `motion_free`, or `locomotion` combined with `unlocked`, `motion_free` or `state_only`. Core intents (stop, freeze, estop, stand, sit, ...) live only in `core/core_intents.py`.
 4. Nothing else to edit. The LLM grammar, the prompt action list, the regex intent table and the intent sets (`intent_names("locomotion")` and friends) are generated from the core intents plus the enabled features (`brain/grammar/generate.py`, `core/core_intents.py`). `brain/grammar/spot_action.gbnf` is a committed snapshot of the generated grammar, not a file to edit by hand.
 5. See `tests/spot/test_registry_identity.py` for how the generated output is checked against golden copies, and add a `tests/spot/features/test_<name>_declared.py` like the existing ones.
 
-If a feature fails to import, the registry logs `[Features] <name> skipped` and the rest still starts; `main` prints the failure loudly at startup. All current features (dance, gaze, mouth, settings, walk, follow, navigation, visual_nav) are in this shape.
+If a feature fails to import, or a feature it `requires` is not loaded, the registry logs `[Features] <name> skipped`; `main` prints the failure loudly at startup (`[Features] FAILED`) and refuses to start on the robot (safety condition C6). `--dry-run` only warns and continues without it. All current features (dance, gaze, mouth, settings, walk, follow, navigation, visual_nav) are in this shape.
 
 ## How to remove a feature
 
-1. Delete its name from `src/spot/features/enabled.py`. That alone turns it off: its actions disappear from the grammar, prompt, intent rules and spotctl help. Nothing hand-written needs removing.
-2. Optionally delete the folder.
-3. Check that no other feature lists it in `requires`.
-4. Run the tests.
+1. Delete its name from `src/spot/features/enabled.py`. That turns it off: its actions disappear from the grammar, prompt and intent rules, and its subscriptions, `start` and `stop` never run. Two features are also reached by core code, and both check that they are loaded:
+   - `mouth`: the automatic arm fold + gripper mouth (`app/main.py` `auto_arm_on`, and the mouth handlers' auto-arm hooks behind the dispatcher stand and the session bring-up) runs only while `enable_mouth` is registered. `stow` still stows the arm.
+   - `gaze`: the conversation loop's `_gaze_at_speaker` returns at once unless `gaze` is loaded.
+2. Check that no other feature lists it in `requires` (`grep -rn requires src/spot/features`). Today `follow` requires `visual_nav`, and `visual_nav` requires `navigation`. If one does, remove that feature too, or startup refuses on the robot (C6).
+3. If it has a spotctl command, edit the hand-written help in `scripts/spotctl.py` (spotctl help is not generated).
+4. Optionally delete the folder. With the name out of `ENABLED` nothing imports it: the mouth envelope lives in `tts/envelope.py`, and the core falls back to a no-op mouth stand-in that still stows the arm.
+5. Run the tests.
 
 ## Old to new path cheat sheet
 
@@ -69,8 +72,8 @@ If a feature fails to import, the registry logs `[Features] <name> skipped` and 
 | `src/session.py`, `src/estop.py` | `robot/session`, `safety/estop` |
 | `src/graph_nav_utils`, `map_loader`, `location_manager` | `nav/*` |
 | `perception/*`, `world_objects` | `perception/*` |
-| `visual_nav`, `emotes`, `gaze`, `animation/mouth` | `features/visual_nav/navigator`, `features/dance/emotes`, `features/gaze/math`, `features/mouth/driver` |
+| `visual_nav`, `emotes`, `gaze`, `animation/mouth` | `features/visual_nav/navigator`, `features/dance/emotes`, `features/gaze/math`, `features/mouth/driver` (its `envelope()` is now `tts/envelope`) |
 | `tuning`, `latency`, `startup_status`, `voice_state` | `core/*` |
 | `control_server` | `operator/control_server` |
-| `spot_dispatch` | split into `robot/{state,arm,motion,dispatcher,connection}`, `nav/runner`, `safety/gen` and `features/*`; the old file only re-exports |
+| `spot_dispatch` | split into `robot/{state,arm,motion,dispatcher,connection}`, `nav/runner`, `safety/gen` and `features/*`; the old file is deleted |
 | `client_mic` | `audio/capture`, `mic/ring_control`, `safety/listener`, `operator/control`, `conversation/*` (`gate`, `filler`, `loop`), `app/main`; `client_mic.py` stays as a script shim |
