@@ -1,6 +1,6 @@
 # Bug Register
 
-Bugs and fragile behaviour found in the 2026-10-27 audit, updated 2026-10-28 after the poster-demo build (base commit `cd4528d`). Struck-through entries are fixed; the hash is the commit that landed the fix on the demo branch. Entries not struck are open or only partly fixed (see the note). New findings are in section F.
+Bugs and fragile behaviour found in the 2026-10-27 audit, updated 2026-10-28 after the poster-demo build (base commit `cd4528d`) and 2026-11-03 after the restructure reviews. Struck-through entries are fixed; the hash is the commit that landed the fix on the demo branch. Entries not struck are open or only partly fixed (see the note). New findings are in section F.
 
 Severity: **S1** breaks the demo or is unsafe · **S2** visible to visitors · **S3** internal/latent.
 
@@ -98,3 +98,19 @@ Severity: **S1** breaks the demo or is unsafe · **S2** visible to visitors · *
 | F8 | S3 | Halt confirmation beep cleared by hush; `last_latency_s` ends at `process_utterance` return; TTS pool executor not shut down (exit delay up to 30 s) | Cosmetic |
 | F9 | S3 | `pyusb` and `PyYAML` not listed in `requirements.txt` | Install by hand on a fresh venv |
 | F10 | S3 | Event knowledge placeholders are dropped per line; a half-filled line is lost | Fill whole lines |
+
+## G. Found by the restructure safety reviews (2026-10-29 to 2026-11-03; open)
+
+All of these are in the demo branch too. The restructure kept behaviour identical, so it did not fix them. Paths are the new `src/spot/` ones.
+
+| ID | Sev | Finding | Effect / workaround · planned fix |
+|---|---|---|---|
+| G1 | S1 | "come here" / "come to me" regex → `walk_to` `{"relative": [0, -1, 0]}`, but `handle_walk_to` (`features/navigation/handlers.py`) sends the `SE2Pose` in `ODOM_FRAME_NAME`. That is an absolute odom point (about 1 m beside where Spot powered on), not 1 m from where it stands, so Spot may walk several metres. No distance clamp either | Only reachable in regex-fallback mode (LLM down, `--no-brain`): with the LLM up the phrase goes to the brain, and `walk_to` is not in the grammar or the LLM allowlist. Speed is capped. Avoid saying "come here" while the LLM is down. **Planned fix (operator decision 2026-11-03), with the vision port onto the restructure:** "come here / come to me" should identify the person who said it and walk to them (vision design: `go_to_object` "me", people within ±30° of the locked speaker's bearing, raised hand if several). Point the regex at that same action, then delete `walk_to` or make it body-relative and clamped |
+| G2 | S2 | visual_nav: no stop/gen check between YOLO inference and the next `_move` / `manipulation_api_command` (`features/visual_nav/navigator.py` ~606-629, ~640-703) | If inference outlasts the 2 s stop join, one more turn or walk-to-object can go out after a stop. Avoid voice visual navigation in crowds. Fix: check `stop_event` / `SAFETY_GEN.aborted(gen)` right before each motion call |
+| G3 | S3 | visual_nav manipulation poll loop exits on stop without cancelling the manipulation command (`navigator.py` ~727-764) | Relies on the stop's own stop command overriding it (it does today). Fix: cancel explicitly on exit |
+| G4 | S3 | Follow scan-turn: `_move` then `time.sleep(1.5)` with no stop check (`navigator.py` ~1000-1005) | Bounded by the 2 s stop join plus the second stop. Fix: wait on the stop event instead of sleeping |
+| G5 | S3 | LLM-supplied text is spoken ("Let me take a look for the {query}", `conversation/loop.py` ~1086); a query like "stop sign" makes Spot halt itself | Fails safe (an unwanted halt). Fix: scrub stop words from spoken queries |
+| G6 | S2 | During shutdown the safety listener and control server stop before the sit and power-off (up to ~35 s), so spoken stop and `spotctl stop` are ignored then | Use the E-Stop during shutdown. Fix: keep the listener and control port alive until the session is closed |
+| G7 | S3 | Gaze worker is `while True:` with no stop event (`conversation/loop.py` ~212-219) | Daemon thread; every gaze command re-checks the safety gen and `_closing` under the arm lock, so it cannot move after a stop. Fix: stop event set in shutdown |
+| G8 | S3 | freeze after a dance: `_state.is_standing(sess)` is evaluated outside a try (`robot/dispatcher.py` ~122-123); if that RPC raises, the stow is skipped | The motion stop has already been sent. Fix: move it inside the try |
+| G9 | S3 | `walk_speed_cap()` is not clamped (`nav/graph_nav_utils.py` ~17-19); a typo in `tuning.yaml` raises every motion speed cap | Check `walk_speed_cap` in `tuning.yaml`. Fix: clamp it, like `safety_kws_threshold` |
