@@ -2,7 +2,7 @@
 
 Where everything lives after the 2026-10 restructure. Code is under `src/spot/`. Each folder owns one job and exposes one small interface, so you can change or swap one part without reading the rest.
 
-Status note: the split is done. `src/voice_control/client_mic.py` and `src/voice_control/server.py` stay as script shims (`scripts/run_voice_control.py` launches them, and its `pgrep` check matches `voice_control/server.py`); they forward to `src/spot/app/main.py` and `src/spot/stt/server.py`. Every other old path in `src/voice_control/` (including `spot_dispatch.py`) is a thin alias that re-exports the new location and is removed later.
+Status note: the split is done. `src/voice_control/client_mic.py` and `src/voice_control/server.py` stay as script shims (`scripts/run_voice_control.py` launches them, and its `pgrep` check matches `voice_control/server.py`); they forward to `src/spot/app/main.py` and `src/spot/stt/server.py`. Every other old path in `src/voice_control/` (including `spot_dispatch.py`) has been removed; only the `grammar` symlink remains until the installed `llama-server.service` is reinstalled (see `docs/project/restructure-notes.md`).
 
 ## Packages
 
