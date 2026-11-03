@@ -26,9 +26,9 @@ def _args(ws, argv):
 
 def test_new_flags_forwarded(ws):
     cmd = ws._build_voice_control_cmd(
-        _args(ws, ["--no-brain", "--no-server", "--latency-out", "x.jsonl", "--allow-no-safety-kws"]),
+        _args(ws, ["--no-brain", "--no-server", "--latency-out", "x.jsonl"]),
         None)
-    assert "--no-brain" in cmd and "--no-server" in cmd and "--allow-no-safety-kws" in cmd
+    assert "--no-brain" in cmd and "--no-server" in cmd
     assert cmd[cmd.index("--latency-out") + 1] == "x.jsonl"
     assert "--dry-run" not in cmd
 
@@ -83,3 +83,21 @@ def test_without_dry_run_still_claims_estop(ws, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["wakespot", "--no-map"])
     assert ws.main() == 0
     assert called.get("estop") is True
+
+
+def test_allow_no_safety_kws_not_offered(ws):
+    with pytest.raises(SystemExit):
+        _args(ws, ["--allow-no-safety-kws"])
+
+
+def test_dry_run_emergency_never_claims_a_cut(ws, monkeypatch, capsys):
+    monkeypatch.setattr(ws, "_DRY_RUN", True)
+    ws._emergency_cut(_FakeProc(), ws._NoEstop())
+    out = capsys.readouterr().out
+    assert "motors de-energized" not in out and "nothing was cut" in out
+
+
+def test_real_emergency_message_unchanged(ws, monkeypatch, capsys):
+    monkeypatch.setattr(ws, "_DRY_RUN", False)
+    ws._emergency_cut(_FakeProc(), ws._NoEstop())
+    assert "E-Stop CUT issued" in capsys.readouterr().out

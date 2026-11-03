@@ -50,6 +50,7 @@ GRACEFUL_TIMEOUT_SEC = 45
 # ---------------------------------------------------------------------------
 _shutdown_requested = threading.Event()
 _emergency_requested = threading.Event()
+_DRY_RUN = False  # set by main(); shutdown messages must never claim a cut that didn't happen
 _sigint_count = 0
 
 
@@ -229,9 +230,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--latency-out", type=str, default=None,
                         help="Forwarded to voice control: latency JSONL path "
                              "(with --latency file/all).")
-    parser.add_argument("--allow-no-safety-kws", action="store_true",
-                        help="Forwarded to voice control: start on the robot even if "
-                             "the always-on safety keyword spotter fails to load.")
+    # --allow-no-safety-kws is deliberately NOT offered here: the one-word
+    # launch must never start the robot without the always-on spoken stop.
+    # Use scripts/run_voice_control.py directly if you really need it.
     return parser
 
 
@@ -275,8 +276,6 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
         cmd.append("--no-server")
     if args.latency_out is not None:
         cmd.extend(["--latency-out", args.latency_out])
-    if args.allow_no_safety_kws:
-        cmd.append("--allow-no-safety-kws")
     if args.dry_run:
         cmd.append("--dry-run")
         return cmd  # dry run never uploads a map
@@ -305,7 +304,11 @@ def _emergency_cut(proc: subprocess.Popen, keepalive) -> int:
     """
     try:
         keepalive.stop()  # E-Stop CUT
-        print("[wakespot] E-Stop CUT issued — motors de-energized.", flush=True)
+        if _DRY_RUN:
+            print("[wakespot] DRY RUN: nothing was cut. If a robot is live, use the "
+                  "physical E-Stop.", flush=True)
+        else:
+            print("[wakespot] E-Stop CUT issued — motors de-energized.", flush=True)
     except Exception as e:
         print(f"[wakespot] keepalive.stop() failed: {e}", flush=True)
 
@@ -332,8 +335,11 @@ def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
     user escalates to emergency mid-wait, OR the timeout expires, we
     escalate to _emergency_cut.
     """
-    print("[wakespot] Asking voice control to sit Spot and power off motors...",
-          flush=True)
+    if _DRY_RUN:
+        print("[wakespot] DRY RUN: stopping voice control (no robot to sit).", flush=True)
+    else:
+        print("[wakespot] Asking voice control to sit Spot and power off motors...",
+              flush=True)
     try:
         proc.send_signal(signal.SIGTERM)
     except ProcessLookupError:
@@ -363,6 +369,9 @@ def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
         )
         return _emergency_cut(proc, keepalive)
 
+    if _DRY_RUN:
+        print("[wakespot] Voice control exited cleanly (dry run, no E-Stop held).", flush=True)
+        return proc.returncode if proc.returncode is not None else 0
     print("[wakespot] Voice control exited cleanly. Releasing E-Stop endpoint "
           "(no cut).", flush=True)
     return proc.returncode if proc.returncode is not None else 0
@@ -392,6 +401,7 @@ def _wait_for_child(proc: subprocess.Popen, keepalive) -> int:
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
+    global _DRY_RUN
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -408,8 +418,13 @@ def main() -> int:
         if args.dry_run:
             if args.map is not None and not args.no_map:
                 print(f"[wakespot] (dry run) ignoring map '{args.map}'.")
-            print("[wakespot] DRY RUN: no E-Stop claimed, no map upload, "
-                  "robot commands are not sent.")
+            _DRY_RUN = True
+            print("[wakespot] " + "=" * 60)
+            print("[wakespot] DRY RUN — SPOT IS NOT E-STOP-PROTECTED BY THIS PROCESS.")
+            print("[wakespot] No E-Stop claimed, no map upload, robot commands are "
+                  "printed, never sent.")
+            print("[wakespot] If a robot is live, keep the physical E-Stop in reach.")
+            print("[wakespot] " + "=" * 60)
             print("[wakespot]   Ctrl+C = stop voice control")
             proc = subprocess.Popen(
                 _build_voice_control_cmd(args, None),
@@ -474,7 +489,10 @@ def main() -> int:
               "robot was reachable. No E-Stop was claimed.", flush=True)
         return 130
     finally:
-        print("[wakespot] Released E-Stop and cleaned up.")
+        if _DRY_RUN:
+            print("[wakespot] Dry run finished and cleaned up.")
+        else:
+            print("[wakespot] Released E-Stop and cleaned up.")
         _release_lockfile()
 
 

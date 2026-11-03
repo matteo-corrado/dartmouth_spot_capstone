@@ -76,7 +76,7 @@ Severity: **S1** breaks the demo or is unsafe · **S2** visible to visitors · *
 |---|---|---|---|
 | ~~E1~~ | S1 | ~~`is_available()` checks Ollama on the llama.cpp backend~~ | Fixed `3ccce91` (active backend; `wait_available` for cold boot `71385e3`). Ollama no longer required |
 | E2 | S2 | Bare-name imports in `client_mic.py` load modules twice | Open (After): voice "set volume" still may not reach chimes |
-| ~~E3~~ | S3 | ~~wakespot drops `--latency`/mic-channel/no-transcript~~ | Fixed `e2a4319` + `2231ab3` (remaining flags + a no-robot `wakespot --dry-run` added `bd5a154`) |
+| ~~E3~~ | S3 | ~~wakespot drops `--latency`/mic-channel/no-transcript~~ | Fixed `e2a4319` + `2231ab3` (`--no-brain`, `--no-server`, `--latency-out` + a no-robot `wakespot --dry-run` added `bd5a154`; `--allow-no-safety-kws` deliberately not offered by wakespot) |
 | ~~E4~~ | S3 | ~~Conversation log path relative; tests pollute logs~~ | Fixed `e2a4319` |
 | ~~E5~~ | S3 | ~~`livekit-wakeword` unpinned in requirements~~ | Fixed `e2a4319` (commented out) |
 | E6 | S3 | Tests import `VoiceState` from `client_mic` | Open |
