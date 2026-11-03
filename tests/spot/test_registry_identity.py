@@ -27,6 +27,12 @@ def _norm(text):
     return "\n".join(re.sub(r" {2,}", " ", l).rstrip() for l in text.splitlines())
 
 
+def _no_action_set_comment(text):
+    """The golden is frozen at base, whose line-3 comment named the deleted
+    spot_dispatch.py; that comment is the one line allowed to differ."""
+    return "".join(l for l in text.splitlines(keepends=True) if not l.startswith("# Action set"))
+
+
 def _registry(without=()):
     reg = Registry()
     reg.load([n for n in ENABLED if n not in without])
@@ -39,9 +45,12 @@ def test_all_features_enabled():
 
 # ---------------------------------------------------------------- grammar
 def test_grammar_identical():
-    gold = (GOLDEN / "spot_action.gbnf").read_text()
-    assert _norm(build_grammar(REGISTRY)) == _norm(gold)
-    assert build_grammar(REGISTRY) == gold  # byte-identical too
+    gold = _no_action_set_comment((GOLDEN / "spot_action.gbnf").read_text())
+    gen = _no_action_set_comment(build_grammar(REGISTRY))
+    assert _norm(gen) == _norm(gold)
+    assert gen == gold  # byte-identical too (bar the line-3 comment)
+    assert build_grammar(REGISTRY).splitlines()[2] == (
+        "# Action set: core intents + enabled features (src/spot/brain/grammar/generate.py).")
 
 
 def test_committed_grammar_snapshot_is_the_generated_one():

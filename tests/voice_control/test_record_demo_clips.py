@@ -209,3 +209,78 @@ def test_collect_beams_skips_read_errors():
 
     got = rdc.collect_beams(M(), 0.0, 0.25, clock=lambda: next(t), sleep=lambda s: None)
     assert len(got) == 1 and got[0][1] == [1.0] * 4
+
+
+class _FakeBeamMic:
+    """Records set_fixed_beams calls; never touches USB (G10)."""
+
+    def __init__(self, dead=False):
+        self.dead = dead
+        self.calls = []
+
+    def set_fixed_beams(self, az):
+        self.calls.append(az)
+
+
+def test_record_clip_ctrl_c_in_countdown_turns_beams_off(monkeypatch):
+    """G10: a Ctrl-C during the countdown still reaches the beams-off write."""
+    import types
+    monkeypatch.setitem(sys.modules, "sounddevice", types.SimpleNamespace())
+    ticks = {"n": 0}
+
+    def sleep(s):
+        ticks["n"] += 1
+        if ticks["n"] == 2:  # first countdown tick (after the 0.3 s settle)
+            raise KeyboardInterrupt
+    monkeypatch.setattr(rdc.time, "sleep", sleep)
+    mic = _FakeBeamMic()
+    p = build_prompts(["Hey Spot"])[0]
+    with pytest.raises(KeyboardInterrupt):
+        rdc.record_clip(0, p, mic, beam_mic_deg=90.0)
+    assert len(mic.calls) == 2 and mic.calls[0] == pytest.approx(rdc.math.radians(90.0))
+    assert mic.calls[-1] is None
+
+
+def test_beams_off_writes_none_and_logs_dead_skip(capsys):
+    mic = _FakeBeamMic()
+    rdc.beams_off(mic)
+    assert mic.calls == [None]
+    dead = _FakeBeamMic(dead=True)
+    rdc.beams_off(dead)
+    assert dead.calls == []
+    assert "beams-off write skipped" in capsys.readouterr().out
+
+
+def test_main_finally_turns_beams_off_before_close(monkeypatch, tmp_path):
+    """G10: main's finally clears the beams, then closes the mic, even when
+    the session is interrupted."""
+    order = []
+
+    class Mic(_FakeBeamMic):
+        def start_poller(self, *a, **kw):
+            pass
+
+        def set_fixed_beams(self, az):
+            order.append(("beams", az))
+
+        def close(self):
+            order.append(("close",))
+
+    fake = Mic()
+    monkeypatch.setattr(rdc, "MicArray", types_ns(open=lambda: fake))
+    monkeypatch.setattr(rdc, "find_device", lambda: 0)
+    monkeypatch.setattr(rdc, "OUT_ROOT", tmp_path)
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+
+    def boom(*a, **kw):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(rdc, "run_session", boom)
+    monkeypatch.setattr(sys, "argv", ["record_demo_clips.py", "--condition", "t"])
+    with pytest.raises(KeyboardInterrupt):
+        rdc.main()
+    assert order == [("beams", None), ("close",)]
+
+
+def types_ns(**kw):
+    import types
+    return types.SimpleNamespace(**kw)

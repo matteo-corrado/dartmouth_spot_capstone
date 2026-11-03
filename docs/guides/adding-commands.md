@@ -45,6 +45,7 @@ FEATURE = Feature(
 - `prompt_line` is the line the LLM sees. Leave it `None` to keep the action regex-only.
 - The `grammar_rank` / `prompt_rank` values order the generated lists. Copy `features/walk/__init__.py` or `features/dance/__init__.py` as a starting point; they show the full set of flags (`locomotion`, `info`, `short_path_blocked`, ...).
 - `Registry.add` rejects a bad declaration at load (an action named like a core intent, or contradictory flags). Check the registry source for the rules.
+- If a handler uses another feature (its code or its actions), declare it: `requires=("visual_nav",)`. `Registry.load` refuses the feature when a requirement is not loaded, and on the robot that stops startup.
 
 ## Step 2: Write the handler
 

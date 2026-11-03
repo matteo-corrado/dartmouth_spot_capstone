@@ -585,3 +585,113 @@ def test_mouth_stand_in_only_warns_in_dry_run(monkeypatch, capsys):
     _app.main(ARGS)
     assert "WARNING: --dry-run continues" in capsys.readouterr().out
     assert seen == STEPS
+
+
+def test_feature_stop_runs_after_session_close_and_never_raises(monkeypatch, capsys):
+    """I3: Feature.stop(ctx) runs once per loaded feature, after cleanup_spot
+    (the robot close order is untouched); a raising stop is printed only."""
+    import src.spot.features as _f
+    from src.spot.core.registry import Feature, Registry
+    order = []
+    reg = Registry()
+    reg.add(Feature("a", stop=lambda ctx: order.append(("a", ctx))))
+    reg.add(Feature("b", stop=lambda ctx: (_ for _ in ()).throw(RuntimeError("boom"))))
+    reg.add(Feature("c", stop=lambda ctx: order.append(("c", ctx))))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    monkeypatch.setattr(_app, "_FEATURE_CTX", "CTX")
+    monkeypatch.setattr(_app._sl.LISTENER, "stop", lambda: None)
+    monkeypatch.setattr(_app._ring.RING, "_anim", None)
+    monkeypatch.setattr(_app._cap.CAPTURE, "_mic", None)
+    monkeypatch.setattr(_app, "cleanup_spot", lambda: order.append("cleanup"))
+    _app._shutdown_runtime()
+    assert order == ["cleanup", ("a", "CTX"), ("c", "CTX")]
+    assert "[Features] b stop failed: RuntimeError: boom" in capsys.readouterr().out
+
+
+def test_feature_stops_skipped_if_session_still_open(monkeypatch, capsys):
+    """h4: a failed close (session still set) skips every feature stop."""
+    import src.spot.features as _f
+    import src.spot.robot as _r
+    from src.spot.core.registry import Feature, Registry
+    order = []
+    reg = Registry()
+    reg.add(Feature("a", stop=lambda ctx: order.append("a")))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    monkeypatch.setattr(_r.CONNECTION, "_session", {"cmd": object()})
+    _app._stop_features()
+    assert order == []
+    assert "skipping feature stops" in capsys.readouterr().out
+
+
+def test_feature_handlers_get_the_process_bus(monkeypatch):
+    """M1: dispatcher builds the handler Ctx with the bus main set up."""
+    import src.spot.features as _f
+    import src.spot.robot.dispatcher as _d
+    from src.spot.core.registry import ActionSpec, Feature, Registry
+    got = []
+    reg = Registry()
+    reg.add(Feature("probe", actions=(ActionSpec("probe_x", lambda p, ctx: got.append(ctx.bus) or True,
+                                                 None, None, needs_session=False),)))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    bus = EventBus()
+    monkeypatch.setattr(_ev, "BUS", bus)
+    assert _d._dispatch_feature({"intent": "probe_x", "params": {}}) is True
+    assert got == [bus]
+
+
+def test_exit_codes(monkeypatch):
+    """T15: main returns 0 on a normal exit, 1 on a refused start; the launch
+    stub passes it to sys.exit."""
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    assert _app.main(ARGS) == 0
+    seen.clear()
+    _patch_pipeline(monkeypatch, seen, load_result=[("bogus", ImportError("nope"), "tb\n")])
+    assert _app.main(["--device", "0", "--output-device", "0"]) == 1  # C6 refusal
+    seen.clear()
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_app, "_bring_up_robot", lambda args, audio: False)  # safety KWS / still powered
+    monkeypatch.setattr(_app, "_shutdown_runtime", lambda: None)
+    assert _app.main(ARGS) == 1
+
+
+def test_client_mic_stub_exits_with_main_rc():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[3] / "src/voice_control/client_mic.py").read_text()
+    assert "sys.exit(main())" in src
+
+
+def test_exit_code_list_devices_0_no_mic_1(monkeypatch):
+    """p6: --list-devices exits 0 (even with no mic attached); no mic found exits 1."""
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_app, "sd", SimpleNamespace(query_devices=lambda: "devs"))
+    monkeypatch.setattr(_cap, "_find_device_by_name", lambda *a: None)
+    assert _app.main(["--list-devices"]) == 0
+    assert _app.main([]) == 1
+    assert "features" not in seen  # returned before any startup step
+
+
+def test_spotctl_persona_gated_on_settings_feature(monkeypatch, capsys):
+    """p5: spotctl persona reports instead of importing settings when off."""
+    import src.spot.features as _f
+    from src.spot.core.registry import Registry
+    monkeypatch.setattr(_f, "REGISTRY", Registry())
+    C = _loop.CONVERSATION
+    monkeypatch.setattr(C, "brain", object(), raising=False)
+    C.on_queued("persona", "pirate")
+    out = capsys.readouterr().out
+    assert "settings feature not enabled" in out
+
+
+def test_mouth_not_installed_only_when_disabled(monkeypatch):
+    """p4: a missing mouth folder is calm only while mouth is out of ENABLED."""
+    import src.spot.features.enabled as _en
+    import src.spot.robot as robot_pkg
+    gone = ModuleNotFoundError("No module named 'src.spot.features.mouth'",
+                               name="src.spot.features.mouth")
+    monkeypatch.setattr(_en, "ENABLED", [n for n in _en.ENABLED if n != "mouth"])
+    assert robot_pkg._mouth_not_installed(gone) is True
+    assert robot_pkg._mouth_not_installed(ImportError("broken")) is False
+    monkeypatch.setattr(_en, "ENABLED", list(_en.ENABLED) + ["mouth"])
+    assert robot_pkg._mouth_not_installed(gone) is False

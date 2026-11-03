@@ -225,7 +225,7 @@ def _dispatch_feature(intent, brain=None, speak=None, session=None):
             from src.spot.core.tuning import get_tuning
             from src.spot.features.ctx import Ctx
             ctx = Ctx(connection=_r.CONNECTION, arm=_r.ARM, safety=_r.SAFETY_GEN, nav=_r.NAV,
-                      speak=speak, brain=brain, bus=None, tuning=get_tuning())
+                      speak=speak, brain=brain, bus=_ev.BUS, tuning=get_tuning())
             return registry_dispatch(name, intent.get("params", {}), ctx)  # final: never legacy
         except Exception as e:
             print(f"[Spot] Error executing intent '{name}': {e}")

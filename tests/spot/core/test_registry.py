@@ -117,3 +117,66 @@ def test_load_returns_failures_and_skips_loaded():
     assert [n for n, _, _ in second] == ["bad"]
     assert calls.count("src.spot.features.good") == 1
     assert [n for n, _, _ in r.failures] == ["bad"]  # deduped across the retry
+
+
+def _imp_of(features, broken=()):
+    def imp(path):
+        name = path.rsplit(".", 1)[1]
+        if name in broken:
+            raise ImportError(f"{name} gone")
+        return SimpleNamespace(FEATURE=features[name])
+    return imp
+
+
+def test_requires_enforced_order_independent():
+    """I3: a feature listed before its dependency still loads; order kept."""
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("v"),), requires=("navigation",)),
+          "navigation": Feature("navigation", actions=(act("n"),))}
+    r = Registry()
+    assert r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs)) == []
+    assert [f.name for f in r.features] == ["follow", "navigation", "visual_nav"]
+
+
+def test_missing_requirement_is_a_load_failure_and_cascades():
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("v"),), requires=("navigation",))}
+    r = Registry()
+    failed = r.load(["follow", "visual_nav"], import_fn=_imp_of(fs))  # navigation not enabled
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+    assert all("requires" in str(e) for _, e, _ in failed)
+    assert r.features == [] and r.action("f") is None and r.action("v") is None
+    assert not r.has("follow")
+    # retry once the dependency is there: both load, failures cleared
+    fs["navigation"] = Feature("navigation", actions=(act("n"),))
+    assert r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs)) == []
+    assert r.has("follow") and r.failures == []
+
+
+def test_requirement_whose_import_failed_fails_dependent():
+    fs = {"follow": Feature("follow", requires=("visual_nav",))}
+    r = Registry()
+    failed = r.load(["follow", "visual_nav"], import_fn=_imp_of(fs, broken=("visual_nav",)))
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+
+
+def test_real_feature_dependencies_declared():
+    from src.spot.features import REGISTRY
+    by = {f.name: f for f in REGISTRY.features}
+    assert by["follow"].requires == ("visual_nav",)
+    assert by["visual_nav"].requires == ("navigation",)
+    assert REGISTRY.failures == []
+
+
+def test_dependency_rejected_by_add_removes_dependents():
+    """h2: visual_nav imports fine but add() rejects it (duplicate action):
+    follow, already added, is removed and reported too."""
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("n"),)),  # clashes with navigation
+          "navigation": Feature("navigation", actions=(act("n"),))}
+    r = Registry()
+    failed = r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs))
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+    assert [f.name for f in r.features] == ["navigation"]
+    assert r.action("f") is None and r.action("n") is not None
+    assert not r.has("follow") and not r.has("visual_nav") and r.has("navigation")

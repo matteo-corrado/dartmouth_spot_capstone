@@ -8,7 +8,7 @@ def handle_follow_me(params, ctx):
     import src.spot.robot as _r
     from src.spot.robot import motion as _motion
     session = _r.CONNECTION.ensure()
-    session["cmd"]  # the legacy chain read "cmd" before every branch
+    _ = session["cmd"]  # the legacy chain read "cmd" before every branch
 
     # Follow the nearest person using YOLO person detection
     print("[Spot] Starting follow mode...")

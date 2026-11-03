@@ -11,7 +11,7 @@ Snapshot of what the code does on the poster-demo branch (`demo-poster-2026-10-2
 | Demo branch | `demo-poster-2026-10-29` (rollback tag `pre-demo-2026-10-29`); upstream working branch `tour_guide_upgrade_matteo` |
 | Tests | 465 passed at `cd4528d` (per the build ledger) |
 | Next milestone | Poster/networking demo, Thursday 2026-10-29. Rehearsal with babble and the final tag (`demo-ready-2026-10-29`) are still pending |
-| Pending operator decisions | `WALK_POSE` (`src/spot/robot/session.py:186`, currently `"stow"`); fill in `knowledge/event_knowledge.md`; Wi-Fi vs Kokoro voice; map vs `--no-map` |
+| Pending operator decisions | `WALK_POSE` (`src/spot/robot/session.py:189`, currently `"joints"`); fill in `knowledge/event_knowledge.md`; Wi-Fi vs Kokoro voice; map vs `--no-map` |
 
 ---
 

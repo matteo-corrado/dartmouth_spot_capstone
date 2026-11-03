@@ -207,30 +207,67 @@ def _auto_arm_at_turn(gen) -> None:
 
 _gaze_q = queue.Queue(maxsize=1)  # latest gaze request only: (body deg or None, safety gen)
 _gaze_worker = None
+_gaze_stop = threading.Event()        # set by stop_gaze_worker (main's _shutdown_runtime)
+_gaze_spawn_lock = threading.Lock()   # one gaze worker at a time
 
 
 def _gaze_loop():
-    from src.spot.features.gaze.handlers import gaze_at_bearing
-    while True:
-        body, gen = _gaze_q.get()
+    while not _gaze_stop.is_set():
         try:
+            body, gen = _gaze_q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        if _gaze_stop.is_set():
+            break
+        try:
+            # Imported here: with the gaze folder deleted this fails per
+            # request (printed), it never kills the worker.
+            from src.spot.features.gaze.handlers import gaze_at_bearing
             gaze_at_bearing(body, gen)  # gen taken at request time: a stop since wins
         except Exception as e:  # noqa: BLE001 - gaze is cosmetic
             print(f"[Spot] gaze skipped: {type(e).__name__}: {e}")
+
+
+def stop_gaze_worker() -> None:
+    """Shutdown: the gaze worker exits within ~0.5 s and none is started
+    again. Non-blocking (no join); never raises."""
+    _gaze_stop.set()
+    try:
+        _gaze_q.get_nowait()  # drop a pending request
+    except queue.Empty:
+        pass
+
+
+def allow_gaze_worker() -> None:
+    """main() start: clear a previous run's stop (one main per process on the
+    robot; tests run several). Any still-alive worker is reused, never doubled."""
+    _gaze_stop.clear()
+
+
+def _gaze_feature_loaded() -> bool:
+    try:
+        from src.spot.features import REGISTRY
+        return REGISTRY.has("gaze")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _gaze_at_speaker(body_deg) -> None:
     """Ask the folded arm to turn toward the locked speaker (body-frame deg,
     None = centre). Off the audio loop on one worker; only the newest request
     is kept; the dispatcher clamps/rate-limits and checks pose/stop. Never
-    raises; no-op in dry-run."""
+    raises; no-op in dry-run, after stop_gaze_worker, or when the gaze
+    feature is not loaded."""
     global _gaze_worker
     if os.environ.get("SPOT_DRY_RUN") == "1":
         return
     try:
-        if _gaze_worker is None or not _gaze_worker.is_alive():
-            _gaze_worker = threading.Thread(target=_gaze_loop, name="gaze", daemon=True)
-            _gaze_worker.start()
+        if _gaze_stop.is_set() or not _gaze_feature_loaded():
+            return  # shutting down, or gaze removed from enabled.py
+        with _gaze_spawn_lock:
+            if _gaze_worker is None or not _gaze_worker.is_alive():
+                _gaze_worker = threading.Thread(target=_gaze_loop, name="gaze", daemon=True)
+                _gaze_worker.start()
         try:
             _gaze_q.get_nowait()  # drop a stale request
         except queue.Empty:
@@ -548,7 +585,10 @@ class Conversation:
             if self.tts is not None and arg:
                 self.tts.speak(arg)
         elif name == "persona":
-            if self.brain is None:
+            from src.spot.features import REGISTRY
+            if not REGISTRY.has("settings"):
+                print("[Control] persona: settings feature not enabled")
+            elif self.brain is None:
                 print("[Control] persona: no brain")
             else:
                 from src.spot.features.settings.handlers import do_set_persona

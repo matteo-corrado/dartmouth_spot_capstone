@@ -16,6 +16,8 @@ class EventBus:
         self._subs: dict[str, list[Callable[..., None]]] = {}
 
     def subscribe(self, event: str, handler: Callable[..., None]) -> None:
+        if event not in EVENTS:  # same check as publish: a typo never silently never fires
+            raise ValueError(f"unknown event: {event}")
         self._subs.setdefault(event, []).append(handler)
 
     def publish(self, event: str, **payload) -> None:

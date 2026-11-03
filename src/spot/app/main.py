@@ -181,10 +181,23 @@ def auto_arm_wanted(args, tuning) -> bool:
                 and not getattr(args, "dry_run", False))
 
 
+def auto_arm_on(args, tuning) -> bool:
+    """Safety condition C3, the auto-arm gate: auto_arm_wanted AND the mouth
+    feature is loaded (removing "mouth" from enabled.py turns it off); the
+    same REGISTRY.has check the gaze and settings paths use."""
+    from src.spot.features import REGISTRY
+    return auto_arm_wanted(args, tuning) and REGISTRY.has("mouth")
+
+
 def _shutdown_runtime() -> None:
-    """Stop the safety thread, ring, beams and mic, then the robot session
-    and player. Safe to call on any exit path."""
+    """Stop the safety thread, the gaze worker, ring, beams and mic, then the
+    robot session and player, then each feature's stop. Safe to call on any
+    exit path."""
     _sl.LISTENER.stop()
+    try:
+        _loop.stop_gaze_worker()  # C5: the one gaze worker exits; none restarts
+    except Exception:
+        pass
     _anim = _ring.RING._anim
     if _anim is not None:
         try:
@@ -202,6 +215,35 @@ def _shutdown_runtime() -> None:
         except Exception:
             pass
     cleanup_spot()
+    _stop_features()
+
+
+_FEATURE_CTX = None  # the Ctx _start_features gave each feature's start
+
+
+def _stop_features() -> None:
+    """Each loaded feature's stop(ctx), after the robot session is closed.
+    A raising stop is printed, never propagated. Feature.stop must never
+    send robot RPCs; if the close failed (a session is still up) every stop
+    is skipped so nothing races the operator's e-stop / spotctl."""
+    try:
+        from src.spot.features import REGISTRY
+        import src.spot.robot as _r
+        features = list(REGISTRY.features)
+        still_up = _r.CONNECTION._session is not None
+    except Exception:
+        return
+    if still_up:
+        if any(f.stop is not None for f in features):
+            print("[Features] robot session still open after close — skipping feature stops", flush=True)
+        return
+    for feature in features:
+        if feature.stop is None:
+            continue
+        try:
+            feature.stop(_FEATURE_CTX)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Features] {feature.name} stop failed: {type(e).__name__}: {e}", flush=True)
 
 
 # ============================================================================
@@ -217,7 +259,8 @@ _UNSUBSCRIBED_FEATURES = frozenset({"gaze"})
 
 def _parse_args(argv, tuning):
     """CLI args and the process env they set; device auto-detect.
-    None when main should return now (--list-devices, no mic)."""
+    An int exit code when main should return now: 0 after --list-devices,
+    1 when no mic device is found."""
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
     parser.add_argument("--device", type=int, default=None, help="Mic input device index (auto-detected from XVF3800)")
@@ -279,13 +322,17 @@ def _parse_args(argv, tuning):
     init_recorder(mode=args.latency, file_path=args.latency_out,
                   include_transcript=args.store_transcript)
 
+    if args.list_devices:  # before auto-detect: lists (rc 0) even with no mic attached
+        print(sd.query_devices())
+        return 0
+
     # Auto-detect devices by name if not explicitly specified
     if args.device is None:
         args.device = _cap._find_device_by_name(_cap.MIC_DEVICE_NAME, "input")
         if args.device is None:
             print(f"ERROR: Could not find mic device matching '{_cap.MIC_DEVICE_NAME}'")
             print("Run with --list-devices to see available devices, then pass --device <index>")
-            return None
+            return 1
         print(f"[Auto-detected mic: device {args.device} ({_cap.MIC_DEVICE_NAME})]")
     if args.output_device is None:
         args.output_device = _cap._find_device_by_name(_cap.SPEAKER_DEVICE_NAME, "output")
@@ -294,9 +341,6 @@ def _parse_args(argv, tuning):
         else:
             print(f"[Auto-detected speaker: device {args.output_device} ({_cap.SPEAKER_DEVICE_NAME})]")
 
-    if args.list_devices:
-        print(sd.query_devices())
-        return None
     return args
 
 
@@ -329,23 +373,32 @@ def _start_features(args, bus, robot, tuning) -> bool:
     loudly ([Features] FAILED + traceback). On the robot that is fatal (False:
     main returns before any audio or robot bring-up); --dry-run only warns.
     Starts run before set_auto_arm (step 7), so the mouth start (the fold
-    after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted (C3).
+    after a stand) is a no-op here: the auto-arm gate stays auto_arm_wanted
+    plus "mouth is registered" (C3, step 7). The _NoMouth core-binding check
+    applies only while "mouth" is in ENABLED: with the feature removed (or its
+    folder deleted) the stand-in is expected and stow still stows the arm.
     """
     from src.spot.features import REGISTRY
     from src.spot.features.enabled import ENABLED
     failures = list(REGISTRY.load(ENABLED))  # retries any import-time failure
-    if isinstance(robot.mouth_handlers, robot._NoMouth):
+    if "mouth" in ENABLED and isinstance(robot.mouth_handlers, robot._NoMouth):
         # The core bound the no-op stand-in at import (mouth import failed
         # then): even if the retry above loaded the real handlers, the core
         # and the feature would be split. Same loud C6 path.
         failures.append(("mouth (core binding)", ImportError(robot.mouth_handlers.error),
                          "src.spot.robot bound the _NoMouth stand-in at import\n"))
+    global _FEATURE_CTX
     ctx = Ctx(connection=robot.CONNECTION, arm=robot.ARM, safety=robot.SAFETY_GEN,
               nav=robot.NAV, bus=bus, tuning=tuning)
+    _FEATURE_CTX = ctx
     for feature in REGISTRY.features:
         if feature.name not in _UNSUBSCRIBED_FEATURES:
             for event, handler in feature.subscriptions:
-                bus.subscribe(event, handler)
+                try:
+                    bus.subscribe(event, handler)
+                except Exception as exc:  # noqa: BLE001 - e.g. unknown event name (C6)
+                    import traceback
+                    failures.append((feature.name, exc, traceback.format_exc()))
         if feature.start is not None:
             try:
                 feature.start(ctx)
@@ -670,8 +723,9 @@ def _start_conversation(args, C, audio, services, tuning):
     # the gripper mouth turns on automatically once Spot is standing + powered
     # (session bring-up, a stand, or the next turn) -- never before. Opt out
     # with --no-arm or tuning auto_arm: false. Skipped in dry-run.
-    # Safety condition C3: this is THE auto-arm gate.
-    _auto = auto_arm_wanted(args, tuning)
+    # Safety condition C3: this is THE auto-arm gate. Mouth removed from
+    # enabled.py (enable_mouth not registered) = never fold, never jaw.
+    _auto = auto_arm_on(args, tuning)
     print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
@@ -725,25 +779,30 @@ def _close_quietly(ctl_srv, stream) -> None:
 # ============================================================================
 # Main: the pipeline, top to bottom
 # ============================================================================
-def main(argv: list[str] | None = None):
+def main(argv: list[str] | None = None) -> int:
+    """The voice client. Returns the process exit code: 0 on a normal exit
+    (including --list-devices), 1 when startup is refused (C6 feature
+    failure, the safety-KWS gate, ROBOT STILL POWERED), no mic device is
+    found, or the mic stream cannot open. The launch stub passes it to sys.exit."""
     C = _loop.CONVERSATION
 
     # 1. Tuning (and the CLI, whose defaults read it)
     tuning = get_tuning()
     args = _parse_args(argv, tuning)
-    if args is None:
-        return
+    if isinstance(args, int):  # --list-devices (0) or no mic found (1)
+        return args
     # 2. Event bus
     bus = _make_bus()
     # 3. Robot owners
     robot = _robot_owners()
     # 4. Features: REGISTRY.load(ENABLED), subscriptions, start(ctx)
     if not _start_features(args, bus, robot, tuning):
-        return
+        return 1
     # From step 5 on something is open (player, mic, safety thread, maybe a
     # standing robot): any exit -- refusal, error or Ctrl-C before run() --
     # shuts the runtime down exactly once (run() does it on its own exit).
     shutdown = _ShutdownOnce()
+    _loop.allow_gaze_worker()  # this run's gaze worker; shutdown stops it (C5)
     stream = ctl_srv = None
     try:
         # 5. Audio capture, ring, wake, safety listener
@@ -753,12 +812,12 @@ def main(argv: list[str] | None = None):
         # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
         if not _bring_up_robot(args, audio):
             shutdown()
-            return
+            return 1
         # 7. Conversation (state, input stream, automatic arm fold)
         stream, utt_log = _start_conversation(args, C, audio, services, tuning)
         if stream is None:
             shutdown()
-            return
+            return 1
         # 8. Control server
         ctl_q, ctl_srv = _start_control_server()
         # 9. Run the conversation loop until shutdown
@@ -767,6 +826,7 @@ def main(argv: list[str] | None = None):
               use_wake_word=audio.use_wake_word, floor=audio.floor,
               utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
               shutdown=shutdown, ctl_q=ctl_q, ctl_srv=ctl_srv)
+        return 0
     except BaseException:
         # Unconditional: run()'s own try starts after some setup, so a raise
         # in between would leak these. Both stops are idempotent.

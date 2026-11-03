@@ -38,4 +38,5 @@ FEATURE = Feature(
     intent_rules=(
         _rule(230, r"\b(?:find|look for|search for|locate)\s+(?:the\s+|a\s+|my\s+)?(?P<desc>.+?)(?:\s*\.|$)", "go_to_object", {"description": "$desc"}),
     ),
+    requires=("navigation",),  # a saved-location target runs go_to (navigation) via _dispatch_core
 )

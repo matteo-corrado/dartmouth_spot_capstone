@@ -16,4 +16,4 @@ if _root not in sys.path:
 
 if __name__ == "__main__":
     from src.spot.app.main import main
-    main()
+    sys.exit(main())  # 1 on a refused start (C6 / safety KWS / robot still powered)
