@@ -7,6 +7,7 @@ Usage:
     wakespot /path/to/map     # absolute or relative path
     wakespot --no-map         # skip startup map upload
     wakespot --no-tts jackson # pass-through to voice control
+    wakespot --dry-run        # no robot: no E-Stop, no map; mic/ASR/brain/TTS only
 
 The orchestrator:
   1. Acquires a /tmp/wakespot.pid lockfile (refuses if another wakespot is alive).
@@ -215,6 +216,22 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-transcript-log", action="store_true",
                         help="Forwarded to voice control: store transcript: null "
                              "in conversation/utterance logs (privacy).")
+    # Dry run: the whole voice pipeline without the robot.
+    parser.add_argument("--dry-run", action="store_true",
+                        help="No robot: skip the E-Stop claim and the map upload, and "
+                             "forward --dry-run (mic, ASR, brain, TTS only; robot "
+                             "commands are printed, never sent).")
+    parser.add_argument("--no-brain", action="store_true",
+                        help="Forwarded to voice control: regex-only, no LLM brain.")
+    parser.add_argument("--no-server", action="store_true",
+                        help="Forwarded to voice control: don't start the ASR server "
+                             "(assumes it is already running).")
+    parser.add_argument("--latency-out", type=str, default=None,
+                        help="Forwarded to voice control: latency JSONL path "
+                             "(with --latency file/all).")
+    parser.add_argument("--allow-no-safety-kws", action="store_true",
+                        help="Forwarded to voice control: start on the robot even if "
+                             "the always-on safety keyword spotter fails to load.")
     return parser
 
 
@@ -252,9 +269,28 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
         cmd.extend(["--mic-channel", str(args.mic_channel)])
     if args.no_transcript_log:
         cmd.append("--no-transcript-log")
+    if args.no_brain:
+        cmd.append("--no-brain")
+    if args.no_server:
+        cmd.append("--no-server")
+    if args.latency_out is not None:
+        cmd.extend(["--latency-out", args.latency_out])
+    if args.allow_no_safety_kws:
+        cmd.append("--allow-no-safety-kws")
+    if args.dry_run:
+        cmd.append("--dry-run")
+        return cmd  # dry run never uploads a map
     if resolved_map is not None:
         cmd.extend(["--map", str(resolved_map)])
     return cmd
+
+
+class _NoEstop:
+    """Dry-run stand-in for the E-Stop keepalive: there is no robot, so there
+    is nothing to cut. The shutdown state machine stays the same."""
+
+    def stop(self):
+        print("[wakespot] (dry run) no E-Stop to cut.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +404,19 @@ def main() -> int:
     signal.signal(signal.SIGQUIT, _on_sigquit)
 
     try:
+        # ----- Dry run: no robot contact at all (no E-Stop, no map) -----
+        if args.dry_run:
+            if args.map is not None and not args.no_map:
+                print(f"[wakespot] (dry run) ignoring map '{args.map}'.")
+            print("[wakespot] DRY RUN: no E-Stop claimed, no map upload, "
+                  "robot commands are not sent.")
+            print("[wakespot]   Ctrl+C = stop voice control")
+            proc = subprocess.Popen(
+                _build_voice_control_cmd(args, None),
+                cwd=str(PROJECT_ROOT), start_new_session=True,
+            )
+            return _wait_for_child(proc, _NoEstop())
+
         # ----- Resolve map (skip if --no-map) -----
         resolved_map: Path | None = None
         if not args.no_map:
