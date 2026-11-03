@@ -3,15 +3,14 @@ go_to_object, check_obstacles, plus the describe declaration.
 
 The owner singletons are looked up at call time (import inside the
 functions: src.spot.robot must not be imported when the feature loads).
+The bosdyn SDK (and graph_nav_utils, which imports it) is imported at call
+time too, as in walk/handlers.py, so the feature registers without the SDK.
 Errors that escape a handler are caught by dispatcher._dispatch_feature,
 the same catch-all the legacy branches had.
 """
 import time
 
-from bosdyn.client.robot_command import RobotCommandBuilder
-from bosdyn.client.math_helpers import SE2Pose
 from src.spot.nav.location_manager import list_locations as _list_saved_locations
-from src.spot.nav.graph_nav_utils import capped_mobility_params
 
 
 def _say(speak, text: str):
@@ -30,6 +29,9 @@ def handle_go_to_object(params, ctx):
     import src.spot.robot as _r
     from src.spot.robot import dispatcher as _dispatcher
     from src.spot.robot import motion as _motion
+    from bosdyn.client.robot_command import RobotCommandBuilder
+    from bosdyn.client.math_helpers import SE2Pose
+    from src.spot.nav.graph_nav_utils import capped_mobility_params
     session, cmd_client = _session()
     # Generalized "go to X" — smart dispatch to three backends:
     # 1. Saved location in the graph_nav map → delegate to go_to
