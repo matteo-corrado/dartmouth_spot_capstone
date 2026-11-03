@@ -622,3 +622,25 @@ def test_feature_handlers_get_the_process_bus(monkeypatch):
     monkeypatch.setattr(_ev, "BUS", bus)
     assert _d._dispatch_feature({"intent": "probe_x", "params": {}}) is True
     assert got == [bus]
+
+
+def test_exit_codes(monkeypatch):
+    """T15: main returns 0 on a normal exit, 1 on a refused start; the launch
+    stub passes it to sys.exit."""
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    assert _app.main(ARGS) == 0
+    seen.clear()
+    _patch_pipeline(monkeypatch, seen, load_result=[("bogus", ImportError("nope"), "tb\n")])
+    assert _app.main(["--device", "0", "--output-device", "0"]) == 1  # C6 refusal
+    seen.clear()
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_app, "_bring_up_robot", lambda args, audio: False)  # safety KWS / still powered
+    monkeypatch.setattr(_app, "_shutdown_runtime", lambda: None)
+    assert _app.main(ARGS) == 1
+
+
+def test_client_mic_stub_exits_with_main_rc():
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parents[3] / "src/voice_control/client_mic.py").read_text()
+    assert "sys.exit(main())" in src

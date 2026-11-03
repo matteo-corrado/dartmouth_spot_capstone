@@ -55,7 +55,12 @@ def test_split_shims_hold_no_state(fname):
     assert isinstance(imp, ast.ImportFrom) and imp.module == module
     assert [a.name for a in imp.names] == [func]
     assert isinstance(call, ast.Expr) and isinstance(call.value, ast.Call)
-    assert call.value.func.id == func and not call.value.args
+    c = call.value
+    if isinstance(c.func, ast.Attribute):  # sys.exit(main()): the exit code reaches the shell (T15)
+        assert c.func.attr == "exit" and c.func.value.id == "sys" and len(c.args) == 1
+        c = c.args[0]
+        assert isinstance(c, ast.Call)
+    assert c.func.id == func and not c.args
 
 
 def test_voice_control_holds_only_the_two_stubs():

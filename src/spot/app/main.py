@@ -768,21 +768,25 @@ def _close_quietly(ctl_srv, stream) -> None:
 # ============================================================================
 # Main: the pipeline, top to bottom
 # ============================================================================
-def main(argv: list[str] | None = None):
+def main(argv: list[str] | None = None) -> int:
+    """The voice client. Returns the process exit code: 0 on a normal exit
+    (including --list-devices), 1 when startup is refused (C6 feature
+    failure, the safety-KWS gate, ROBOT STILL POWERED) or the mic stream
+    cannot open. The launch stub passes it to sys.exit."""
     C = _loop.CONVERSATION
 
     # 1. Tuning (and the CLI, whose defaults read it)
     tuning = get_tuning()
     args = _parse_args(argv, tuning)
     if args is None:
-        return
+        return 0
     # 2. Event bus
     bus = _make_bus()
     # 3. Robot owners
     robot = _robot_owners()
     # 4. Features: REGISTRY.load(ENABLED), subscriptions, start(ctx)
     if not _start_features(args, bus, robot, tuning):
-        return
+        return 1
     # From step 5 on something is open (player, mic, safety thread, maybe a
     # standing robot): any exit -- refusal, error or Ctrl-C before run() --
     # shuts the runtime down exactly once (run() does it on its own exit).
@@ -797,12 +801,12 @@ def main(argv: list[str] | None = None):
         # 6b. Robot bring-up: safety-KWS gate, TCP probe or --map session
         if not _bring_up_robot(args, audio):
             shutdown()
-            return
+            return 1
         # 7. Conversation (state, input stream, automatic arm fold)
         stream, utt_log = _start_conversation(args, C, audio, services, tuning)
         if stream is None:
             shutdown()
-            return
+            return 1
         # 8. Control server
         ctl_q, ctl_srv = _start_control_server()
         # 9. Run the conversation loop until shutdown
@@ -811,6 +815,7 @@ def main(argv: list[str] | None = None):
               use_wake_word=audio.use_wake_word, floor=audio.floor,
               utt_log=utt_log, store_transcript=args.store_transcript, stream=stream,
               shutdown=shutdown, ctl_q=ctl_q, ctl_srv=ctl_srv)
+        return 0
     except BaseException:
         # Unconditional: run()'s own try starts after some setup, so a raise
         # in between would leak these. Both stops are idempotent.
