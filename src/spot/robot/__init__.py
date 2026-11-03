@@ -71,11 +71,27 @@ class _NoMouth:
         return False
 
 
+def _mouth_not_installed(exc) -> bool:
+    """The mouth folder is absent AND "mouth" is not in enabled.py: an
+    expected state (feature removed), not a failure."""
+    if not (isinstance(exc, ModuleNotFoundError)
+            and (exc.name or "").startswith("src.spot.features.mouth")):
+        return False
+    try:
+        from src.spot.features.enabled import ENABLED
+    except Exception:  # noqa: BLE001
+        return False
+    return "mouth" not in ENABLED
+
+
 try:
     from src.spot.features.mouth import handlers as mouth_handlers  # noqa: E402
 except Exception as _e:  # noqa: BLE001
-    import traceback as _tb
-    print(f"[Spot] ⚠️  MOUTH HANDLERS FAILED TO IMPORT ({type(_e).__name__}: {_e}); "
-          "auto-arm / disable_mouth are no-ops", flush=True)
-    _tb.print_exc()
+    if _mouth_not_installed(_e):
+        print("[Spot] mouth feature not installed; arm stow only", flush=True)
+    else:
+        import traceback as _tb
+        print(f"[Spot] ⚠️  MOUTH HANDLERS FAILED TO IMPORT ({type(_e).__name__}: {_e}); "
+              "auto-arm is off, disable_mouth / stow only stow the arm", flush=True)
+        _tb.print_exc()
     mouth_handlers = _NoMouth(f"{type(_e).__name__}: {_e}")

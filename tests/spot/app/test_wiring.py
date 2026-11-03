@@ -608,6 +608,21 @@ def test_feature_stop_runs_after_session_close_and_never_raises(monkeypatch, cap
     assert "[Features] b stop failed: RuntimeError: boom" in capsys.readouterr().out
 
 
+def test_feature_stops_skipped_if_session_still_open(monkeypatch, capsys):
+    """h4: a failed close (session still set) skips every feature stop."""
+    import src.spot.features as _f
+    import src.spot.robot as _r
+    from src.spot.core.registry import Feature, Registry
+    order = []
+    reg = Registry()
+    reg.add(Feature("a", stop=lambda ctx: order.append("a")))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    monkeypatch.setattr(_r.CONNECTION, "_session", {"cmd": object()})
+    _app._stop_features()
+    assert order == []
+    assert "skipping feature stops" in capsys.readouterr().out
+
+
 def test_feature_handlers_get_the_process_bus(monkeypatch):
     """M1: dispatcher builds the handler Ctx with the bus main set up."""
     import src.spot.features as _f
@@ -644,3 +659,39 @@ def test_client_mic_stub_exits_with_main_rc():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parents[3] / "src/voice_control/client_mic.py").read_text()
     assert "sys.exit(main())" in src
+
+
+def test_exit_code_list_devices_0_no_mic_1(monkeypatch):
+    """p6: --list-devices exits 0 (even with no mic attached); no mic found exits 1."""
+    seen = []
+    _patch_pipeline(monkeypatch, seen)
+    monkeypatch.setattr(_app, "sd", SimpleNamespace(query_devices=lambda: "devs"))
+    monkeypatch.setattr(_cap, "_find_device_by_name", lambda *a: None)
+    assert _app.main(["--list-devices"]) == 0
+    assert _app.main([]) == 1
+    assert "features" not in seen  # returned before any startup step
+
+
+def test_spotctl_persona_gated_on_settings_feature(monkeypatch, capsys):
+    """p5: spotctl persona reports instead of importing settings when off."""
+    import src.spot.features as _f
+    from src.spot.core.registry import Registry
+    monkeypatch.setattr(_f, "REGISTRY", Registry())
+    C = _loop.CONVERSATION
+    monkeypatch.setattr(C, "brain", object(), raising=False)
+    C.on_queued("persona", "pirate")
+    out = capsys.readouterr().out
+    assert "settings feature not enabled" in out
+
+
+def test_mouth_not_installed_only_when_disabled(monkeypatch):
+    """p4: a missing mouth folder is calm only while mouth is out of ENABLED."""
+    import src.spot.features.enabled as _en
+    import src.spot.robot as robot_pkg
+    gone = ModuleNotFoundError("No module named 'src.spot.features.mouth'",
+                               name="src.spot.features.mouth")
+    monkeypatch.setattr(_en, "ENABLED", [n for n in _en.ENABLED if n != "mouth"])
+    assert robot_pkg._mouth_not_installed(gone) is True
+    assert robot_pkg._mouth_not_installed(ImportError("broken")) is False
+    monkeypatch.setattr(_en, "ENABLED", list(_en.ENABLED) + ["mouth"])
+    assert robot_pkg._mouth_not_installed(gone) is False

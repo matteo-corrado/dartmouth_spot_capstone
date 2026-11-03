@@ -585,7 +585,10 @@ class Conversation:
             if self.tts is not None and arg:
                 self.tts.speak(arg)
         elif name == "persona":
-            if self.brain is None:
+            from src.spot.features import REGISTRY
+            if not REGISTRY.has("settings"):
+                print("[Control] persona: settings feature not enabled")
+            elif self.brain is None:
                 print("[Control] persona: no brain")
             else:
                 from src.spot.features.settings.handlers import do_set_persona

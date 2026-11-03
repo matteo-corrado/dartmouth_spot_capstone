@@ -34,6 +34,20 @@ def gaze_sh0_deg(body_deg, max_deg: float):
     return max(-max_deg, min(max_deg, b))
 
 
+def _gaze_shutting_down() -> bool:
+    """True once main's shutdown has stopped the gaze worker
+    (conversation.loop.stop_gaze_worker). Read lock-free from sys.modules (no
+    import under ARM._lock): a request the worker already picked up must not
+    move the arm after shutdown has begun. Never raises."""
+    import sys
+    loop = sys.modules.get("src.spot.conversation.loop")
+    ev = getattr(loop, "_gaze_stop", None) if loop is not None else None
+    try:
+        return bool(ev is not None and ev.is_set())
+    except Exception:  # noqa: BLE001
+        return True  # fail closed: no gaze
+
+
 def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
     """Turn the folded arm (shoulder yaw sh0, slow joint move) toward a
     body-frame bearing. None -> back to centre.
@@ -78,7 +92,7 @@ def gaze_at_bearing(body_deg: float | None, gen=None) -> bool:
         sh0 = math.radians(target) * (1 if tun.gaze_sh0_sign >= 0 else -1)
         with _r.ARM._lock:
             if (_r.SAFETY_GEN.aborted(gen) or _r.CONNECTION._closing or _r.ARM._pose != "talk" or _r.NAV.is_navigating()
-                    or time.monotonic() < _r.ARM._settle_until):
+                    or time.monotonic() < _r.ARM._settle_until or _gaze_shutting_down()):
                 return False
             sess["cmd"].robot_command(joints_pose_command(sh0), timeout=GAZE_RPC_TIMEOUT_S)
             _r.ARM._gaze_deg, _gaze_t = target, now

@@ -51,6 +51,9 @@ class Feature:
     # Called once at shutdown by main's _shutdown_runtime, AFTER the robot
     # session is closed (stop/stow/sit/power_off order untouched). Never
     # raises out of shutdown. No feature defines one yet.
+    # RULE: stop must never send robot RPCs (no motion, arm, gripper or power
+    # command). Release only the feature's own threads/files. main skips every
+    # stop if the session close failed (CONNECTION._session still set).
     stop: Callable[["Ctx"], None] | None = None
     requires: tuple[str, ...] = ()
 
@@ -126,20 +129,47 @@ class Registry:
                                       "(not loaded: add it to enabled.py, or remove this feature)")
                     log.error("[Features] %s skipped: %s", name, exc)
                     failed.append((name, exc, f"{exc}\n"))
+        added = []
         for name, feature in imported:
             if name not in ok:
                 continue
             try:
                 self.add(feature)
                 self._loaded.add(name)
-                self.failures[:] = [x for x in self.failures if x[0] != name]
+                added.append((name, feature))
             except Exception as exc:
                 log.error("[Features] %s skipped: %s", name, exc)
                 failed.append((name, exc, traceback.format_exc()))
+        # add() can reject a dependency that imported fine (duplicate action,
+        # flag rule): re-run the cascade so its dependents come out too.
+        changed = True
+        while changed:
+            changed = False
+            have = {f.name for f in self.features}
+            for name, feature in list(added):
+                missing = [r for r in feature.requires if r not in have]
+                if missing:
+                    self._remove(name, feature)
+                    added.remove((name, feature))
+                    changed = True
+                    exc = ImportError(f"feature {feature.name!r} requires {', '.join(map(repr, missing))} "
+                                      "(it failed to register)")
+                    log.error("[Features] %s skipped: %s", name, exc)
+                    failed.append((name, exc, f"{exc}\n"))
+        for name, _ in added:
+            self.failures[:] = [x for x in self.failures if x[0] != name]
         for f in failed:  # one entry per feature: a retry replaces the old one
             self.failures[:] = [x for x in self.failures if x[0] != f[0]]
             self.failures.append(f)
         return failed
+
+    def _remove(self, module_name: str, feature: Feature) -> None:
+        """Undo add() for one feature (its actions, its entry, its loaded mark)."""
+        self.features = [f for f in self.features if f is not feature]
+        for a in feature.actions:
+            if self._actions.get(a.name) is a:
+                del self._actions[a.name]
+        self._loaded.discard(module_name)
 
     def has(self, name: str) -> bool:
         """True when the feature module `name` is loaded (e.g. "gaze", which

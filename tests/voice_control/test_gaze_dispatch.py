@@ -250,3 +250,16 @@ def test_client_gaze_skipped_without_gen(monkeypatch):
 def test_explicit_tuning_yaml_arm_keys():
     t = tuning.load_tuning()
     assert t.auto_arm is True and t.gaze_max_deg == 20.0 and t.gaze_sh0_sign == 1
+
+
+def test_gaze_blocked_once_shutdown_stops_worker(cmd, monkeypatch):
+    """h3: a request the worker already picked up cannot move the arm once
+    shutdown has set the gaze stop Event (re-checked under ARM._lock)."""
+    import threading as _th
+    ev = _th.Event()
+    monkeypatch.setattr(_loop, "_gaze_stop", ev)
+    ev.set()
+    assert gaze_h.gaze_at_bearing(30.0) is False
+    assert cmd.sent == []
+    ev.clear()
+    assert gaze_h.gaze_at_bearing(30.0) is True

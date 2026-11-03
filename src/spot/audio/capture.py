@@ -274,11 +274,18 @@ def _clear_fixed_beams(mic) -> None:
     """G10: turn off fixed beams a previous run left on (e.g. an interrupted
     record_demo_clips --beam): the same runtime write the loop uses on release
     and shutdown (set_fixed_beams(None) = AEC_FIXEDBEAMSONOFF 0). Never saves
-    the config, reboots or resets the device. Never raises."""
+    the config, reboots or resets the device. Never raises.
+
+    MicArray._write swallows its own USB errors and marks the link dead, so
+    a failed write shows up as mic.dead afterwards, not as an exception."""
     try:
         mic.set_fixed_beams(None)
     except Exception as e:  # noqa: BLE001
-        print(f"[MicArray] fixed-beams clear failed: {e}")
+        print(f"[MicArray] ⚠️  fixed-beams clear failed: {type(e).__name__}: {e}", flush=True)
+        return
+    if getattr(mic, "dead", False):
+        print("[MicArray] ⚠️  fixed-beams clear failed: XVF3800 control link is dead "
+              "(beams may still be on until it reconnects or is power-cycled)", flush=True)
 
 
 def _open_mic_array():
@@ -293,6 +300,12 @@ def _open_mic_array():
         print("[MicArray] XVF3800 control not found — no speaker lock / ring")
         return None
     _clear_fixed_beams(mic)
+    try:
+        # Runs on the xvf-reconnect thread (never the audio thread) once a
+        # lost link is restored: the same runtime-only beams-off write.
+        mic.add_restore_listener(lambda: _clear_fixed_beams(mic))
+    except Exception as e:  # noqa: BLE001
+        print(f"[MicArray] restore listener not added: {e}")
     try:
         mic.start_poller(20.0)
     except Exception as e:

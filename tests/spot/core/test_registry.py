@@ -166,3 +166,17 @@ def test_real_feature_dependencies_declared():
     assert by["follow"].requires == ("visual_nav",)
     assert by["visual_nav"].requires == ("navigation",)
     assert REGISTRY.failures == []
+
+
+def test_dependency_rejected_by_add_removes_dependents():
+    """h2: visual_nav imports fine but add() rejects it (duplicate action):
+    follow, already added, is removed and reported too."""
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("n"),)),  # clashes with navigation
+          "navigation": Feature("navigation", actions=(act("n"),))}
+    r = Registry()
+    failed = r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs))
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+    assert [f.name for f in r.features] == ["navigation"]
+    assert r.action("f") is None and r.action("n") is not None
+    assert not r.has("follow") and not r.has("visual_nav") and r.has("navigation")

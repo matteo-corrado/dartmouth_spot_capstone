@@ -49,6 +49,8 @@ def test_grammar_identical():
     gen = _no_action_set_comment(build_grammar(REGISTRY))
     assert _norm(gen) == _norm(gold)
     assert gen == gold  # byte-identical too (bar the line-3 comment)
+    assert build_grammar(REGISTRY).splitlines()[2] == (
+        "# Action set: core intents + enabled features (src/spot/brain/grammar/generate.py).")
 
 
 def test_committed_grammar_snapshot_is_the_generated_one():

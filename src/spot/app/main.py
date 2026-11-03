@@ -183,9 +183,10 @@ def auto_arm_wanted(args, tuning) -> bool:
 
 def auto_arm_on(args, tuning) -> bool:
     """Safety condition C3, the auto-arm gate: auto_arm_wanted AND the mouth
-    feature is registered (removing "mouth" from enabled.py turns it off)."""
+    feature is loaded (removing "mouth" from enabled.py turns it off); the
+    same REGISTRY.has check the gaze and settings paths use."""
     from src.spot.features import REGISTRY
-    return auto_arm_wanted(args, tuning) and REGISTRY.action("enable_mouth") is not None
+    return auto_arm_wanted(args, tuning) and REGISTRY.has("mouth")
 
 
 def _shutdown_runtime() -> None:
@@ -222,11 +223,19 @@ _FEATURE_CTX = None  # the Ctx _start_features gave each feature's start
 
 def _stop_features() -> None:
     """Each loaded feature's stop(ctx), after the robot session is closed.
-    A raising stop is printed, never propagated."""
+    A raising stop is printed, never propagated. Feature.stop must never
+    send robot RPCs; if the close failed (a session is still up) every stop
+    is skipped so nothing races the operator's e-stop / spotctl."""
     try:
         from src.spot.features import REGISTRY
+        import src.spot.robot as _r
         features = list(REGISTRY.features)
+        still_up = _r.CONNECTION._session is not None
     except Exception:
+        return
+    if still_up:
+        if any(f.stop is not None for f in features):
+            print("[Features] robot session still open after close — skipping feature stops", flush=True)
         return
     for feature in features:
         if feature.stop is None:
@@ -250,7 +259,8 @@ _UNSUBSCRIBED_FEATURES = frozenset({"gaze"})
 
 def _parse_args(argv, tuning):
     """CLI args and the process env they set; device auto-detect.
-    None when main should return now (--list-devices, no mic)."""
+    An int exit code when main should return now: 0 after --list-devices,
+    1 when no mic device is found."""
     parser = argparse.ArgumentParser(description="Spot Voice Control Client")
     parser.add_argument("--list-devices", action="store_true", help="List audio devices and exit")
     parser.add_argument("--device", type=int, default=None, help="Mic input device index (auto-detected from XVF3800)")
@@ -312,13 +322,17 @@ def _parse_args(argv, tuning):
     init_recorder(mode=args.latency, file_path=args.latency_out,
                   include_transcript=args.store_transcript)
 
+    if args.list_devices:  # before auto-detect: lists (rc 0) even with no mic attached
+        print(sd.query_devices())
+        return 0
+
     # Auto-detect devices by name if not explicitly specified
     if args.device is None:
         args.device = _cap._find_device_by_name(_cap.MIC_DEVICE_NAME, "input")
         if args.device is None:
             print(f"ERROR: Could not find mic device matching '{_cap.MIC_DEVICE_NAME}'")
             print("Run with --list-devices to see available devices, then pass --device <index>")
-            return None
+            return 1
         print(f"[Auto-detected mic: device {args.device} ({_cap.MIC_DEVICE_NAME})]")
     if args.output_device is None:
         args.output_device = _cap._find_device_by_name(_cap.SPEAKER_DEVICE_NAME, "output")
@@ -327,9 +341,6 @@ def _parse_args(argv, tuning):
         else:
             print(f"[Auto-detected speaker: device {args.output_device} ({_cap.SPEAKER_DEVICE_NAME})]")
 
-    if args.list_devices:
-        print(sd.query_devices())
-        return None
     return args
 
 
@@ -771,15 +782,15 @@ def _close_quietly(ctl_srv, stream) -> None:
 def main(argv: list[str] | None = None) -> int:
     """The voice client. Returns the process exit code: 0 on a normal exit
     (including --list-devices), 1 when startup is refused (C6 feature
-    failure, the safety-KWS gate, ROBOT STILL POWERED) or the mic stream
-    cannot open. The launch stub passes it to sys.exit."""
+    failure, the safety-KWS gate, ROBOT STILL POWERED), no mic device is
+    found, or the mic stream cannot open. The launch stub passes it to sys.exit."""
     C = _loop.CONVERSATION
 
     # 1. Tuning (and the CLI, whose defaults read it)
     tuning = get_tuning()
     args = _parse_args(argv, tuning)
-    if args is None:
-        return 0
+    if isinstance(args, int):  # --list-devices (0) or no mic found (1)
+        return args
     # 2. Event bus
     bus = _make_bus()
     # 3. Robot owners

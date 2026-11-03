@@ -114,7 +114,7 @@ def _mouth_registered() -> bool:
     bring-up never folds the arm or starts the jaw. Never raises."""
     try:
         from src.spot.features import REGISTRY
-        return REGISTRY.action("enable_mouth") is not None
+        return REGISTRY.has("mouth")
     except Exception:  # noqa: BLE001
         return False
 
