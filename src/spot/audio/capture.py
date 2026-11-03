@@ -270,6 +270,17 @@ def _mic_speech_degs(t0: float, t1: float) -> list:
         return []
 
 
+def _clear_fixed_beams(mic) -> None:
+    """G10: turn off fixed beams a previous run left on (e.g. an interrupted
+    record_demo_clips --beam): the same runtime write the loop uses on release
+    and shutdown (set_fixed_beams(None) = AEC_FIXEDBEAMSONOFF 0). Never saves
+    the config, reboots or resets the device. Never raises."""
+    try:
+        mic.set_fixed_beams(None)
+    except Exception as e:  # noqa: BLE001
+        print(f"[MicArray] fixed-beams clear failed: {e}")
+
+
 def _open_mic_array():
     """Open the XVF3800 control interface + start the DoA poller. Never raises."""
     try:
@@ -281,6 +292,7 @@ def _open_mic_array():
     if mic is None:
         print("[MicArray] XVF3800 control not found — no speaker lock / ring")
         return None
+    _clear_fixed_beams(mic)
     try:
         mic.start_poller(20.0)
     except Exception as e:

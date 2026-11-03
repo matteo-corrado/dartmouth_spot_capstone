@@ -261,48 +261,64 @@ def play_samples(samples: np.ndarray, rate: int, output_device) -> None:
         out.write(np.concatenate([lead, samples]).reshape(-1, 1))
 
 
+def beams_off(mic) -> None:
+    """Fixed beams off before closing the mic (G10): a runtime write only,
+    never a saved config. A dead control link skips the write, so say so:
+    the beams then stay on until the XVF3800 is power-cycled. Never raises."""
+    if getattr(mic, "dead", False):
+        print("  beams-off write skipped: XVF3800 control link is dead -- "
+              "unplug/replug the mic USB to clear the fixed beams")
+        return
+    try:
+        mic.set_fixed_beams(None)
+    except Exception as e:
+        print(f"  beams-off write failed: {e}")
+
+
 def record_clip(device: int, prompt: Prompt, mic, output_device=None, beam_mic_deg=None):
     """Returns (audio (N,2) int16, t0, doa_samples, chime_info | None, beam_samples).
 
     beam_mic_deg: point both fixed beams there (mic frame) for this clip, off after."""
     import threading
     import sounddevice as sd
-    if beam_mic_deg is not None:
-        mic.set_fixed_beams(math.radians(beam_mic_deg))
-        time.sleep(0.3)  # let the beamformer settle before GO
-    for n in (3, 2, 1):
-        print(f"    {n}...", end="", flush=True)
-        time.sleep(0.5)
-    print(" GO")
-    t0 = time.monotonic()
-    audio = sd.rec(int(prompt.duration_s * SAMPLE_RATE), samplerate=SAMPLE_RATE,
-                   channels=2, dtype="int16", device=device)
-    info: dict = {}
-    th = None
-    if prompt.kind == "quick_reply":
-        samples, rate, source = chime_samples()
-
-        def _chime():
-            time.sleep(CHIME_LEAD_S)
-            info["chime_start_s"] = round(time.monotonic() - t0 + CHIME_DEVICE_LEAD_S, 3)
-            try:
-                play_samples(samples, rate, output_device)
-            except Exception as e:
-                print(f"  chime playback failed: {e}")
-                info["error"] = str(e)
-            info["chime_end_s"] = round(max(time.monotonic() - t0,
-                                            info["chime_start_s"] + len(samples) / rate), 3)
-            info["source"] = source
-
-        th = threading.Thread(target=_chime, daemon=True)
-        th.start()
-    beams: list = []
-    bt = None
-    if mic is not None:
-        bt = threading.Thread(target=lambda: beams.extend(collect_beams(mic, t0, prompt.duration_s)),
-                              daemon=True)
-        bt.start()
+    # G10: the beams-on write sits inside the try, so a Ctrl-C in the
+    # countdown still reaches the beams-off finally.
     try:
+        if beam_mic_deg is not None:
+            mic.set_fixed_beams(math.radians(beam_mic_deg))
+            time.sleep(0.3)  # let the beamformer settle before GO
+        for n in (3, 2, 1):
+            print(f"    {n}...", end="", flush=True)
+            time.sleep(0.5)
+        print(" GO")
+        t0 = time.monotonic()
+        audio = sd.rec(int(prompt.duration_s * SAMPLE_RATE), samplerate=SAMPLE_RATE,
+                       channels=2, dtype="int16", device=device)
+        info: dict = {}
+        th = None
+        if prompt.kind == "quick_reply":
+            samples, rate, source = chime_samples()
+
+            def _chime():
+                time.sleep(CHIME_LEAD_S)
+                info["chime_start_s"] = round(time.monotonic() - t0 + CHIME_DEVICE_LEAD_S, 3)
+                try:
+                    play_samples(samples, rate, output_device)
+                except Exception as e:
+                    print(f"  chime playback failed: {e}")
+                    info["error"] = str(e)
+                info["chime_end_s"] = round(max(time.monotonic() - t0,
+                                                info["chime_start_s"] + len(samples) / rate), 3)
+                info["source"] = source
+
+            th = threading.Thread(target=_chime, daemon=True)
+            th.start()
+        beams: list = []
+        bt = None
+        if mic is not None:
+            bt = threading.Thread(target=lambda: beams.extend(collect_beams(mic, t0, prompt.duration_s)),
+                                  daemon=True)
+            bt.start()
         doa = collect_doa(mic, t0, prompt.duration_s) if mic is not None else []
         sd.wait()
         if th is not None:
@@ -311,7 +327,7 @@ def record_clip(device: int, prompt: Prompt, mic, output_device=None, beam_mic_d
             bt.join(timeout=2.0)
     finally:
         if beam_mic_deg is not None:
-            mic.set_fixed_beams(None)
+            beams_off(mic)
     return audio, t0, doa, (info or None), beams
 
 
@@ -434,6 +450,7 @@ def main() -> None:
                                         "interferer_body_deg": args.interferer_deg})
     finally:
         if mic is not None:
+            beams_off(mic)
             mic.close()
     print(f"\n{n} clips written to {out_dir}")
 
