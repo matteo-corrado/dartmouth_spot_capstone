@@ -40,6 +40,7 @@ class Tuning:
     ring_max_hz: float = 30.0          # LED ring write cap (RingAnimator + direct writes)
     beam_steering: bool = False
     voiceprint_enabled: bool = False
+    voiceprint_update_threshold: float = 0.35  # running enrolment: fold in accepted utterances scoring >= this
     voiceprint_threshold: float = 0.25  # operator 2026-10-29; replay 2026-10-28 ch1: 0.35 kept only 26% of short follow-ups, 0.25 keeps 68% (FA 17%)
     thinking_filler_s: float = 4.0
     walk_speed_cap: float = 0.5
