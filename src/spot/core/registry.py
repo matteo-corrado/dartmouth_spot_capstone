@@ -110,6 +110,11 @@ class Registry:
             self.failures.append(f)
         return failed
 
+    def has(self, name: str) -> bool:
+        """True when the feature module `name` is loaded (e.g. "gaze", which
+        registers no actions)."""
+        return name in self._loaded
+
     def action(self, name: str) -> ActionSpec | None:
         return self._actions.get(name)
 

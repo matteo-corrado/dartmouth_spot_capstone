@@ -192,6 +192,10 @@ def _shutdown_runtime() -> None:
     """Stop the safety thread, ring, beams and mic, then the robot session
     and player. Safe to call on any exit path."""
     _sl.LISTENER.stop()
+    try:
+        _loop.stop_gaze_worker()  # C5: the one gaze worker exits; none restarts
+    except Exception:
+        pass
     _anim = _ring.RING._anim
     if _anim is not None:
         try:
@@ -755,6 +759,7 @@ def main(argv: list[str] | None = None):
     # standing robot): any exit -- refusal, error or Ctrl-C before run() --
     # shuts the runtime down exactly once (run() does it on its own exit).
     shutdown = _ShutdownOnce()
+    _loop.allow_gaze_worker()  # this run's gaze worker; shutdown stops it (C5)
     stream = ctl_srv = None
     try:
         # 5. Audio capture, ring, wake, safety listener

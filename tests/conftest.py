@@ -21,6 +21,17 @@ def _no_robot_contact():
     uninstall()
 
 
+@pytest.fixture(autouse=True)
+def _reset_gaze_stop():
+    """A test that runs main's _shutdown_runtime sets the gaze worker's stop
+    Event (C5); clear it so later gaze tests start fresh."""
+    yield
+    import sys
+    m = sys.modules.get("src.spot.conversation.loop")
+    if m is not None and hasattr(m, "_gaze_stop"):
+        m._gaze_stop.clear()
+
+
 def pytest_sessionfinish(session, exitstatus):
     from tests.robot_guard import HITS
     if HITS:
