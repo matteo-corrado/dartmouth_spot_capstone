@@ -1,6 +1,6 @@
 # spot_action.gbnf — single grammar for every Stage 2A brain turn.
 # Output: {"actions": [Action, ...], "response": "<string>"}
-# Action set mirrors src/voice_control/spot_dispatch.py.
+# Action set: core intents + enabled features (src/spot/brain/grammar/generate.py).
 # NOTE: alternation must stay on one line per rule — llama.cpp GBNF parser in
 # this container build silently fails on multi-line `|` continuations.
 

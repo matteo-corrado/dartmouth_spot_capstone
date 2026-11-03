@@ -34,7 +34,7 @@ site/
 # Robot-specific maps (environment-dependent)
 maps/
 
-# Rendered TTS self-intro audio (regenerate via scripts/save_self_intro.py)
+# Rendered TTS audio output (local only)
 audio_out/
 
 # Local tooling outputs (knowledge graphs, agent worktrees)

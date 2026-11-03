@@ -30,3 +30,9 @@ def test_handler_exception_isolated(caplog):
 def test_unknown_event_raises():
     with pytest.raises(ValueError):
         EventBus().publish("nope")
+
+
+def test_subscribe_rejects_unknown_event():
+    """M9: a typo'd subscription is an error, the same as publish."""
+    with pytest.raises(ValueError, match="unknown event"):
+        EventBus().subscribe("robot_stod", lambda **p: None)

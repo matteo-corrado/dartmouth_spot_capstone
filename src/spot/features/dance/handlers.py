@@ -162,5 +162,5 @@ def emote(params, ctx):
     dispatcher's catch-all handles a raise."""
     import src.spot.robot as _r
     session = _r.CONNECTION.ensure()
-    session["cmd"]  # legacy branch read cmd_client before dispatching
+    _ = session["cmd"]  # legacy branch read cmd_client before dispatching
     return _handle_emote(params, session, ctx.speak)

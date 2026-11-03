@@ -606,3 +606,19 @@ def test_feature_stop_runs_after_session_close_and_never_raises(monkeypatch, cap
     _app._shutdown_runtime()
     assert order == ["cleanup", ("a", "CTX"), ("c", "CTX")]
     assert "[Features] b stop failed: RuntimeError: boom" in capsys.readouterr().out
+
+
+def test_feature_handlers_get_the_process_bus(monkeypatch):
+    """M1: dispatcher builds the handler Ctx with the bus main set up."""
+    import src.spot.features as _f
+    import src.spot.robot.dispatcher as _d
+    from src.spot.core.registry import ActionSpec, Feature, Registry
+    got = []
+    reg = Registry()
+    reg.add(Feature("probe", actions=(ActionSpec("probe_x", lambda p, ctx: got.append(ctx.bus) or True,
+                                                 None, None, needs_session=False),)))
+    monkeypatch.setattr(_f, "REGISTRY", reg)
+    bus = EventBus()
+    monkeypatch.setattr(_ev, "BUS", bus)
+    assert _d._dispatch_feature({"intent": "probe_x", "params": {}}) is True
+    assert got == [bus]

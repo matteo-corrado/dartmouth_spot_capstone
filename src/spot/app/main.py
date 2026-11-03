@@ -383,7 +383,11 @@ def _start_features(args, bus, robot, tuning) -> bool:
     for feature in REGISTRY.features:
         if feature.name not in _UNSUBSCRIBED_FEATURES:
             for event, handler in feature.subscriptions:
-                bus.subscribe(event, handler)
+                try:
+                    bus.subscribe(event, handler)
+                except Exception as exc:  # noqa: BLE001 - e.g. unknown event name (C6)
+                    import traceback
+                    failures.append((feature.name, exc, traceback.format_exc()))
         if feature.start is not None:
             try:
                 feature.start(ctx)
