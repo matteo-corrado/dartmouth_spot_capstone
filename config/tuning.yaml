@@ -32,6 +32,7 @@ ring_reverse: false
 # beam_steering: false
 # voiceprint_enabled: false   # TA 89.7% < 90% on replay; try live with `spotctl voiceprint on`
 voiceprint_threshold: 0.25   # operator 2026-10-29. Replay ch1: 0.35 kept only 26% of short follow-ups, 0.25 keeps 68% (FA 17%). Live: spotctl voiceprint threshold <x>
+# voiceprint_update_threshold: 0.35   # running enrolment: fold in accepted utterances scoring >= this
 # thinking_filler_s: 4.0
 # walk_speed_cap: 0.5
 dance_clearance_m: 1.0   # operator 2026-10-29; measured from body centre (Spot is ~1.1 m long)
