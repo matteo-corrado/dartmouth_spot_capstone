@@ -523,8 +523,12 @@ class LLMBrain:
             if not isinstance(grammar_actions, list):
                 print(f"[Brain] dropped non-list actions ({type(grammar_actions).__name__})")
                 grammar_actions = []
-            response = parsed.get("response", "").strip()
-            thinking = (parsed.get("thinking") or "").strip()
+            response = parsed.get("response")
+            if not isinstance(response, str):  # e.g. "response": null (no GBNF on ollama)
+                response = ""
+            response = response.strip()
+            thinking = parsed.get("thinking")
+            thinking = thinking.strip() if isinstance(thinking, str) else ""
             if thinking:
                 print(f"[Brain-think] {thinking}")
         except json.JSONDecodeError:
