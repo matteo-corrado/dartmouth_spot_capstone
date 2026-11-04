@@ -1,6 +1,6 @@
 # Vision actions: validation and next steps
 
-Context: `c84184f` on `vision/perception-v2` (built in worktree `../spot_vision`, from demo `81fedfe`). 1034 tests pass, 3 skip (fixtures with people, gitignored). Not merged, not on the demo or restructure branch, **never run on the robot**. Spec: `docs/superpowers/specs/2026-10-29-vision-upgrade-design.md` (on the vision branch); ledger with rulings R1-R30 and every deferred minor: `../spot_vision/.superpowers/sdd/2026-10-29-vision-upgrade/progress.md` (gitignored). `vision/friendly-social` (see [friendly-spot-social-mode.md](friendly-spot-social-mode.md)) is built on top of this branch.
+Context: `c2edcab` on `vision/perception-v2` (built in worktree `../spot_vision`, from demo `81fedfe`). 1034 tests pass, 3 skip (fixtures with people, gitignored). Not merged, not on the demo or restructure branch, **never run on the robot**. Spec: `docs/superpowers/specs/2026-10-29-vision-upgrade-design.md` (on the vision branch); ledger with rulings R1-R30 and every deferred minor: `../spot_vision/.superpowers/sdd/2026-10-29-vision-upgrade/progress.md` (gitignored). `vision/friendly-social` (see [friendly-spot-social-mode.md](friendly-spot-social-mode.md)) is built on top of this branch.
 
 What it is: package `src/voice_control/vision/` + thin hooks in `client_mic.py`, `spot_dispatch.py`, `llm_brain.py`, `grammar/spot_action.gbnf` (`find`, `look_around`), `intent.py`.
 - Models: `yolo26l-seg` (main), `yolo26l-pose` (raised hand, follow), `yoloe-26l-seg` (150 extra nouns), exported `end2end=True`, run on our own onnxruntime TensorRT runtime (FP16: 12 / 10 / 12.5 ms). Models + engine cache in `models/vision/` (gitignored), made by `scripts/setup_vision_models.py`.
@@ -29,7 +29,7 @@ What it is: package `src/voice_control/vision/` + thin hooks in `client_mic.py`,
 Steps 1.1-1.4 do not walk. 1.5-1.9 move the robot: operator present, e-stop in hand, clear 4 m area.
 
 ### 1.1 Snapshot latency (read-only, gates follow)
-Script: `scripts/vision_snapshot_latency.py` on `vision/perception-v2` (`dbc6d0f`). Times `cameras.capture` + `world.detect_frames` for 2, 3 and 5 cameras, 8 runs each, no lease. Run it from a vision worktree; `--env-dir` points at the main checkout's credentials file.
+Script: `scripts/vision_snapshot_latency.py` on `vision/perception-v2` (`d85b2e1`). Times `cameras.capture` + `world.detect_frames` for 2, 3 and 5 cameras, 8 runs each, no lease. Run it from a vision worktree; `--env-dir` points at the main checkout's credentials file.
 - **Pass:** median < 0.5 s, max < 0.8 s for the 2-camera case.
 - **If slow:** follow stays off near people (safety review condition). Try fewer cameras, skip depth on cameras not in use, or batch frames into one inference.
 - Also note: whether all images come back upright (dump one set), and Gemma tok/s while it runs.

@@ -1,6 +1,6 @@
 # Friendly Spot social mode: validation and next steps
 
-Context: commit `dfa022d` on `vision/friendly-social` (worktree `../spot_vision`, branched from `vision/perception-v2`). Not merged, not on the demo branch, **never run on the robot**. Started only by the voice intent `social_mode` ("social mode" / "friendly mode"); nothing changes unless someone says that.
+Context: commit `a3c2a16` on `vision/friendly-social` (worktree `../spot_vision`, branched from `vision/perception-v2`). Not merged, not on the demo branch, **never run on the robot**. Started only by the voice intent `social_mode` ("social mode" / "friendly mode"); nothing changes unless someone says that.
 
 What it is: the friendly_spot class project (`~/projects/friendly_spot`) ported onto the capstone vision stack.
 - `vision/comfort.py`: comfort model copied unchanged (same weights and thresholds).
@@ -61,7 +61,7 @@ Say "stop" during: a forward step, a reverse, a crouch, and an arm swing. Then "
 Let it run with a person slowly leading it away: it must end on its own near 2.5-3 m from the start and say so. Leave it 10 min: it ends at 600 s.
 
 ### Before merging
-- Re-run the safety reviewer on `dfa022d`: the fixes from the first review (rear depth check, odometry-bounded reverse, keypoint range, no gaze during moves, arm policy) were applied after it and not re-reviewed.
+- Re-run the safety reviewer on `a3c2a16`: the fixes from the first review (rear depth check, odometry-bounded reverse, keypoint range, no gaze during moves, arm policy) were applied after it and not re-reviewed.
 - Decide about the gesture model's provenance: the model agent was blocked from loading the HaGRID `.pt` and instead extracted only the weight tensors with a restricted unpickler and rebuilt the model. Safe method, but it went around a block without asking. Originals are in `models/vision/social/hagrid_pt/`. Weights license: HaGRID (CC BY-SA 4.0 variant); the ONNX "AGPL-3.0" tag is from the exporter.
 - Transplant onto `restructure-modular` (vision package + thin hooks in client_mic / spot_dispatch / llm_brain / gbnf), same as the rest of the vision upgrade.
 
