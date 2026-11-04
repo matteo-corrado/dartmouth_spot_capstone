@@ -4,6 +4,8 @@ __pycache__/
 .build/
 .dist/
 .env
+.env.*
+!.env.example
 .venv/
 spot-env-christian/
 .vscode/*
@@ -27,6 +29,9 @@ yolov8*.pt
 
 # Spot logs (symlinked to SSD as of Stage 1.5)
 logs
+
+# Latency recorder output (src/spot/core/latency.py)
+runs/
 
 # MkDocs build output
 site/
