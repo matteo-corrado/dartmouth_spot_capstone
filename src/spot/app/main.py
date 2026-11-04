@@ -454,6 +454,9 @@ def _start_features(args, bus, robot, tuning) -> bool:
         return False
     if failures:
         print("[Features] WARNING: --dry-run continues without the failed feature(s)", flush=True)
+    failed = {n for n, _, _ in failures}
+    ready = [f.name for f in REGISTRY.features if f.name not in failed]
+    print(f"[Features] ready: {', '.join(ready) or 'none'}", flush=True)
     return True
 
 
