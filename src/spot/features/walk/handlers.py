@@ -21,6 +21,14 @@ def _session():
     return _r.CONNECTION.ensure()
 
 
+def turn_rad(deg, direction):
+    """Yaw change in radians. Spot's yaw is counter-clockwise positive
+    (z up), so left is positive and right is negative."""
+    import math
+    rad = math.radians(abs(float(deg)))
+    return rad if direction == "left" else -rad
+
+
 def handle_turn(params, ctx):
     import time
     import src.spot.robot as _r
@@ -35,9 +43,7 @@ def handle_turn(params, ctx):
     deg = params.get("deg", 0)
     direction = params.get("dir", "left")
 
-    # Convert degrees to radians (negative for left, positive for right)
-    rad = -abs(deg) if direction == "left" else abs(deg)
-    rad = rad * 3.14159 / 180.0  # deg to rad
+    rad = turn_rad(deg, direction)
 
     print(f"[Spot] Turning {direction} {deg} degrees ({rad:.3f} rad)")
 
