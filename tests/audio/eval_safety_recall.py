@@ -27,7 +27,7 @@ def _frames(pcm):
 
 
 def main():
-    from src.voice_control.wake.safety_kws import make_safety_detector
+    from src.spot.safety.kws import make_safety_detector
     det = make_safety_detector()
     if not det.is_available():
         raise SystemExit("[eval_safety_recall] safety KWS unavailable — "

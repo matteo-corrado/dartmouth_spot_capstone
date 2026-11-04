@@ -1,7 +1,7 @@
 import json
 import time
 from pathlib import Path
-from src.voice_control.chatbot.conversation_log import ConversationLog
+from src.spot.conversation.conversation_log import ConversationLog
 
 
 def test_log_turn_writes_jsonl_line(tmp_path):

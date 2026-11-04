@@ -1,7 +1,7 @@
 import logging
 
-from src.voice_control import tuning
-from src.voice_control.tuning import load_tuning
+from src.spot.core import tuning
+from src.spot.core.tuning import load_tuning
 
 
 def test_defaults_when_file_missing(tmp_path):

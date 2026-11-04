@@ -1,0 +1,1 @@
+"""Spot mic package."""

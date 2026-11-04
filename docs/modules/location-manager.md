@@ -1,6 +1,6 @@
 # location_manager.py
 
-`src/location_manager.py` -- Waypoint name storage (JSON-backed).
+`src/spot/nav/location_manager.py` -- Waypoint name storage (JSON-backed).
 
 Persists human-readable names for GraphNav waypoint IDs. When the user says
 "save location kitchen", the current waypoint ID is stored under the key
@@ -63,7 +63,7 @@ normalizes to `lowercase_with_underscores`, `intent.py` does the same).
 ## Usage Example
 
 ```python
-from src.location_manager import save_location, load_location, list_locations
+from src.spot.nav.location_manager import save_location, load_location, list_locations
 
 # Save current position
 save_location("kitchen", "quiet-toad-B5X.hMjvdIhVc7t6FuAFNQ==")

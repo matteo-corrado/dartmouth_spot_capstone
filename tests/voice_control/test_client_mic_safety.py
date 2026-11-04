@@ -5,7 +5,16 @@ import time
 
 import numpy as np
 
-import src.voice_control.client_mic as cm
+import src.spot.audio.capture as _cap
+import src.spot.audio.chimes as chimes
+import src.spot.conversation.loop as _loop
+import src.spot.operator.control as _ctl
+import src.spot.safety.listener as _sl
+import threading
+import src.spot.audio.capture as _cap
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 
 
 class FakeDet:
@@ -24,7 +33,7 @@ def _run_loop(frames, refractory_s, clock):
     q, stop, hits, det = queue.Queue(), threading.Event(), [], FakeDet()
     for f in frames:
         q.put(f)
-    t = threading.Thread(target=cm.safety_kws_loop,
+    t = threading.Thread(target=_sl.safety_kws_loop,
                          args=(det, q, stop, hits.append),
                          kwargs=dict(refractory_s=refractory_s, clock=clock), daemon=True)
     t.start()
@@ -64,7 +73,7 @@ def test_handler_error_does_not_kill_thread():
         calls.append(kw)
         raise RuntimeError("x")
 
-    t = threading.Thread(target=cm.safety_kws_loop, args=(det, q, stop, boom),
+    t = threading.Thread(target=_sl.safety_kws_loop, args=(det, q, stop, boom),
                          kwargs=dict(refractory_s=0.0), daemon=True)
     t.start()
     q.put(b"S")
@@ -81,14 +90,14 @@ def _drain(q):
 
 
 def test_callback_feeds_safety_queue_even_when_muted_or_gated(monkeypatch):
-    monkeypatch.setattr(cm, "_safety_active", True)
-    monkeypatch.setattr(cm, "_operator_muted", True)
-    monkeypatch.setattr(cm, "_mic_gated", True)
-    _drain(cm._safety_q)
-    _drain(cm.audio_queue)
-    cm.audio_callback(np.zeros((480, 2), np.float32), 480, None, None)
-    assert cm._safety_q.qsize() == 1 and cm.audio_queue.empty()
-    _drain(cm._safety_q)
+    monkeypatch.setattr(_sl.LISTENER, "_active", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", True)
+    monkeypatch.setattr(_cap.CAPTURE, "_mic_gated", True)
+    _drain(_sl.LISTENER._q)
+    _drain(_cap.CAPTURE.audio_queue)
+    _cap.audio_callback(np.zeros((480, 2), np.float32), 480, None, None)
+    assert _sl.LISTENER._q.qsize() == 1 and _cap.CAPTURE.audio_queue.empty()
+    _drain(_sl.LISTENER._q)
 
 
 def test_on_safety_kw_hushes_aborts_and_dispatches(monkeypatch):
@@ -101,18 +110,18 @@ def test_on_safety_kw_hushes_aborts_and_dispatches(monkeypatch):
         def force_reset(self):
             resets.append(1)
 
-    monkeypatch.setattr(cm, "_audio_player", P())
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", P())
     monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
-    monkeypatch.setattr(cm, "execute_on_spot", lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)  # label map fallback
-    monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
-    cm._abort_chain.clear()
-    cm._on_safety_kw("estop")
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)  # label map fallback
+    monkeypatch.setattr(chimes.beep, "command_ok", lambda: None)
+    _loop.CONVERSATION._abort_chain.clear()
+    _sl._on_safety_kw("estop")
     deadline = time.monotonic() + 1
     while not resets and time.monotonic() < deadline:
         time.sleep(0.01)  # hush runs on its own daemon thread
-    assert sent == ["estop"] and resets == [1] and cm._abort_chain.is_set()
-    cm._abort_chain.clear()
+    assert sent == ["estop"] and resets == [1] and _loop.CONVERSATION._abort_chain.is_set()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_halt_dispatched_before_slow_hush(monkeypatch):
@@ -128,17 +137,17 @@ def test_halt_dispatched_before_slow_hush(monkeypatch):
             order.append("hush-start")
             release.wait(2)
 
-    monkeypatch.setattr(cm, "_audio_player", SlowPlayer())
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", SlowPlayer())
     monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda i, brain=None, speak=None: order.append("dispatch") or True)
-    monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
+    monkeypatch.setattr(chimes.beep, "command_ok", lambda: None)
     t0 = time.monotonic()
-    cm._on_safety_kw("stop")
+    _sl._on_safety_kw("stop")
     assert time.monotonic() - t0 < 0.5      # returned without waiting on the hush
     assert "dispatch" in order              # halt sent while the hush is still running
     release.set()
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_hush_starts_without_waiting_for_slow_dispatch(monkeypatch):
@@ -157,24 +166,24 @@ def test_hush_starts_without_waiting_for_slow_dispatch(monkeypatch):
         seen_during_dispatch.append(hushed.wait(1.0))
         return True
 
-    monkeypatch.setattr(cm, "_audio_player", P())
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", P())
     monkeypatch.delenv("SPOT_DRY_RUN", raising=False)
-    monkeypatch.setattr(cm, "execute_on_spot", slow_dispatch)
-    monkeypatch.setattr(cm.beep, "command_ok", lambda: None)
-    cm._on_safety_kw("stop")
+    monkeypatch.setattr(_loop, "execute_on_spot", slow_dispatch)
+    monkeypatch.setattr(chimes.beep, "command_ok", lambda: None)
+    _sl._on_safety_kw("stop")
     assert seen_during_dispatch == [True]
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_safety_queue_drops_oldest():
     q = queue.Queue(maxsize=2)
     for x in (1, 2, 3):
-        cm._put_drop_oldest(q, x)
+        _sl._put_drop_oldest(q, x)
     assert [q.get_nowait(), q.get_nowait()] == [2, 3]
 
 
 def test_health_goes_false_after_consecutive_errors(monkeypatch):
-    monkeypatch.setattr(cm, "SAFETY_ERROR_WARN_N", 3)
+    monkeypatch.setattr(_sl, "SAFETY_ERROR_WARN_N", 3)
 
     class Bad:
         def process_frame(self, pcm):
@@ -186,7 +195,7 @@ def test_health_goes_false_after_consecutive_errors(monkeypatch):
     q, stop, health = queue.Queue(), threading.Event(), {}
     for _ in range(3):
         q.put(b"x")
-    t = threading.Thread(target=cm.safety_kws_loop, args=(Bad(), q, stop, lambda k: None),
+    t = threading.Thread(target=_sl.safety_kws_loop, args=(Bad(), q, stop, lambda k: None),
                          kwargs=dict(health=health), daemon=True)
     t.start()
     deadline = time.monotonic() + 2
@@ -199,8 +208,8 @@ def test_health_goes_false_after_consecutive_errors(monkeypatch):
 
 def test_real_detector_errors_reach_health_counter(tmp_path, monkeypatch):
     # SafetyKeywordDetector must not swallow decoder errors, or health never trips.
-    from src.voice_control.wake.safety_kws import SafetyKeywordDetector
-    monkeypatch.setattr(cm, "SAFETY_ERROR_WARN_N", 3)
+    from src.spot.safety.kws import SafetyKeywordDetector
+    monkeypatch.setattr(_sl, "SAFETY_ERROR_WARN_N", 3)
 
     class BrokenStream:
         def accept_waveform(self, sr, samples):
@@ -215,7 +224,7 @@ def test_real_detector_errors_reach_health_counter(tmp_path, monkeypatch):
     q, stop, health = queue.Queue(), threading.Event(), {}
     for _ in range(3):
         q.put(b"\x00\x00" * 480)
-    t = threading.Thread(target=cm.safety_kws_loop, args=(det, q, stop, lambda k: None),
+    t = threading.Thread(target=_sl.safety_kws_loop, args=(det, q, stop, lambda k: None),
                          kwargs=dict(health=health), daemon=True)
     t.start()
     deadline = time.monotonic() + 2
@@ -228,66 +237,71 @@ def test_real_detector_errors_reach_health_counter(tmp_path, monkeypatch):
 
 
 def test_status_reports_safety_kws_ok(monkeypatch):
-    monkeypatch.setattr(cm, "_safety_active", False)
-    assert cm._on_immediate("status", None)["safety_kws_ok"] is False
+    monkeypatch.setattr(_sl.LISTENER, "_active", False)
+    assert _ctl._on_immediate("status", None)["safety_kws_ok"] is False
 
 
 def test_safety_hit_during_utterance_blocks_motion(monkeypatch):
     # A KWS halt lands while the user is still speaking; that utterance's own
     # motion command (regex path) must not dispatch afterwards.
     sent = []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "walk forward")
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "walk forward")
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: False)
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda i, brain=None, speak=None: sent.append(i["intent"]) or True)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "_last_safety_at", 50.0)
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_sl.LISTENER, "_last_safety_at", 50.0)
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
     assert sent == []
-    monkeypatch.setattr(cm, "_last_safety_at", 10.0)
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
+    monkeypatch.setattr(_sl.LISTENER, "_last_safety_at", 10.0)
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True, utt_t0=49.0)
     assert sent == ["walk"]
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_dry_run_print_hides_raw_words(monkeypatch, capsys):
     monkeypatch.setenv("SPOT_DRY_RUN", "1")
-    monkeypatch.setattr(cm, "_store_transcript", False)
-    cm.execute_on_spot({"intent": "sit", "params": {}, "raw": "please sit secretword"})
+    monkeypatch.setattr(_loop.CONVERSATION, "_store_transcript", False)
+    _loop.execute_on_spot({"intent": "sit", "params": {}, "raw": "please sit secretword"})
     assert "secretword" not in capsys.readouterr().out
 
 
 def test_dry_run_safety_prints_and_skips_dispatch(monkeypatch, capsys):
     monkeypatch.setenv("SPOT_DRY_RUN", "1")
-    monkeypatch.setattr(cm, "execute_on_spot", lambda *a, **k: (_ for _ in ()).throw(AssertionError()))
-    monkeypatch.setattr(cm, "_audio_player", None)
-    cm._on_safety_kw("freeze")
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda *a, **k: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(_cap.CAPTURE, "_audio_player", None)
+    _sl._on_safety_kw("freeze")
     assert "[dry-run] SAFETY would dispatch: freeze" in capsys.readouterr().out
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_fail_closed_on_robot_without_detector():
-    assert cm.safety_startup_ok(True, False, False) is True
-    assert cm.safety_startup_ok(False, True, False) is True   # dry-run warns only
-    assert cm.safety_startup_ok(False, False, False) is False  # robot: refuse
-    assert cm.safety_startup_ok(False, False, True) is True    # explicit override
+    assert _sl.safety_startup_ok(True, False, False) is True
+    assert _sl.safety_startup_ok(False, True, False) is True   # dry-run warns only
+    assert _sl.safety_startup_ok(False, False, False) is False  # robot: refuse
+    assert _sl.safety_startup_ok(False, False, True) is True    # explicit override
 
 
 def test_raw_transcript_checked_first(monkeypatch):
     seen = []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "Stop. Now.")
-    monkeypatch.setattr(cm, "check_safety_command",
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "Stop. Now.")
+    monkeypatch.setattr(_sl, "check_safety_command",
                         lambda t: seen.append(t) or ({"intent": "stop", "params": {}} if t == "Stop. Now." else None))
-    monkeypatch.setattr(cm, "execute_on_spot", lambda i, brain=None, speak=None: True)
+    monkeypatch.setattr(_loop, "execute_on_spot", lambda i, brain=None, speak=None: True)
     monkeypatch.setenv("SPOT_DRY_RUN", "1")
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True)
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], has_wake_detector=True)
     assert seen[0] == "Stop. Now."
-    cm._abort_chain.clear()
+    _loop.CONVERSATION._abort_chain.clear()
 
 
 def test_halt_survives_hush_thread_start_failure(monkeypatch):
-    import src.voice_control.client_mic as cm
+    import src.spot.audio.capture as _cap
+    import src.spot.audio.chimes as chimes
+    import src.spot.conversation.loop as _loop
+    import src.spot.operator.control as _ctl
+    import src.spot.safety.listener as _sl
+    import threading
 
     class Boom:
         def __init__(self, *a, **k):
@@ -296,33 +310,33 @@ def test_halt_survives_hush_thread_start_failure(monkeypatch):
         def start(self):
             raise RuntimeError("can't start new thread")
 
-    monkeypatch.setattr(cm.threading, "Thread", Boom)
-    cm._start_hush()  # must not raise
+    monkeypatch.setattr(threading, "Thread", Boom)
+    _sl._start_hush()  # must not raise
 
 
 def test_safety_drop_counter_and_rate_limited_log(monkeypatch, capsys):
-    monkeypatch.setattr(cm, "_safety_drops", {"total": 0, "pending": 0, "last_log": float("-inf")})
+    monkeypatch.setattr(_sl.LISTENER, "_drops", {"total": 0, "pending": 0, "last_log": float("-inf")})
     q = queue.Queue(maxsize=1)
-    assert cm._put_drop_oldest(q, 1) is False
+    assert _sl._put_drop_oldest(q, 1) is False
     for k, now in enumerate((100.0, 100.1, 101.0, 104.9, 105.0, 105.2)):
-        assert cm._put_drop_oldest(q, k) is True
-        cm._note_safety_drop(now)
+        assert _sl._put_drop_oldest(q, k) is True
+        _sl._note_safety_drop(now)
     lines = [ln for ln in capsys.readouterr().out.splitlines() if "queue overflow" in ln]
     # first drop logs at once; next log only >= 5 s later, carrying the 4 drops since
     assert lines == ["[SafetyKWS] !!! queue overflow: dropped 1 frames (safety listener behind)",
                      "[SafetyKWS] !!! queue overflow: dropped 4 frames (safety listener behind)"]
-    assert cm._safety_drops["total"] == 6 and cm._safety_drops["pending"] == 1
-    assert cm._status_snapshot()["safety_kws_dropped"] == 6
+    assert _sl.LISTENER._drops["total"] == 6 and _sl.LISTENER._drops["pending"] == 1
+    assert _ctl._status_snapshot()["safety_kws_dropped"] == 6
 
 
 def test_callback_survives_raising_drop_report(monkeypatch):
     def boom(now):
         raise RuntimeError("report")
-    monkeypatch.setattr(cm, "_safety_active", True)
-    monkeypatch.setattr(cm, "_operator_muted", True)
-    monkeypatch.setattr(cm, "_note_safety_drop", boom)
-    monkeypatch.setattr(cm, "_safety_q", queue.Queue(maxsize=1))
+    monkeypatch.setattr(_sl.LISTENER, "_active", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_operator_muted", True)
+    monkeypatch.setattr(_sl, "_note_safety_drop", boom)
+    monkeypatch.setattr(_sl.LISTENER, "_q", queue.Queue(maxsize=1))
     frame = np.zeros((480, 2), np.float32)
-    cm.audio_callback(frame, 480, None, None)
-    cm.audio_callback(frame, 480, None, None)  # overflow -> boom, swallowed
-    assert cm._safety_q.qsize() == 1
+    _cap.audio_callback(frame, 480, None, None)
+    _cap.audio_callback(frame, 480, None, None)  # overflow -> boom, swallowed
+    assert _sl.LISTENER._q.qsize() == 1

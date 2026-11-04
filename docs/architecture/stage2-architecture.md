@@ -34,7 +34,7 @@ graph LR
     ROUTER{Intent Router<br/>regex/keyword}
     BRAIN_ACTION[llama-server<br/>action.gbnf<br/>NO thinking<br/>~1-2s warm]
     BRAIN_FREE[llama-server<br/>no grammar<br/>thinking ON<br/>~3-6s warm]
-    DISPATCH[Spot Dispatcher<br/>spot_dispatch.py]
+    DISPATCH[Spot Dispatcher<br/>robot/dispatcher.py]
     SPOT[Spot Robot<br/>192.168.80.3]
     TTS[Kokoro TTS<br/>ONNX CUDA<br/>~330 MB VRAM]
     YOLO[YOLO26-N + YOLOE26-S<br/>TensorRT FP16<br/>~200 MB VRAM]
@@ -121,7 +121,7 @@ YOLOE26-S (paper Feb 2026) is the open-vocabulary variant. +11.4 LVIS AP over YO
 
 Boston Dynamics' `ImageSource` proto carries three distortion models (`pinhole`, `pinhole_brown_conrady`, `kannala_brandt`). The SDK ships the parameters but NOT the undistortion code — wire cv2 yourself.
 
-The existing `src/voice_control/perception/camera_intrinsics.py` (160 LOC, already shipped) caches per-robot intrinsics. Stage 2C.0.5 adds a `_undistort_for_source` helper that precomputes `cv2.initUndistortRectifyMap` per camera at startup, then applies `cv2.remap` per frame (~3-5 ms CPU on Orin).
+The existing `src/spot/perception/camera_intrinsics.py` (160 LOC, already shipped) caches per-robot intrinsics. Stage 2C.0.5 adds a `_undistort_for_source` helper that precomputes `cv2.initUndistortRectifyMap` per camera at startup, then applies `cv2.remap` per frame (~3-5 ms CPU on Orin).
 
 Pipeline order: `capture → rotate (Stage 0) → undistort (Stage 0.5) → output Frame` → downstream YOLO/VLM consume rectified pinhole-equivalent frames. Removes the "no fisheye-trained YOLO checkpoint exists" concern.
 
@@ -142,7 +142,7 @@ graph TB
     end
     subgraph "Dispatcher (Python)"
         BRAIN[llm_brain.py<br/>SPOT_BRAIN_BACKEND env var]
-        DISPATCH[spot_dispatch.py]
+        DISPATCH[robot/dispatcher.py]
         WAKE[wake_word.py<br/>SPOT_WAKE_BACKEND env var]
         ASR[asr/parakeet.py + riva_backend.py<br/>SPOT_ASR_BACKEND env var]
     end
@@ -232,7 +232,7 @@ journalctl -t voice_control -f | grep Brain-timing
 ```bash
 # Smoke transcribe a test WAV
 python -c "
-from src.voice_control.asr.parakeet import ParakeetBackend
+from src.spot.stt.backends.parakeet import ParakeetBackend
 b = ParakeetBackend()
 with open('tests/audio/walk_forward_1m.wav', 'rb') as f:
     print(b.transcribe(f.read()))

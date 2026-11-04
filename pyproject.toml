@@ -4,3 +4,4 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-ra -q --strict-markers"
+markers = ["slow: real-time golden conversation harness (minutes; gates run tests/integration -m slow)"]

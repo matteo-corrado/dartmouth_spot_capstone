@@ -31,11 +31,10 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "src" / "voice_control"))
 
-from asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk  # noqa: E402
-from asr_pb2_grpc import ASRStub  # noqa: E402
-from src.voice_control.wake import make_wake_detector  # noqa: E402
+from src.spot.stt.asr_pb2 import StreamingRequest, StreamingConfig, AudioChunk  # noqa: E402
+from src.spot.stt.asr_pb2_grpc import ASRStub  # noqa: E402
+from src.spot.wake import make_wake_detector  # noqa: E402
 
 SAMPLE_RATE = 16000
 FRAME_MS = 20

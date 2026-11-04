@@ -59,7 +59,7 @@ Common issues and fixes.
 
 | Problem | Fix |
 |---------|-----|
-| No TTS audio output | Check speaker is connected. Run `python src/voice_control/spot_tts.py` to test |
+| No TTS audio output | Check speaker is connected. Run `python -m src.spot.tts.speaker` to test |
 | TTS feedback loop (echo) | The mic should auto-mute during TTS playback. Check on_mute callbacks |
 | ALSA errors in logs | These are suppressed by audio_feedback.py. If persistent, check audio device config |
 | Audio device not found | Run `python -c "import sounddevice; print(sounddevice.query_devices())"` to list devices |

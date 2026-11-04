@@ -1,6 +1,6 @@
 import os
 import pytest
-from src.voice_control.chatbot.persona import (
+from src.spot.brain.persona import (
     Persona,
     load_registry,
     get_persona,
@@ -64,7 +64,7 @@ def test_load_registry_missing_file_raises():
 
 
 def test_voice_id_for():
-    from src.voice_control.chatbot.persona import voice_id_for
+    from src.spot.brain.persona import voice_id_for
     reg = load_registry(REGISTRY_PATH)
     pirate = reg["pirate"]
     assert voice_id_for(pirate, "kokoro") == "am_michael"

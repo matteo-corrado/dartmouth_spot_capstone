@@ -1,6 +1,6 @@
 # spot_tts.py
 
-`src/voice_control/spot_tts.py` -- GPU-accelerated text-to-speech via
+`src/spot/tts/speaker.py` -- GPU-accelerated text-to-speech via
 `kokoro-onnx` + `onnxruntime-gpu` (CUDA Execution Provider on the Jetson
 AGX Orin).
 
@@ -137,10 +137,10 @@ if tts.is_available():
 
 ```bash
 # CLI test
-python src/voice_control/spot_tts.py "Hello from Spot"
-python src/voice_control/spot_tts.py --voice am_adam --speed 0.9 "Slow Adam voice"
-python src/voice_control/spot_tts.py --volume 1.3 "Louder"
-python src/voice_control/spot_tts.py --wav output.wav "Save to file"
+python -m src.spot.tts.speaker "Hello from Spot"
+python -m src.spot.tts.speaker --voice am_adam --speed 0.9 "Slow Adam voice"
+python -m src.spot.tts.speaker --volume 1.3 "Louder"
+python -m src.spot.tts.speaker --wav output.wav "Save to file"
 ```
 
 ## Dependencies

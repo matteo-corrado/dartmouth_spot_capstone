@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate models/kws/safety_keywords.txt for the always-on safety KWS (C1).
 
-The safety detector (src/voice_control/wake/safety_kws.py) spots stop/freeze/
+The safety detector (src/spot/safety/kws.py) spots stop/freeze/
 estop at the frame level in WAKE_WORD state so a cold safety command halts the
 robot with no wake required, regardless of SPOT_WAKE_BACKEND.
 

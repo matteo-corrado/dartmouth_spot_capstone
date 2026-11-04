@@ -4,7 +4,7 @@
     Wespeaker/wespeaker-voxceleb-resnet34-LM -> voxceleb_resnet34_LM.onnx (~26 MB)
 
 Target: <project_root>/models/speaker/voxceleb_resnet34_LM.onnx
-Used by src/voice_control/speaker_embed.py (SpeakerEmbedder).
+Used by src/spot/conversation/voiceprint.py (SpeakerEmbedder).
 
 Usage:
     python scripts/setup_wespeaker.py

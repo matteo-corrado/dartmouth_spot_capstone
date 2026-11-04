@@ -1,7 +1,7 @@
 """A13: safety rule fires unless 'stop' is a noun use; estop always wins."""
 import pytest
 
-from src.voice_control.intent import check_safety_command, parse_intent
+from src.spot.brain.intent import check_safety_command, parse_intent
 
 FIRE_STOP = [
     "stop", "STOP!", "stop.", "spot stop", "hey spot stop",

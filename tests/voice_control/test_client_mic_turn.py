@@ -1,5 +1,10 @@
 """client_mic turn handling (Task 12 items + safety re-check after strip)."""
-import src.voice_control.client_mic as cm
+import src.spot.app.main as _app
+import src.spot.conversation.filler as filler
+import src.spot.conversation.loop as _loop
+import src.spot.conversation.loop as _loop
+import src.spot.safety.listener as _sl
+import src.spot.stt.client as _stt
 
 
 def _first_word_safety(text):
@@ -13,15 +18,15 @@ def _first_word_safety(text):
 
 def _run(monkeypatch, transcript, **kw):
     sent = []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: transcript)
-    monkeypatch.setattr(cm, "check_safety_command", _first_word_safety)
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: transcript)
+    monkeypatch.setattr(_sl, "check_safety_command", _first_word_safety)
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda intent, brain=None, speak=None: sent.append(intent["intent"]) or True)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
     import numpy as np
     audio = [np.zeros(16000, np.float32)]
     info = {}
-    r = cm.process_utterance(None, None, audio, brain=None, info=info, **kw)
+    r = _loop.process_utterance(None, None, audio, brain=None, info=info, **kw)
     return r, sent, info
 
 
@@ -45,7 +50,7 @@ def test_raw_safety_first(monkeypatch):
 
 
 def test_filler_only_skipped(monkeypatch):
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: True)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: True)
     r, sent, info = _run(monkeypatch, "um uh hmm", has_wake_detector=True)
     assert sent == [] and not info.get("reached_llm")
 
@@ -63,7 +68,7 @@ class _Timer:
 
 def test_thinking_filler_speaks_once_when_silent():
     said = []
-    f = cm.ThinkingFiller(lambda: said.append(1), 4.0, lambda: False, timer_factory=_Timer)
+    f = filler.ThinkingFiller(lambda: said.append(1), 4.0, lambda: False, timer_factory=_Timer)
     f._timer.fn()
     f._timer.fn()
     assert said == [1] and f._timer.delay == 4.0
@@ -71,10 +76,10 @@ def test_thinking_filler_speaks_once_when_silent():
 
 def test_thinking_filler_cancelled_or_busy_is_silent():
     said = []
-    f = cm.ThinkingFiller(lambda: said.append(1), 4.0, lambda: False, timer_factory=_Timer)
+    f = filler.ThinkingFiller(lambda: said.append(1), 4.0, lambda: False, timer_factory=_Timer)
     f.cancel()
     f._timer.fn()
-    g = cm.ThinkingFiller(lambda: said.append(1), 4.0, lambda: True, timer_factory=_Timer)
+    g = filler.ThinkingFiller(lambda: said.append(1), 4.0, lambda: True, timer_factory=_Timer)
     g._timer.fn()
     assert said == [] and f._timer.cancelled
 
@@ -98,7 +103,7 @@ class _Filler:
 
 def test_token_watch_suppresses_persona_reply_and_cancels_filler():
     c, f = _Chunker(), _Filler()
-    w = cm._TokenWatch(c, f)
+    w = filler._TokenWatch(c, f)
     for d in ['{"actions": [{"action": "set_', 'persona", "params": {"name": "pirate"}}], ',
               '"response": "', 'Arr matey."}']:
         w(d)
@@ -108,7 +113,7 @@ def test_token_watch_suppresses_persona_reply_and_cancels_filler():
 
 def test_token_watch_leaves_normal_reply_streaming():
     c, f = _Chunker(), _Filler()
-    w = cm._TokenWatch(c, f)
+    w = filler._TokenWatch(c, f)
     w('{"actions": [{"action": "sit"}], "response": "Sitting."}')
     assert c.suppressed is False and f.cancelled is True
 
@@ -122,33 +127,33 @@ def test_brain_ready_rechecks_until_up(monkeypatch):
             return self.n >= 2
 
     b = B()
-    monkeypatch.setattr(cm, "_brain_ok", False)
-    assert cm._brain_ready(b) is False
-    assert cm._brain_ready(b) is True
-    assert cm._brain_ready(b) is True and b.n == 2  # positive cached
+    monkeypatch.setattr(_loop.CONVERSATION, "_brain_ok", False)
+    assert _loop._brain_ready(b) is False
+    assert _loop._brain_ready(b) is True
+    assert _loop._brain_ready(b) is True and b.n == 2  # positive cached
 
 
 def test_real_rule_hey_spot_stop_come_back(monkeypatch):
     # Production rule from intent.py: "Hey Spot, stop. Come back." must stop
     # and never dispatch come_back.
-    from src.voice_control.intent import check_safety_command
+    from src.spot.brain.intent import check_safety_command
     sent = []
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "Hey Spot, stop. Come back.")
-    monkeypatch.setattr(cm, "check_safety_command", check_safety_command)
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "Hey Spot, stop. Come back.")
+    monkeypatch.setattr(_sl, "check_safety_command", check_safety_command)
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda intent, brain=None, speak=None: sent.append(intent["intent"]) or True)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
     import numpy as np
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=None,
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=None,
                          has_wake_detector=True)
     assert sent == ["stop"]
 
 
 def test_fuzzy_wake_strip_reaches_regex(monkeypatch):
     seen = []
-    monkeypatch.setattr(cm, "WAKE_PHRASES", ["HELLO SPOTTY"])
-    monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
+    monkeypatch.setattr(_loop, "WAKE_PHRASES", ["HELLO SPOTTY"])
+    monkeypatch.setattr(_loop, "parse_intent", lambda t: seen.append(t) or None)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: False)
     r, sent, info = _run(monkeypatch, "hello spotted sit down", has_wake_detector=True)
     assert seen == ["sit down"] and info["reached_llm"]
 
@@ -160,14 +165,14 @@ def test_asr_fallback_bare_wake_phrase(monkeypatch):
 
 def test_no_strip_mid_sentence(monkeypatch):
     seen = []
-    monkeypatch.setattr(cm, "parse_intent", lambda t: seen.append(t) or None)
-    monkeypatch.setattr(cm, "is_filler_only", lambda t, **k: False)
+    monkeypatch.setattr(_loop, "parse_intent", lambda t: seen.append(t) or None)
+    monkeypatch.setattr(_loop, "is_filler_only", lambda t, **k: False)
     _run(monkeypatch, "is the spot free", has_wake_detector=True)
     assert seen == ["is the spot free"]
 
 
 def test_wake_detector_gets_peak_target(monkeypatch):
-    import src.voice_control.wake.sherpa_onnx as so
+    import src.spot.wake.sherpa_onnx as so
     got = {}
 
     class D:
@@ -176,8 +181,8 @@ def test_wake_detector_gets_peak_target(monkeypatch):
 
     monkeypatch.setattr(so, "WakeWordDetector", D)
     monkeypatch.delenv("SPOT_WAKE_BACKEND", raising=False)
-    cm._make_wake_detector()
-    assert got["pt"] == cm._tuning.kws_peak_target == 0.9
+    _app._make_wake_detector()
+    assert got["pt"] == _app._tuning.kws_peak_target == 0.9
 
 
 def test_chain_waits_for_dance_before_next_action(monkeypatch):
@@ -194,17 +199,17 @@ def test_chain_waits_for_dance_before_next_action(monkeypatch):
                 {"intent": "emote", "params": {"name": "dance"}},
                 {"intent": "sit", "params": {}}]}
 
-    monkeypatch.setattr(cm, "_brain_ok", True)
-    monkeypatch.setattr(cm, "get_spot_state", lambda: {})
-    monkeypatch.setattr(cm, "_resolve_voice", lambda b: None)
-    monkeypatch.setattr(cm, "get_recorder", lambda: None)
-    monkeypatch.setattr(cm, "send_to_asr", lambda stub, pcm: "dance then sit")
-    monkeypatch.setattr(cm, "check_safety_command", lambda t: None)
-    monkeypatch.setattr(cm, "_wait_for_nav_complete", lambda *a, **k: events.append("wait"))
-    monkeypatch.setattr(cm, "execute_on_spot",
+    monkeypatch.setattr(_loop.CONVERSATION, "_brain_ok", True)
+    monkeypatch.setattr(_loop, "get_spot_state", lambda: {})
+    monkeypatch.setattr(_loop, "_resolve_voice", lambda b: None)
+    monkeypatch.setattr(_loop, "get_recorder", lambda: None)
+    monkeypatch.setattr(_stt, "send_to_asr", lambda stub, pcm: "dance then sit")
+    monkeypatch.setattr(_sl, "check_safety_command", lambda t: None)
+    monkeypatch.setattr(_loop, "_wait_for_nav_complete", lambda *a, **k: events.append("wait"))
+    monkeypatch.setattr(_loop, "execute_on_spot",
                         lambda intent, brain=None, speak=None:
                         events.append(intent["intent"]) or True)
-    cm._abort_chain.clear()
-    cm.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=Brain(),
+    _loop.CONVERSATION._abort_chain.clear()
+    _loop.process_utterance(None, None, [np.zeros(16000, np.float32)], brain=Brain(),
                          info={}, has_wake_detector=True)
     assert events == ["emote", "wait", "sit"]

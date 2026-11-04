@@ -25,7 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 os.environ.setdefault("SPOT_BRAIN_BACKEND", "llamacpp")
 
-from src.voice_control.llm_brain import LLMBrain  # noqa: E402
+from src.spot.brain.llm_brain import LLMBrain  # noqa: E402
 
 
 PROBE_DIR = pathlib.Path(__file__).resolve().parent
@@ -81,7 +81,8 @@ def run_probe(brain: LLMBrain, label: str, image_bytes: bytes, question: str,
 
 def maybe_capture_spot(brain: LLMBrain, cameras: list[str]) -> list[dict]:
     try:
-        from src.voice_control.spot_dispatch import capture_frame, ensure_spot_session
+        from src.spot.robot.state import capture_frame
+        from src.spot.robot.connection import ensure_spot_session
     except Exception as e:
         print(f"\n[spot] import failed: {e}")
         return []

@@ -1,6 +1,6 @@
 # graph_nav_utils.py
 
-`src/graph_nav_utils.py` -- GraphNav map management.
+`src/spot/nav/graph_nav_utils.py` -- GraphNav map management.
 
 Handles uploading recorded maps to the robot and initializing localization.
 Maps consist of a graph file, waypoint snapshots, and edge snapshots stored

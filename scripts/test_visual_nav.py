@@ -36,7 +36,7 @@ def main():
         img = Image.new("RGB", (640, 480), (128, 128, 128))
     else:
         print("[Test] Connecting to Spot and capturing frame...")
-        from src.session import spot_session
+        from src.spot.robot.session import spot_session
         from bosdyn.client.image import ImageClient
 
         with spot_session(stand_on_enter=False, sit_on_exit=False) as session:

@@ -8,7 +8,7 @@ Live pipeline today: XVF3800 fw 2.1.1, audio **ch1** (ASR output of the auto-sel
 
 ## 1. Validate: voiceprint running enrolment
 
-**What it does.** `VoiceprintGate.decide(..., update_threshold)` (`src/voice_control/speaker_embed.py`): after the wake + first-utterance enrolment, every accepted utterance scoring >= max(`voiceprint_threshold`, `voiceprint_update_threshold` = 0.35) is averaged into the voiceprint. Resets on new wake / lock release. Log line shows `enrolled=yes(n=K)`.
+**What it does.** `VoiceprintGate.decide(..., update_threshold)` (`src/spot/conversation/voiceprint.py`): after the wake + first-utterance enrolment, every accepted utterance scoring >= max(`voiceprint_threshold`, `voiceprint_update_threshold` = 0.35) is averaged into the voiceprint. Resets on new wake / lock release. Log line shows `enrolled=yes(n=K)`.
 
 **Offline evidence so far** (replay, ch1, all-operator recordings, only 2 other-voice segments, so treat rates as direction, not magnitude):
 
@@ -32,7 +32,7 @@ Every score rises, so **the accept threshold has to rise with it**: 0.30 beats t
 
 ## 2. Validate: beam steering (`beam_steering`)
 
-**What exists.** `client_mic.py` `_on_wake` aims both XVF3800 fixed beams at the lock angle when `beam_steering: true`; `_release` turns them off. Never tested. Tooling from `d16cb6d`:
+**What exists.** `src/spot/conversation/loop.py` `on_wake` aims both XVF3800 fixed beams at the lock angle when `beam_steering: true`; `release` turns them off. Never tested. Tooling from `d16cb6d`:
 - `scripts/record_demo_clips.py --beam` aims the fixed beams at each clip's speaker angle (known position, so a best case) and turns them off after. `--interferer-deg` saves where the second talker stood.
 - Every clip with the control link also writes `<clip>.beams.csv`: azimuth + speech energy for beam 1, beam 2, free-running, auto-select at 10 Hz (`MicArray.read_beams`).
 - `tests/audio/beam_ab.py` compares an off run against an on run.
@@ -41,7 +41,7 @@ Every score rises, so **the accept threshold has to rise with it**: 0.30 beats t
 ```
 spot-env/bin/python - <<'E'
 import math, time
-from src.voice_control.mic_array import MicArray
+from src.spot.mic.xvf3800 import MicArray
 m = MicArray.open()
 for t in (90.0, 270.0):
     m.set_fixed_beams(math.radians(t)); time.sleep(0.5)
@@ -49,7 +49,7 @@ for t in (90.0, 270.0):
 m.set_fixed_beams(None); m.close()
 E
 ```
-Beams 1 and 2 should read back at the target angle. Runtime writes only; nothing is saved to the device. Make sure `client_mic` is not running.
+Beams 1 and 2 should read back at the target angle. Runtime writes only; nothing is saved to the device. Make sure the voice pipeline (`wakespot`) is not running.
 
 **Steps**
 1. Same room, same session, second talker (podcast speaker) at the robot's LEFT for both runs:
@@ -73,7 +73,7 @@ Then set `beam_steering: true` in `config/tuning.yaml` and do one live session.
 ## 3. Improvement directions (ranked)
 
 ### A. Give the XVF3800's echo cancellation a reference (highest impact)
-- **Problem.** AEC is inert (`AEC_AECCONVERGED=0`) because TTS plays on the `UACDemoV1.0` USB speaker (hw:2,0), never through the XVF3800's own USB playback (hw:3,0, 2-out). XMOS: the far-end reference must arrive on the device's USB/I2S input. So self-speech is handled only by muting (`client_mic.py` drops frames during TTS + `speaker_tail_s`), there is no barge-in, and the safety KWS hears Spot's own voice.
+- **Problem.** AEC is inert (`AEC_AECCONVERGED=0`) because TTS plays on the `UACDemoV1.0` USB speaker (hw:2,0), never through the XVF3800's own USB playback (hw:3,0, 2-out). XMOS: the far-end reference must arrive on the device's USB/I2S input. So self-speech is handled only by muting (`src/spot/audio/capture.py` drops frames during TTS + `speaker_tail_s`), there is no barge-in, and the safety KWS hears Spot's own voice.
 - **Change.** Play TTS to the XVF3800 (`--output-device` = XVF3800, 16 kHz) and drive a powered speaker from its 3.5 mm line-out. Hardware question first: does the UACDemo speaker have a line-in? If not, an amplified speaker is needed.
 - **Validate.** Read `AEC_AECCONVERGED` after a few sentences of TTS; record ch1 during TTS and measure residual echo. Keep the mute until the residual is low; relax it for barge-in only after on-robot data.
 - **Not recommended:** mirroring TTS to both USB devices (clock drift between devices defeats AEC).
@@ -81,7 +81,7 @@ Then set `beam_steering: true` in `config/tuning.yaml` and do one live session.
 ### B. Speaker lock from per-beam speech energy (low effort, crowd fix)
 - **Problem.** The lock is the circular median of `DOA_VALUE` readings. Replay: 0/3 correct locks in babble (DoA pointed at the crowd), DoA sticks on one value per clip (`docs/project/demo-tuning-results.md`).
 - **Change.** Poll `AEC_AZIMUTH_VALUES` + `AEC_SPENERGY_VALUES` (`MicArray.read_beams` already exists) alongside DoA; weight lock samples by speech energy; use `AUDIO_MGR_SELECTED_AZIMUTHS[0]` (NaN = no speech) instead of the speech flag. With beams steered, take "is someone else talking" from the free-running beam.
-- **Validate.** Replay lock accuracy on `fan_babble` and the new A/B sets (needs beams.csv, so only clips recorded after `d16cb6d`). About 40 lines in `speaker_lock.py` / `client_mic.py`.
+- **Validate.** Replay lock accuracy on `fan_babble` and the new A/B sets (needs beams.csv, so only clips recorded after `d16cb6d`). About 40 lines in `src/spot/conversation/speaker_lock.py` / `loop.py`.
 
 ### C. ASR output gain (cheap trial)
 - `AEC_ASROUTGAIN=1.0`; ch1 runs quiet in absolute level. Try 2-4x as a runtime write (no save), then re-check `min_speech_dbfs` and floor gates on replay. Digital gain does not improve SNR; it only matters if levels sit near quantisation or gate thresholds.

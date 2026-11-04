@@ -33,11 +33,11 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from src.voice_control.audio_frontend import (  # noqa: E402
+from src.spot.audio.frontend import (  # noqa: E402
     Endpointer, FloorTracker, UtteranceStats, frame_dbfs, passes_gate)
-from src.voice_control.speaker_lock import (  # noqa: E402
+from src.spot.conversation.speaker_lock import (  # noqa: E402
     SpeakerLock, ang_diff, circular_median_deg, mic_to_body_deg)
-from src.voice_control.tuning import load_tuning  # noqa: E402
+from src.spot.core.tuning import load_tuning  # noqa: E402
 
 MAIN_CHECKOUT = Path("/home/spotdog/spot/dartmouth_spot_capstone")
 DEFAULT_ROOT = MAIN_CHECKOUT / "tests" / "audio" / "demo"
@@ -250,7 +250,7 @@ def reference_speech(pcm: np.ndarray) -> list:
 
 
 def load_phrases():
-    from src.voice_control.wake.phrases import load_wake_phrases
+    from src.spot.wake.phrases import load_wake_phrases
     return load_wake_phrases(REPO / "config" / "wake_phrases.txt")
 
 
@@ -288,7 +288,7 @@ class _LabelSpy:
 def make_detector(model_dir: Path, peak_target: float):
     import contextlib
     import io
-    from src.voice_control.wake.sherpa_onnx import WakeWordDetector
+    from src.spot.wake.sherpa_onnx import WakeWordDetector
     with contextlib.redirect_stdout(io.StringIO()):
         det = WakeWordDetector(model_dir=model_dir, peak_target=peak_target)
     if not det.is_available():
@@ -396,7 +396,7 @@ def simulate(frames, cfg, vad, det=None, start_state="wake", chime_windows=(),
 # Evaluation
 # ---------------------------------------------------------------------------
 def asr_transcribe(stub, pcm: bytes) -> str:
-    from src.voice_control.asr_pb2 import AudioChunk, StreamingConfig, StreamingRequest
+    from src.spot.stt.asr_pb2 import AudioChunk, StreamingConfig, StreamingRequest
 
     def gen():
         yield StreamingRequest(config=StreamingConfig(language_code="en", sample_rate_hz=SAMPLE_RATE,
@@ -411,7 +411,7 @@ def asr_transcribe(stub, pcm: bytes) -> str:
 
 def make_asr_stub(addr="localhost:50055"):
     import grpc
-    from src.voice_control.asr_pb2_grpc import ASRStub
+    from src.spot.stt.asr_pb2_grpc import ASRStub
     return ASRStub(grpc.insecure_channel(addr))
 
 
@@ -606,7 +606,7 @@ def render_chimes() -> dict:
     """Every AudioFeedback cue rendered at 48 kHz via a capture player."""
     global _CHIMES
     if _CHIMES is None:
-        from src.voice_control.audio_feedback import AudioFeedback
+        from src.spot.audio.chimes import AudioFeedback
 
         class _Cap:
             got = None
@@ -935,7 +935,7 @@ def voiceprint_calibration(root: Path, conds, ch: int, model_path: Path) -> dict
       unknown = enrolment vs talking in the fan background take (speaker unknown)
       noise   = enrolment vs 2 s chunks of the babble background (no Silero speech: noise only)
     """
-    from src.voice_control.speaker_embed import SpeakerEmbedder, cosine
+    from src.spot.conversation.voiceprint import SpeakerEmbedder, cosine
     emb = SpeakerEmbedder(model_path)
 
     def e(b):

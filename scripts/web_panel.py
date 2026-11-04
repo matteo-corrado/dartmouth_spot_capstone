@@ -68,7 +68,7 @@ class EStopManager:
 
         try:
             from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-            from src.session import quick_robot
+            from src.spot.robot.session import quick_robot
 
             robot = quick_robot("dartmouth_spot_web_estop")
             estop_client = robot.ensure_client(EstopClient.default_service_name)
@@ -274,7 +274,7 @@ class VoicePipelineManager:
                 self._close_log()
                 return True, "Voice pipeline stopped"
 
-            # Send SIGINT first — client_mic.py's _shutdown_signal_handler
+            # Send SIGINT first — src/spot/app/main.py's _shutdown_signal_handler
             # converts it to KeyboardInterrupt and runs the graceful path
             # (cancel nav, sit, power off, drain audio). 30s gives the
             # bosdyn blocking_sit + power_off pair enough headroom for a
@@ -290,7 +290,7 @@ class VoicePipelineManager:
             except subprocess.TimeoutExpired:
                 pass
 
-            # SIGTERM as fallback. client_mic.py treats this as the
+            # SIGTERM as fallback. src/spot/app/main.py treats this as the
             # second signal and hard-exits via os._exit() without
             # waiting for any wedged bosdyn calls.
             os.killpg(pgid, signal.SIGTERM)
@@ -369,7 +369,7 @@ class CameraStreamer:
             return True
         try:
             from bosdyn.client.image import ImageClient
-            from src.session import quick_robot
+            from src.spot.robot.session import quick_robot
 
             robot = quick_robot("dartmouth_spot_web_camera")
             self._image_client = robot.ensure_client(
@@ -1106,7 +1106,7 @@ def main():
         # Tear down the voice subprocess first — it runs in its own
         # process group (preexec_fn=os.setsid) and would otherwise keep
         # holding the mic after the panel exits. The 20s SIGINT path
-        # gives client_mic.py time to sit Spot down cleanly.
+        # gives src/spot/app/main.py time to sit Spot down cleanly.
         if voice_mgr.status == "running":
             print("Stopping voice pipeline...")
             voice_mgr.stop()

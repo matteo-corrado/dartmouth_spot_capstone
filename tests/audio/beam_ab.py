@@ -32,8 +32,8 @@ for p in (str(REPO), str(HERE)):
         sys.path.insert(0, p)
 
 import replay_demo as R  # noqa: E402
-from src.voice_control.speaker_lock import ang_diff, circular_median_deg, mic_to_body_deg  # noqa: E402
-from src.voice_control.tuning import load_tuning  # noqa: E402
+from src.spot.conversation.speaker_lock import ang_diff, circular_median_deg, mic_to_body_deg  # noqa: E402
+from src.spot.core.tuning import load_tuning  # noqa: E402
 
 
 def dbfs(pcm: np.ndarray) -> float:

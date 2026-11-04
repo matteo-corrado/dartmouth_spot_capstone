@@ -5,7 +5,7 @@ sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
 import signal, time
 from bosdyn.client.estop import EstopClient, EstopEndpoint, EstopKeepAlive
-from src.session import quick_robot
+from src.spot.robot.session import quick_robot
 
 _running = True
 def _handle(sig, frame):

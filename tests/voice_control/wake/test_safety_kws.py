@@ -24,7 +24,7 @@ def test_keyword_lines_are_bpe_tokens_not_raw_text():
     assert any("▁" in ln for ln in lines)  # ▁
 
 
-from src.voice_control.client_mic import check_safety_command
+from src.spot.brain.intent import check_safety_command
 
 
 def test_detector_labels_map_to_safety_intents():
@@ -39,7 +39,7 @@ def test_detector_labels_map_to_safety_intents():
 def test_make_safety_detector_importable_and_handles_missing_model(tmp_path):
     # Construction must never raise even if the keyword file is absent;
     # it degrades to is_available() == False (fail-closed handled by caller).
-    from src.voice_control.wake.safety_kws import SafetyKeywordDetector
+    from src.spot.safety.kws import SafetyKeywordDetector
     det = SafetyKeywordDetector(model_dir=tmp_path)  # empty dir -> unavailable
     assert det.is_available() is False
     assert det.process_frame(b"\x00\x00" * 480) == ""

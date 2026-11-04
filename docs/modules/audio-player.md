@@ -1,12 +1,12 @@
 # audio_player
 
-`src/voice_control/audio_player.py`
+`src/spot/audio/player.py`
 
 ## Purpose
 
 `AudioPlayer` owns the **single** persistent `sounddevice.OutputStream` for
-the entire voice pipeline. Both `SpotTTS` and the beep generator in
-`audio_feedback.py` submit playback through it instead of calling
+the entire voice pipeline. Both `SpotTTS` and the chime generator in
+`src/spot/audio/chimes.py` submit playback through it instead of calling
 `sd.play()` / `sd.wait()` directly.
 
 ## Why this exists
@@ -29,8 +29,8 @@ single source of truth for "should the mic be muted right now".
 Three threads touch the object:
 
 1. **Caller threads** — `enqueue_raw`, `enqueue_render`, `wait`,
-   `is_busy`, `shutdown`. Called from `client_mic.main()` and from the
-   audio callback (`is_busy()` only).
+   `is_busy`, `shutdown`. Called from `src/spot/app/main.py` and from the
+   audio callback in `src/spot/audio/capture.py` (`is_busy()` only).
 2. **Worker thread** (`_worker_loop`) — pulls items from the queue, runs
    the render function (e.g. Kokoro inference), and writes audio to the
    stream in ~100ms chunks. Chunked writes give the watchdog a place to
@@ -50,11 +50,11 @@ Two locks coordinate them:
 ## API
 
 ```python
-from src.voice_control.audio_player import AudioPlayer
+from src.spot.audio.player import AudioPlayer
 
 player = AudioPlayer(output_device=3)
 
-# Submit raw int16/float samples (used by audio_feedback.beep):
+# Submit raw int16/float samples (used by the chimes):
 player.enqueue_raw(samples_np, rate=24000)
 
 # Submit a deferred render that runs INSIDE the worker (used by SpotTTS):
@@ -73,12 +73,12 @@ player.shutdown()
 
 ## Mic-mute interlock
 
-`client_mic.audio_callback()` reads `_audio_player.is_busy()` on every
+`AudioCapture.callback()` (`src/spot/audio/capture.py`) reads the player's `is_busy()` on every
 input frame. While the player is busy, frames are discarded so Spot's
 own voice can never feed back into ASR. After the player goes idle, an
-extra `SPEAKER_TAIL_COOLDOWN_S = 0.15` grace period gives the OS audio
-buffer time to drain — see `client_mic.py:138`. **Do not reduce this
-constant** without testing for TTS-tail bleed.
+extra grace period (tuning key `speaker_tail_s`, default 0.15 s, read in
+`AudioCapture.callback`) gives the OS audio buffer time to drain. **Do not reduce this
+value** without testing for TTS-tail bleed.
 
 ## Recovery and "leak the stream" safety
 
@@ -91,6 +91,8 @@ gates, not a leak.
 
 ## Related files
 
-- `src/voice_control/spot_tts.py` — renderer-only, submits via `enqueue_render`
-- `src/voice_control/audio_feedback.py` — sample generator, submits via `enqueue_raw`
-- `src/voice_control/client_mic.py` — owns the singleton, wires the mic-mute interlock
+- `src/spot/tts/speaker.py` — renderer-only, submits via `enqueue_render`
+- `src/spot/audio/chimes.py` — sample generator, submits via `enqueue_raw`
+- `src/spot/audio/capture.py` — `AudioCapture`, the mic-mute interlock
+- `src/spot/app/main.py` — builds the player singleton and wires it in at startup
+- `src/voice_control/client_mic.py` — launch stub only; holds no player state

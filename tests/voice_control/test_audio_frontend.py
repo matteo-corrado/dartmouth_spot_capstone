@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.voice_control.audio_frontend import (
+from src.spot.audio.frontend import (
     Endpointer, FloorTracker, UtteranceStats, frame_dbfs, passes_gate)
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Play each voice-pipeline chime once, slowly, with what it means.
 
-Uses the real tones from src/voice_control/audio_feedback.py, so what you hear
+Uses the real tones from src/spot/audio/chimes.py, so what you hear
 is what the robot plays. Also plays the louder/longer listen_cue option under
 consideration so the two can be compared.
 
@@ -19,11 +19,11 @@ import numpy as np
 import sounddevice as sd
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from src.voice_control.audio_feedback import (  # noqa: E402
+from src.spot.audio.chimes import (  # noqa: E402
     SAMPLE_RATE, TAIL_MS, AudioFeedback, _tone)
-from src.voice_control.audio_player import AudioPlayer  # noqa: E402
+from src.spot.audio.player import AudioPlayer  # noqa: E402
 
-SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as client_mic
+SPEAKER_DEVICE_NAME = "UACDemoV1.0"  # Spot's USB speaker, same as src/spot/audio/capture.py / player
 
 LEAD_S = 0.25  # silence first so the USB speaker is awake (it drops the start of a fresh stream)
 GAP_S = 1.5

@@ -15,7 +15,7 @@ from PIL import Image
 
 from bosdyn.api import image_pb2
 from bosdyn.client.image import ImageClient
-from src.session import quick_robot
+from src.spot.robot.session import quick_robot
 
 BODY = ["frontleft_fisheye_image", "frontright_fisheye_image",
         "left_fisheye_image", "right_fisheye_image", "back_fisheye_image"]

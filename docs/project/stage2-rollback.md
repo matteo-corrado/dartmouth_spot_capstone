@@ -3,7 +3,7 @@
 ## Stage 2A complete state (tag `stage2a-voice-complete`)
 
 - **Brain runtime:** llama.cpp via NVIDIA Jetson container, `gemma-4-E4B-Q8_0.gguf` + Q8 mmproj on `/mnt/ssd/llamacpp-models/`, served on `127.0.0.1:11435` by `llama-server.service`. Context = 32768 (system prompt is ~62 KB / ~15 K tokens after knowledge packs).
-- **Grammar:** single unified GBNF at `src/voice_control/grammar/spot_action.gbnf`. Emits `{"actions":[...],"response":"..."}`; dispatcher bridges `"action"` → `"intent"` field.
+- **Grammar:** single unified GBNF at `src/spot/brain/grammar/spot_action.gbnf`. Emits `{"actions":[...],"response":"..."}`; dispatcher bridges `"action"` → `"intent"` field.
 - **ASR:** **Parakeet TDT 0.6B v3** (via `onnx-asr`, CUDA EP through our `onnxruntime-gpu 1.23.0` Jetson AI Lab wheel) at `/mnt/ssd/parakeet-models/`. Warm ~190 ms / 6.6 s wav (= 35× realtime). Nemotron Speech Streaming 0.6B int8 at `/mnt/ssd/nemotron-models/` is the **CPU-only** alternate (sherpa-onnx Python wheel has no aarch64 GPU build).
 - **VAD:** Silero via sherpa-onnx (`/mnt/ssd/vad-models/silero_vad.onnx`). Replaced webrtcvad (2012-era false-positive prone).
 - **Wake word:** sherpa-onnx KeywordSpotter (Zipformer int8 at `models/kws/`). LiveKit-Wakeword infra written but model not yet trained — flip default to `livekit` once `/mnt/ssd/wake-models/hey_spot.onnx` exists.
@@ -57,8 +57,8 @@ SPOT_WAKE_BACKEND=livekit spot-env/bin/python scripts/run_voice_control.py
 If TTS sentence chunker mis-segments or skips text:
 
 ```bash
-# In src/voice_control/client_mic.py, set `chunker = None` at the brain.process
-# guard (around line 1135). Existing post-process tts.speak(response) then
+# In src/spot/conversation/loop.py (process_utterance), set `chunker = None` where it is created
+# (`tts.enqueue_streaming(...)` in process_utterance). Existing post-process tts.speak(response) then
 # fires for every utterance (legacy non-streaming path).
 ```
 
@@ -154,11 +154,11 @@ Say *"stop moving your mouth"* → `disable_mouth` action: stops the gripper, cl
 
 ### Layer: disable the actions (LLM can't trigger)
 
-Remove `| "\"enable_mouth\"" | "\"disable_mouth\""` from the `action-name` rule in `src/voice_control/grammar/spot_action.gbnf`. The LLM then cannot emit them; TTS + playback are unchanged.
+Remove `| "\"enable_mouth\"" | "\"disable_mouth\""` from the `action-name` rule in `src/spot/brain/grammar/spot_action.gbnf`. The LLM then cannot emit them; TTS + playback are unchanged.
 
 ### Layer: full feature off (code)
 
-The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver is only created inside `enable_mouth`, simply never enabling it leaves the feature dormant. To hard-disable, comment out the `enable_mouth`/`disable_mouth` branches in `dispatch_intent` (`spot_dispatch.py`).
+The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver is only created inside `enable_mouth`, simply never enabling it leaves the feature dormant. To hard-disable, remove `"mouth"` from `ENABLED` in `src/spot/features/enabled.py`.
 
 ### Hard rollback (full 2E.2 revert)
 
@@ -166,4 +166,4 @@ The TTS→mouth hooks are no-ops whenever `tts.mouth is None`. Since the driver 
 git revert ac9c227 26610db 40bf3a2 b849a44 a00d9e7
 ```
 
-Touches only the 2E.2 surface (`animation/mouth.py`, `spot_tts.py` play-callback hooks, `spot_dispatch.py` actions, `session.py` arm helpers, `audio_player.py` on_play_end-on-error guard, `session_state.py`, `persona.py`, `personas.yaml`, grammar). Pre-2E.2 commit: `7f875ac`.
+Touches only the 2E.2 surface (`animation/mouth.py`, `spot_tts.py` play-callback hooks, the former `spot_dispatch.py` actions (now `src/spot/features/mouth/`), `session.py` arm helpers, `audio_player.py` on_play_end-on-error guard, `session_state.py`, `persona.py`, `personas.yaml`, grammar). Pre-2E.2 commit: `7f875ac`.

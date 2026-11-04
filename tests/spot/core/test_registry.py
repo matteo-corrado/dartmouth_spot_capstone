@@ -1,0 +1,182 @@
+import importlib
+import logging
+import re
+from types import SimpleNamespace
+
+import pytest
+
+from src.spot.core.registry import ActionSpec, Feature, IntentRule, Registry
+
+
+def act(name, **kw):
+    return ActionSpec(name, lambda p, c: True, None, kw.pop("prompt_line", None), **kw)
+
+
+def test_duplicate_action_rejected():
+    r = Registry()
+    r.add(Feature("a", actions=(act("x"),)))
+    with pytest.raises(ValueError):
+        r.add(Feature("b", actions=(act("x"),)))
+
+
+def test_load_skips_broken_feature(caplog):
+    good = Feature("good", actions=(act("g"),))
+
+    def imp(path):
+        if path.endswith("bad"):
+            raise ImportError("nope")
+        return SimpleNamespace(FEATURE=good)
+
+    r = Registry()
+    with caplog.at_level(logging.ERROR):
+        r.load(["bad", "good"], import_fn=imp)
+    assert r.action("g") is not None
+    assert r.action("bad") is None
+    assert "[Features] bad skipped: nope" in caplog.text
+
+
+def test_names_by_flag():
+    r = Registry()
+    r.add(Feature("f", actions=(act("a", locomotion=True), act("b"), act("c", locomotion=True))))
+    assert r.names("locomotion") == frozenset({"a", "c"})
+    assert r.grammar_action_names() == ["a", "b", "c"]
+
+
+def test_prompt_lines():
+    r = Registry()
+    r.add(Feature("f", actions=(act("a", prompt_line="A"), act("b"))))
+    assert r.prompt_lines() == ["A"]
+
+
+def test_intent_rules_priority_stable():
+    b = lambda m: {}
+    r = Registry()
+    r.add(Feature("f1", intent_rules=(IntentRule(5, "a", b), IntentRule(1, "b", b))))
+    r.add(Feature("f2", intent_rules=(IntentRule(5, "c", b), IntentRule(1, "d", b))))
+    assert [x.pattern for x in r.intent_rules()] == ["b", "d", "a", "c"]
+
+
+# --- Task 16 safety review S1: Registry.add rejects unsafe feature actions ---
+@pytest.mark.parametrize("spec, msg", [
+    (act("stop"), "core intent"),
+    (act("status"), "core intent"),
+    (act("x", aborting=True), "aborting=True"),
+    (act("x", unlocked=True), "requires motion_free"),
+    (act("x", locomotion=True, unlocked=True, motion_free=True), "locomotion=True"),
+    (act("x", locomotion=True, motion_free=True), "locomotion=True"),
+    (act("x", locomotion=True, state_only=True), "locomotion=True"),
+])
+def test_add_rejects_unsafe_flags(spec, msg):
+    r = Registry()
+    with pytest.raises(ValueError, match=msg):
+        r.add(Feature("bad", actions=(spec,)))
+    assert r.action(spec.name) is None and r.features == []
+
+
+def test_add_accepts_safe_combinations():
+    r = Registry()
+    r.add(Feature("ok", actions=(act("a", unlocked=True, motion_free=True),
+                                 act("b", locomotion=True, short_path_blocked=True),
+                                 act("c", state_only=True, unlocked=True, motion_free=True))))
+    assert r.names("unlocked") == {"a", "c"}
+
+
+def test_enabled_features_pass_the_checks():
+    from src.spot.features.enabled import ENABLED
+    r = Registry()
+    for name in ENABLED:
+        r.add(importlib.import_module(f"src.spot.features.{name}").FEATURE)
+    assert [f.name for f in r.features] == ENABLED
+
+
+def test_duplicate_action_within_one_feature_rejected():
+    r = Registry()
+    with pytest.raises(ValueError, match="duplicate action: x"):
+        r.add(Feature("a", actions=(act("x"), act("x"))))
+    assert r.features == [] and r.action("x") is None
+
+
+def test_load_returns_failures_and_skips_loaded():
+    """Task 15: main calls load(ENABLED) again after the import-time load;
+    loaded features are skipped (no duplicate-action error) and the call's
+    failures come back with a traceback for the loud startup report (C6)."""
+    good = Feature("good", actions=(act("g"),))
+    calls = []
+
+    def imp(path):
+        calls.append(path)
+        if path.endswith("bad"):
+            raise ImportError("nope")
+        return SimpleNamespace(FEATURE=good)
+
+    r = Registry()
+    first = r.load(["good", "bad"], import_fn=imp)
+    assert [(n, str(e)) for n, e, _ in first] == [("bad", "nope")]
+    assert "ImportError: nope" in first[0][2]
+    second = r.load(["good", "bad"], import_fn=imp)  # good is not re-added
+    assert [n for n, _, _ in second] == ["bad"]
+    assert calls.count("src.spot.features.good") == 1
+    assert [n for n, _, _ in r.failures] == ["bad"]  # deduped across the retry
+
+
+def _imp_of(features, broken=()):
+    def imp(path):
+        name = path.rsplit(".", 1)[1]
+        if name in broken:
+            raise ImportError(f"{name} gone")
+        return SimpleNamespace(FEATURE=features[name])
+    return imp
+
+
+def test_requires_enforced_order_independent():
+    """I3: a feature listed before its dependency still loads; order kept."""
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("v"),), requires=("navigation",)),
+          "navigation": Feature("navigation", actions=(act("n"),))}
+    r = Registry()
+    assert r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs)) == []
+    assert [f.name for f in r.features] == ["follow", "navigation", "visual_nav"]
+
+
+def test_missing_requirement_is_a_load_failure_and_cascades():
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("v"),), requires=("navigation",))}
+    r = Registry()
+    failed = r.load(["follow", "visual_nav"], import_fn=_imp_of(fs))  # navigation not enabled
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+    assert all("requires" in str(e) for _, e, _ in failed)
+    assert r.features == [] and r.action("f") is None and r.action("v") is None
+    assert not r.has("follow")
+    # retry once the dependency is there: both load, failures cleared
+    fs["navigation"] = Feature("navigation", actions=(act("n"),))
+    assert r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs)) == []
+    assert r.has("follow") and r.failures == []
+
+
+def test_requirement_whose_import_failed_fails_dependent():
+    fs = {"follow": Feature("follow", requires=("visual_nav",))}
+    r = Registry()
+    failed = r.load(["follow", "visual_nav"], import_fn=_imp_of(fs, broken=("visual_nav",)))
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+
+
+def test_real_feature_dependencies_declared():
+    from src.spot.features import REGISTRY
+    by = {f.name: f for f in REGISTRY.features}
+    assert by["follow"].requires == ("visual_nav",)
+    assert by["visual_nav"].requires == ("navigation",)
+    assert REGISTRY.failures == []
+
+
+def test_dependency_rejected_by_add_removes_dependents():
+    """h2: visual_nav imports fine but add() rejects it (duplicate action):
+    follow, already added, is removed and reported too."""
+    fs = {"follow": Feature("follow", actions=(act("f"),), requires=("visual_nav",)),
+          "visual_nav": Feature("visual_nav", actions=(act("n"),)),  # clashes with navigation
+          "navigation": Feature("navigation", actions=(act("n"),))}
+    r = Registry()
+    failed = r.load(["follow", "navigation", "visual_nav"], import_fn=_imp_of(fs))
+    assert sorted(n for n, _, _ in failed) == ["follow", "visual_nav"]
+    assert [f.name for f in r.features] == ["navigation"]
+    assert r.action("f") is None and r.action("n") is not None
+    assert not r.has("follow") and not r.has("visual_nav") and r.has("navigation")

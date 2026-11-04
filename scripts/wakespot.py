@@ -7,12 +7,13 @@ Usage:
     wakespot /path/to/map     # absolute or relative path
     wakespot --no-map         # skip startup map upload
     wakespot --no-tts jackson # pass-through to voice control
+    wakespot --dry-run        # no robot: no E-Stop, no map; mic/ASR/brain/TTS only
 
 The orchestrator:
   1. Acquires a /tmp/wakespot.pid lockfile (refuses if another wakespot is alive).
-  2. Resolves the requested map (if any) via src.map_loader.resolve_map_path
+  2. Resolves the requested map (if any) via src.spot.nav.map_loader.resolve_map_path
      and records it in maps/.last_used.
-  3. Claims the E-Stop via src.estop.estop_session — its EstopKeepAlive runs
+  3. Claims the E-Stop via src.spot.safety.estop.estop_session — its EstopKeepAlive runs
      its own heartbeat thread, so we just hold the context manager open.
   4. Spawns scripts/run_voice_control.py in its own process group, forwarding
      pass-through flags plus --map <resolved_path>.
@@ -49,6 +50,7 @@ GRACEFUL_TIMEOUT_SEC = 45
 # ---------------------------------------------------------------------------
 _shutdown_requested = threading.Event()
 _emergency_requested = threading.Event()
+_DRY_RUN = False  # set by main(); shutdown messages must never claim a cut that didn't happen
 _sigint_count = 0
 
 
@@ -57,26 +59,38 @@ def _on_sigint(signum, frame):
     global _sigint_count
     _sigint_count += 1
     if _sigint_count == 1:
-        print(
-            "\n[wakespot] Graceful shutdown requested — sit, power off, then "
-            "release E-Stop. Hit Ctrl+C again or Ctrl+\\ for an emergency cut.",
-            flush=True,
-        )
+        if _DRY_RUN:
+            print("\n[wakespot] Stopping voice control (dry run: no robot, no E-Stop).",
+                  flush=True)
+        else:
+            print(
+                "\n[wakespot] Graceful shutdown requested — sit, power off, then "
+                "release E-Stop. Hit Ctrl+C again or Ctrl+\\ for an emergency cut.",
+                flush=True,
+            )
         _shutdown_requested.set()
     else:
-        print(
-            "\n[wakespot] EMERGENCY E-Stop (second Ctrl+C) — cutting motors NOW.",
-            flush=True,
-        )
+        if _DRY_RUN:
+            print("\n[wakespot] Force-stopping voice control (dry run: nothing to cut).",
+                  flush=True)
+        else:
+            print(
+                "\n[wakespot] EMERGENCY E-Stop (second Ctrl+C) — cutting motors NOW.",
+                flush=True,
+            )
         _emergency_requested.set()
 
 
 def _on_sigquit(signum, frame):
     """Ctrl+\\ is always an immediate emergency cut, no second-press needed."""
-    print(
-        "\n[wakespot] EMERGENCY E-Stop (SIGQUIT) — cutting motors NOW.",
-        flush=True,
-    )
+    if _DRY_RUN:
+        print("\n[wakespot] Force-stopping voice control (dry run: nothing to cut).",
+              flush=True)
+    else:
+        print(
+            "\n[wakespot] EMERGENCY E-Stop (SIGQUIT) — cutting motors NOW.",
+            flush=True,
+        )
     _emergency_requested.set()
     # Pre-spawn there is no robot to cut yet, so also trip the shutdown event
     # estop_session watches as its abort_event — otherwise Ctrl+\ during the
@@ -88,8 +102,8 @@ def _on_sigquit(signum, frame):
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src import map_loader
-from src.estop import estop_session
+from src.spot.nav import map_loader
+from src.spot.safety.estop import estop_session
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +229,22 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-transcript-log", action="store_true",
                         help="Forwarded to voice control: store transcript: null "
                              "in conversation/utterance logs (privacy).")
+    # Dry run: the whole voice pipeline without the robot.
+    parser.add_argument("--dry-run", action="store_true",
+                        help="No robot: skip the E-Stop claim and the map upload, and "
+                             "forward --dry-run (mic, ASR, brain, TTS only; robot "
+                             "commands are printed, never sent).")
+    parser.add_argument("--no-brain", action="store_true",
+                        help="Forwarded to voice control: regex-only, no LLM brain.")
+    parser.add_argument("--no-server", action="store_true",
+                        help="Forwarded to voice control: don't start the ASR server "
+                             "(assumes it is already running).")
+    parser.add_argument("--latency-out", type=str, default=None,
+                        help="Forwarded to voice control: latency JSONL path "
+                             "(with --latency file/all).")
+    # --allow-no-safety-kws is deliberately NOT offered here: the one-word
+    # launch must never start the robot without the always-on spoken stop.
+    # Use scripts/run_voice_control.py directly if you really need it.
     return parser
 
 
@@ -252,9 +282,26 @@ def _build_voice_control_cmd(args: argparse.Namespace, resolved_map: Path | None
         cmd.extend(["--mic-channel", str(args.mic_channel)])
     if args.no_transcript_log:
         cmd.append("--no-transcript-log")
+    if args.no_brain:
+        cmd.append("--no-brain")
+    if args.no_server:
+        cmd.append("--no-server")
+    if args.latency_out is not None:
+        cmd.extend(["--latency-out", args.latency_out])
+    if args.dry_run:
+        cmd.append("--dry-run")
+        return cmd  # dry run never uploads a map
     if resolved_map is not None:
         cmd.extend(["--map", str(resolved_map)])
     return cmd
+
+
+class _NoEstop:
+    """Dry-run stand-in for the E-Stop keepalive: there is no robot, so there
+    is nothing to cut. The shutdown state machine stays the same."""
+
+    def stop(self):
+        print("[wakespot] (dry run) no E-Stop to cut.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +316,11 @@ def _emergency_cut(proc: subprocess.Popen, keepalive) -> int:
     """
     try:
         keepalive.stop()  # E-Stop CUT
-        print("[wakespot] E-Stop CUT issued — motors de-energized.", flush=True)
+        if _DRY_RUN:
+            print("[wakespot] DRY RUN: nothing was cut. If a robot is live, use the "
+                  "physical E-Stop.", flush=True)
+        else:
+            print("[wakespot] E-Stop CUT issued — motors de-energized.", flush=True)
     except Exception as e:
         print(f"[wakespot] keepalive.stop() failed: {e}", flush=True)
 
@@ -290,14 +341,17 @@ def _emergency_cut(proc: subprocess.Popen, keepalive) -> int:
 def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
     """Ask voice control to sit Spot and power off motors, then return.
 
-    Sends SIGTERM to the child (which client_mic.py converts to a
+    Sends SIGTERM to the child (which src/spot/app/main.py converts to a
     KeyboardInterrupt and runs cleanup_spot → blocking_sit → power_off),
     then waits up to GRACEFUL_TIMEOUT_SEC for the child to exit. If the
     user escalates to emergency mid-wait, OR the timeout expires, we
     escalate to _emergency_cut.
     """
-    print("[wakespot] Asking voice control to sit Spot and power off motors...",
-          flush=True)
+    if _DRY_RUN:
+        print("[wakespot] DRY RUN: stopping voice control (no robot to sit).", flush=True)
+    else:
+        print("[wakespot] Asking voice control to sit Spot and power off motors...",
+              flush=True)
     try:
         proc.send_signal(signal.SIGTERM)
     except ProcessLookupError:
@@ -327,6 +381,9 @@ def _graceful_shutdown(proc: subprocess.Popen, keepalive) -> int:
         )
         return _emergency_cut(proc, keepalive)
 
+    if _DRY_RUN:
+        print("[wakespot] Voice control exited cleanly (dry run, no E-Stop held).", flush=True)
+        return proc.returncode if proc.returncode is not None else 0
     print("[wakespot] Voice control exited cleanly. Releasing E-Stop endpoint "
           "(no cut).", flush=True)
     return proc.returncode if proc.returncode is not None else 0
@@ -356,6 +413,7 @@ def _wait_for_child(proc: subprocess.Popen, keepalive) -> int:
 # Main
 # ---------------------------------------------------------------------------
 def main() -> int:
+    global _DRY_RUN
     parser = _build_parser()
     args = parser.parse_args()
 
@@ -368,6 +426,24 @@ def main() -> int:
     signal.signal(signal.SIGQUIT, _on_sigquit)
 
     try:
+        # ----- Dry run: no robot contact at all (no E-Stop, no map) -----
+        if args.dry_run:
+            if args.map is not None and not args.no_map:
+                print(f"[wakespot] (dry run) ignoring map '{args.map}'.")
+            _DRY_RUN = True
+            print("[wakespot] " + "=" * 60)
+            print("[wakespot] DRY RUN — SPOT IS NOT E-STOP-PROTECTED BY THIS PROCESS.")
+            print("[wakespot] No E-Stop claimed, no map upload, robot commands are "
+                  "printed, never sent.")
+            print("[wakespot] If a robot is live, keep the physical E-Stop in reach.")
+            print("[wakespot] " + "=" * 60)
+            print("[wakespot]   Ctrl+C = stop voice control")
+            proc = subprocess.Popen(
+                _build_voice_control_cmd(args, None),
+                cwd=str(PROJECT_ROOT), start_new_session=True,
+            )
+            return _wait_for_child(proc, _NoEstop())
+
         # ----- Resolve map (skip if --no-map) -----
         resolved_map: Path | None = None
         if not args.no_map:
@@ -425,7 +501,10 @@ def main() -> int:
               "robot was reachable. No E-Stop was claimed.", flush=True)
         return 130
     finally:
-        print("[wakespot] Released E-Stop and cleaned up.")
+        if _DRY_RUN:
+            print("[wakespot] Dry run finished and cleaned up.")
+        else:
+            print("[wakespot] Released E-Stop and cleaned up.")
         _release_lockfile()
 
 

@@ -1,10 +1,10 @@
 # session.py
 
-`src/session.py` -- Spot robot session context manager.
+`src/spot/robot/session.py` -- Spot robot session context manager.
 
 Wraps the full lifecycle of a Spot connection: authentication, time sync,
 lease acquisition, power-on, stand, and cleanup on exit. Used by
-`spot_dispatch.py` to maintain a persistent robot session.
+`src/spot/robot/connection.py` to maintain a persistent robot session.
 
 ## Key Function
 
@@ -74,7 +74,7 @@ Credentials are loaded from `src/config.py` which reads environment variables:
 ## Usage Example
 
 ```python
-from src.session import spot_session
+from src.spot.robot.session import spot_session
 
 # Full lifecycle (stand on enter, sit + power off on exit)
 with spot_session() as session:

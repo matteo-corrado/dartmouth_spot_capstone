@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """spotctl — operator control CLI for the running voice pipeline.
 
-Talks to the localhost control server (src/voice_control/control_server.py),
+Talks to the localhost control server (src/spot/operator/control_server.py),
 default http://127.0.0.1:8770. Run on the Jetson, e.g. ``ssh jetson spotctl hush``.
 Stdlib only.
 
@@ -9,8 +9,8 @@ Stdlib only.
   spotctl                      interactive hotkeys (raw tty), q quits
 
 Names: mute unmute listen release reset hush say persona stop freeze sit
-stand stow status crowd voiceprint   (say/persona need an arg;
-crowd/voiceprint take an optional on|off, no arg flips;
+stand stow status crowd voiceprint lock   (say/persona need an arg;
+crowd/voiceprint/lock take an optional on|off, no arg flips;
 `spotctl voiceprint threshold 0.3` sets the voiceprint threshold live, 0.0-0.9)
 """
 from __future__ import annotations
@@ -27,11 +27,11 @@ DEFAULT_PORT = 8770
 HOTKEYS = {
     "m": "mute", "u": "unmute", "l": "listen", "r": "release", "x": "reset",
     "h": "hush", "s": "stop", "f": "freeze", "w": "stow", "c": "crowd",
-    "v": "voiceprint", "?": "status",
+    "v": "voiceprint", "k": "lock", "?": "status",
 }
 
 HELP = ("keys: m mute  u unmute  l listen  r release  x reset  h hush  "
-        "s stop  f freeze  w stow  c crowd  v voiceprint  ? status  q quit")
+        "s stop  f freeze  w stow  c crowd  v voiceprint  k lock  ? status  q quit")
 
 
 class Unreachable(Exception):
@@ -71,7 +71,7 @@ def send(name: str, arg: str | None = None, host: str = DEFAULT_HOST,
     except urllib.error.URLError as e:  # connect failed (refused, no route, connect timeout)
         raise Unreachable(
             f"spotctl: cannot reach control server at {base} ({e.reason}). "
-            "Is the voice pipeline (client_mic.py) running?") from None
+            "Is the voice pipeline (src/spot/app/main.py, launched via client_mic.py) running?") from None
     except TimeoutError:  # connected, but no reply in time
         raise NoReply(f"spotctl: {name}: no reply within {timeout:g}s "
                       "— the command may still be executing") from None

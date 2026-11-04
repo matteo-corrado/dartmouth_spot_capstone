@@ -5,9 +5,10 @@ import queue
 import numpy as np
 import pytest
 
-from src.voice_control import speaker_embed as se
-from src.voice_control.control_server import ControlServer, parse_command
-from src.voice_control.speaker_embed import VoiceprintGate, warm_up_async
+from src.spot.conversation import voiceprint as se
+from src.spot.operator.control_server import ControlServer, parse_command
+from src.spot.conversation.voiceprint import VoiceprintGate, warm_up_async
+import src.spot.conversation.loop as _loop
 
 
 def _vec(*xs):
@@ -269,12 +270,12 @@ def test_spotctl_voiceprint_on_reaches_queue():
 
 
 def test_client_toggle_and_status_fields(monkeypatch):
-    import src.voice_control.client_mic as cm
+    import src.spot.operator.control as cm
     assert cm._toggle(False, "on") is True and cm._toggle(True, "off") is False
     assert cm._toggle(False, None) is True
     g = VoiceprintGate(FakeEmbedder(TABLE), log_fn=lambda m: None)
-    monkeypatch.setattr(cm, "_voice", g)
-    monkeypatch.setattr(cm, "_voiceprint_mode", True)
+    monkeypatch.setattr(_loop.CONVERSATION, "_voice", g)
+    monkeypatch.setattr(_loop.CONVERSATION, "_voiceprint_mode", True)
     st = cm._on_immediate("status", None)
     assert st["voiceprint"] is True and st["voiceprint_enrolled"] is False
     assert st["voiceprint_last_sim"] is None and st["voiceprint_ready"] is True
@@ -287,6 +288,6 @@ def test_client_toggle_and_status_fields(monkeypatch):
 
 
 def test_voiceprint_default_comes_from_tuning():
-    import src.voice_control.client_mic as cm
-    src = open(cm.__file__).read()
+    import src.spot.operator.control as cm
+    src = open(_loop.__file__).read()
     assert "_voiceprint_mode = _tuning.voiceprint_enabled" in src

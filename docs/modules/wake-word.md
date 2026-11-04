@@ -1,6 +1,6 @@
 # wake_word.py
 
-`src/voice_control/wake_word.py` -- Wake word detection ("Hey Spot").
+`src/spot/wake/sherpa_onnx.py` -- Wake word detection ("Hey Spot").
 
 Streaming keyword spotter using sherpa-onnx's zipformer model. Runs on CPU
 with ~0ms detection latency. Shares the sherpa-onnx dependency with TTS
@@ -86,10 +86,10 @@ if detector.is_available():
 
 ```bash
 # Standalone mic test
-python src/voice_control/wake_word.py --test-mic --device 24
+python -m src.spot.wake.sherpa_onnx --test-mic --device 24
 
 # Quick load + silence test
-python src/voice_control/wake_word.py
+python -m src.spot.wake.sherpa_onnx
 ```
 
 ## Dependencies

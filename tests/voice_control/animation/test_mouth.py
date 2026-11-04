@@ -1,6 +1,6 @@
 # tests/voice_control/animation/test_mouth.py
 import numpy as np
-from src.voice_control.animation.mouth import envelope, MOUTH_FPS
+from src.spot.features.mouth.driver import envelope, MOUTH_FPS
 
 
 def _tone(freq, secs, rate=24000, amp=0.8):
@@ -38,7 +38,7 @@ def test_intensity_scales_and_clamps():
 
 
 import time
-from src.voice_control.animation.mouth import MouthDriver
+from src.spot.features.mouth.driver import MouthDriver
 
 
 def test_driver_dry_run_emits_all_frames_in_order():
@@ -61,7 +61,7 @@ def test_driver_scales_opening_to_max_open():
 
 
 def test_default_max_open_comes_from_tuning():
-    from src.voice_control.tuning import get_tuning
+    from src.spot.core.tuning import get_tuning
     assert MouthDriver(dry_run=True).max_open == get_tuning().mouth_max_open
 
 

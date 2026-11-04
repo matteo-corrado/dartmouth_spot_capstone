@@ -31,7 +31,7 @@ ollama pull qwen2.5vl:7b     # vision LLM (~6GB)
 
 ### ASR Bridge (port 50055)
 
-The ASR bridge server (`src/voice_control/server.py`) implements the custom
+The ASR bridge server (`src/spot/stt/server.py`; `src/voice_control/server.py` is a shim that forwards to it) implements the custom
 `asr.proto` protocol on port 50055. It is auto-started by
 `run_voice_control.py` unless `--no-server` is passed. The bridge handles
 hallucination filtering and minimum duration rejection. A Parakeet-based

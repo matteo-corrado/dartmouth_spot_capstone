@@ -1,0 +1,1 @@
+"""Spot core package (placeholder)."""

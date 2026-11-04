@@ -29,7 +29,7 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 VOICE_DIR = PROJECT_ROOT / "src" / "voice_control"
 
 # Auto-load .env so callers don't need `source .env` first. Child processes
-# (client_mic.py, server.py) inherit the resulting env. `override=True` so
+# (the client_mic.py / server.py shims) inherit the resulting env. `override=True` so
 # .env wins over stale shell exports. Broad except: dotenv may not be
 # installed, .env may be unreadable / non-UTF-8 — none should crash launch.
 try:
@@ -389,8 +389,8 @@ def main():
     # the kill on a second Ctrl+C, and avoid the wedge where the parent's
     # subprocess.run sits forever in process.wait() while the child is hung
     # in cleanup. Without this escape hatch, Ctrl+C in the terminal looked
-    # to the user like it did nothing — see ``client_mic.py``'s
-    # ``_shutdown_signal_handler`` for the matching child-side fix.
+    # to the user like it did nothing — see ``_shutdown_signal_handler`` in
+    # ``src/spot/app/main.py`` for the matching child-side fix.
     client_proc = subprocess.Popen(client_cmd, cwd=str(VOICE_DIR), env=client_env)
 
     # Shutdown signal forwarding.
@@ -399,7 +399,7 @@ def main():
     # signal-routing differs in each case:
     #
     #   1. CLI Ctrl+C: terminal sends SIGINT to the foreground process
-    #      group. Both this parent and ``client_mic.py`` receive it
+    #      group. Both this parent and the voice client (``src/spot/app/main.py``) receive it
     #      simultaneously. The child runs its own graceful shutdown.
     #      We just need to wait.
     #
@@ -410,7 +410,7 @@ def main():
     #   3. wakespot orchestrator: ``wakespot.py`` puts us in our own
     #      session via ``start_new_session=True`` and then sends
     #      ``proc.send_signal(SIGTERM)`` — to the PARENT ONLY, not the
-    #      group. Without explicit forwarding, ``client_mic.py`` never
+    #      group. Without explicit forwarding, ``src/spot/app/main.py`` never
     #      hears about the shutdown and keeps running its main loop
     #      while we sit here in ``client_proc.wait()`` with nothing to
     #      wait for. This was the bug that made wakespot's graceful
@@ -418,7 +418,7 @@ def main():
     #
     # Cases 1 and 2 deliver SIGINT and the child has already received it
     # via the process group. We must NOT re-forward SIGINT to the child,
-    # because ``client_mic.py``'s second-signal handler treats a second
+    # because ``src/spot/app/main.py``'s second-signal handler treats a second
     # signal as the "force quit" escape hatch and would call os._exit()
     # immediately, skipping cleanup. So SIGINT we just absorb and wait.
     #
@@ -437,7 +437,7 @@ def main():
             client_proc.wait()
         except KeyboardInterrupt:
             # First Ctrl+C: the SIGINT already went to the child via the
-            # foreground process group, so client_mic.py is doing its
+            # foreground process group, so src/spot/app/main.py is doing its
             # graceful shutdown right now. Wait a generous-but-bounded
             # window for it to finish (sit + power_off can legitimately
             # take ~30s on a healthy robot). A second Ctrl+C escalates.

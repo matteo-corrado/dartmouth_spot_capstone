@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from src.voice_control.control_server import (
+from src.spot.operator.control_server import (
     COMMANDS, ControlServer, drain, parse_command,
 )
 
@@ -55,7 +55,7 @@ def server():
 def test_command_table():
     assert set(COMMANDS) == set(
         "mute unmute listen release reset hush say persona stop freeze sit "
-        "stand stow status crowd voiceprint".split())
+        "stand stow status crowd voiceprint lock".split())
     imm = {n for n, c in COMMANDS.items() if c.immediate}
     assert imm == set("hush stop freeze sit stand stow status mute unmute".split())
     assert {n for n, c in COMMANDS.items() if c.takes_arg} == {"say", "persona"}

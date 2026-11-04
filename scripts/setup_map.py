@@ -6,9 +6,9 @@ import argparse
 
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))
 
-from src.session import spot_session
-from src.graph_nav_utils import upload_graph_and_snapshots, initialize_localization, get_localization_state
-from src.map_loader import resolve_map_path, write_last_used
+from src.spot.robot.session import spot_session
+from src.spot.nav.graph_nav_utils import upload_graph_and_snapshots, initialize_localization, get_localization_state
+from src.spot.nav.map_loader import resolve_map_path, write_last_used
 
 
 def main():

@@ -4,8 +4,8 @@ import threading
 import numpy as np
 import pytest
 
-from src.voice_control import audio_player as ap
-from src.voice_control.response_gate import should_reopen_mic
+from src.spot.audio import player as ap
+from src.spot.audio.response_gate import should_reopen_mic
 
 
 class _BlockingStream:

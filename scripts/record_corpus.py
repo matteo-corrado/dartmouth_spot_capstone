@@ -141,7 +141,7 @@ def main() -> None:
     if args.room:
         print(f"Room label: {args.room!r} (files get '{sfx}' suffix)")
     print()
-    print("Spot's beamformed channel 0 is captured (matches client_mic production path).")
+    print("Spot's beamformed channel 0 is captured (matches the src/spot/audio/capture.py production path).")
     print("Sit Spot powered-on at its normal position. Speak naturally.")
     input("Press Enter to begin.")
     sections = [

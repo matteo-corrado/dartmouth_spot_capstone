@@ -1,9 +1,9 @@
 # tests/voice_control/test_state_feedback.py
 """Unit tests for the state -> chime/LED/ring indicator mapping."""
 import math
-from src.voice_control.client_mic import VoiceState
-from src.voice_control.audio_feedback import AudioFeedback
-from src.voice_control.state_feedback import (
+from src.spot.core.voice_state import VoiceState
+from src.spot.audio.chimes import AudioFeedback
+from src.spot.mic.state_feedback import (
     chime_for, led_color_for, LED_PERIOD_S, RingSpec, ring_for, ring_toward,
     sweep_frames, breathe_frames,
 )

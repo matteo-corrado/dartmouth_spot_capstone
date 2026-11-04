@@ -1,0 +1,1 @@
+"""Spot conversation package (placeholder)."""
