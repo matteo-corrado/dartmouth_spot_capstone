@@ -29,6 +29,8 @@ nav:
     - Voice Pipeline: architecture/voice-pipeline.md
     - Services: architecture/services.md
     - Pipeline Explainer: architecture/pipeline-explainer.md
+    - How Spot Works (plain English): architecture/how-spot-works.md
+    - System Diagram: architecture/system-diagram.md
   - Module Reference:
     - Voice Pipeline:
       - client_mic: modules/client-mic.md
