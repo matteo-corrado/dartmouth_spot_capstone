@@ -36,10 +36,10 @@ Ctrl-C at any point after the features have started now runs cleanup exactly onc
 
 ## Operator action pending: reinstall the llama-server unit
 
-The installed `llama-server.service` still mounts `src/voice_control/grammar`, a symlink kept only for this reason. The unit in the repo already points at `src/spot/brain/grammar`. From the repo root, run:
+The repo unit no longer mounts any grammar folder: both the demo branch and the restructure send the grammar inside every request, and llama-server never reads a grammar file. Without the mount the service works the same on every branch (a mount of a folder missing on the checked-out branch makes Docker create a root-owned empty folder in the repo, which can block `git checkout`). From the repo root, run:
 
 ```bash
 sudo cp systemd/llama-server.service /etc/systemd/system/ && sudo systemctl daemon-reload
 ```
 
-Restart the service when it is safe to do so (this interrupts the brain, so not while the demo pipeline is live): `sudo systemctl restart llama-server`. After the new unit is running, the `src/voice_control/grammar` symlink can be deleted.
+Restart the service when it is safe to do so (this interrupts the brain, so not while the demo pipeline is live): `sudo systemctl restart llama-server`. After the new unit is running, nothing uses the `src/voice_control/grammar` symlink and it can be deleted.
