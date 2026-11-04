@@ -60,7 +60,7 @@ def test_mute_unmute_and_status(monkeypatch):
     st = _ctl._on_immediate("status", None)
     assert st["muted"] is True
     for k in ("state", "locked_deg", "floor_dbfs", "last_transcript",
-              "last_latency_s", "muted", "crowd", "voiceprint",
+              "last_latency_s", "muted", "crowd", "lock", "voiceprint",
               "voiceprint_enrolled", "voiceprint_last_sim", "voiceprint_ready"):
         assert k in st
     assert _ctl._on_immediate("unmute", None)["muted"] is False
@@ -98,3 +98,23 @@ def test_toggle():
     assert _ctl._toggle(True, None) is False
     assert _ctl._toggle(True, "on") is True
     assert _ctl._toggle(False, "off") is False
+
+
+def test_lock_toggle_off_drops_lock_and_skips_wake_lock(monkeypatch):
+    C = _loop.CONVERSATION
+    monkeypatch.setattr(C, "_lock_enabled", True)
+    monkeypatch.setattr(_loop, "_gaze_at_speaker", lambda deg: None)
+    monkeypatch.setattr(_loop, "_enter_state", lambda s: None)
+    monkeypatch.setattr(_cap, "_mic_usable", lambda: False)
+    monkeypatch.setattr(_cap, "_mic_speech_degs", lambda a, b: [90.0, 91.0])
+    C._lock.lock([90.0], 0.0)
+    C.on_queued("lock", "off")
+    assert C._lock_enabled is False and not C._lock.locked
+    assert _ctl._on_immediate("status", None)["lock"] is False
+    C.on_wake(1.0, wake_pcm=b"")
+    assert not C._lock.locked and C._status["locked_deg"] is None
+    C.on_queued("lock", None)  # no arg flips back on
+    assert C._lock_enabled is True
+    C.on_wake(2.0, wake_pcm=b"")
+    assert C._lock.locked
+    C._lock.release()

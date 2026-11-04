@@ -19,7 +19,7 @@ def _status_snapshot() -> dict:
     """Plain-attribute read; never blocks."""
     C = _loop.CONVERSATION
     s = dict(C._status)
-    s.update(muted=C._operator_muted, crowd=C._crowd_mode, voiceprint=C._voiceprint_mode,
+    s.update(muted=C._operator_muted, crowd=C._crowd_mode, lock=C._lock_enabled, voiceprint=C._voiceprint_mode,
              voiceprint_threshold=round(C._voiceprint_threshold, 3),
              voiceprint_enrolled=C._voice.enrolled,
              voiceprint_last_sim=(None if C._voice.last_sim is None else round(C._voice.last_sim, 3)),

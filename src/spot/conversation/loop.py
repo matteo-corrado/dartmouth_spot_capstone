@@ -370,6 +370,7 @@ class Conversation:
         # read/flip them without locks so a slow request can never delay a stop.
         self._operator_muted = False
         self._crowd_mode = False        # after each reply drop back to WAKE_WORD
+        self._lock_enabled = True       # spotctl lock off: a wake never locks direction
         self._voiceprint_mode = _tuning.voiceprint_enabled  # spotctl voiceprint on|off toggles live
         self._voiceprint_threshold = _tuning.voiceprint_threshold  # spotctl voiceprint threshold <x> sets live
         self._voiceprint_update_threshold = _tuning.voiceprint_update_threshold  # running-enrolment bar
@@ -414,9 +415,11 @@ class Conversation:
             self._voice.set_wake(wake_pcm)  # clears the previous speaker's enrolment
         except Exception as e:  # noqa: BLE001 - a voiceprint failure must never stop the loop
             print(f"[Voice] set_wake failed ({e}); direction-only")
-        degs = _cap._mic_speech_degs(t_wake - 1.5, t_wake)
+        degs = _cap._mic_speech_degs(t_wake - 1.5, t_wake) if self._lock_enabled else []
         ang = self._lock.lock(degs, now_m)
-        if ang is not None:
+        if not self._lock_enabled:
+            print("[Lock] lock off (spotctl lock) — accepting all directions")
+        elif ang is not None:
             print(f"[Lock] speaker at {ang:.0f} deg (mic), "
                   f"{_ul._body(ang):.0f} deg (body)")
             if _tuning.beam_steering and _cap._mic_usable():
@@ -618,6 +621,17 @@ class Conversation:
         elif name == "crowd":
             self._crowd_mode = _ctl._toggle(self._crowd_mode, arg)
             print(f"[Control] crowd mode {'ON' if self._crowd_mode else 'OFF'}")
+        elif name == "lock":
+            self._lock_enabled = _ctl._toggle(self._lock_enabled, arg)
+            if not self._lock_enabled and self._lock.locked:
+                # Drop the current lock now; stay in the conversation.
+                self._lock.release()
+                self._status["locked_deg"] = None
+                _gaze_at_speaker(None)
+                _ev.publish("speaker_released")
+                if _cap._mic_usable():
+                    _cap.CAPTURE._mic.set_fixed_beams(None)
+            print(f"[Control] direction lock {'ON' if self._lock_enabled else 'OFF'}")
         elif name == "voiceprint":
             try:
                 self._voiceprint_mode, self._voiceprint_threshold = _ctl.apply_voiceprint_arg(

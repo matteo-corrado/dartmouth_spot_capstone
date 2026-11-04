@@ -39,7 +39,7 @@ Integration interface (for client_mic.py)
   (a slow ``status`` or ``say`` must not be able to delay a ``stop``).
   ``status`` must not block: read plain attributes, take no long-held locks.
 - ``_on_queued(name: str, arg: str | None) -> None`` handles every name in
-  ``QUEUED`` (listen release reset say persona crowd voiceprint) on the main
+  ``QUEUED`` (listen release reset say persona crowd voiceprint lock) on the main
   thread, between frames.
 """
 from __future__ import annotations
@@ -67,11 +67,11 @@ class Command:
 _IMMEDIATE_NAMES = ("hush", "stop", "freeze", "sit", "stand", "stow",
                     "status", "mute", "unmute")
 _QUEUED_NAMES = ("listen", "release", "reset", "say", "persona", "crowd",
-                 "voiceprint")
+                 "voiceprint", "lock")
 _ARG_NAMES = ("say", "persona")
 # Toggles: an optional "on"/"off" arg is forwarded; no arg means flip.
 # voiceprint also takes "threshold <x>" (parsed by client_mic.apply_voiceprint_arg).
-_OPTIONAL_ARG_NAMES = ("crowd", "voiceprint")
+_OPTIONAL_ARG_NAMES = ("crowd", "voiceprint", "lock")
 
 COMMANDS: dict[str, Command] = {
     **{n: Command(n, True, n in _ARG_NAMES) for n in _IMMEDIATE_NAMES},
@@ -86,7 +86,7 @@ def parse_command(path: str, body: dict) -> tuple[str, Optional[str]]:
 
     Raises ValueError for an unknown name or a missing/empty arg. An arg sent
     to a command that takes none is ignored (returned as None), except the
-    toggles (crowd, voiceprint), which forward an optional on/off arg.
+    toggles (crowd, voiceprint, lock), which forward an optional on/off arg.
     """
     prefix = "/cmd/"
     if not path.startswith(prefix):

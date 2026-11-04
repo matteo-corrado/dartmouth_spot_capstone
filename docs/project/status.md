@@ -38,7 +38,7 @@ XVF3800 (ch0) -> frame VAD + noise floor + SNR gate -> wake KWS (4 phrases) -> s
 | TTS | ElevenLabs Flash primary, per-sentence Kokoro fallback (4.5 s budget, 60 s sticky). Mouth smoothing keys are **not wired** |
 | Signals | Ring: idle dim white, listen green sweep toward speaker, think amber breathing, speak blue, muted red; distinct chimes. Measured: no LED dead-centre front, 12 LEDs, about 1175 writes/s |
 | Dispatcher | Arm tucks before walking, walk cap 0.5 m/s, arm stows on stop/sit/shutdown; emotes (3 dances + 4 gestures) refused when moving, not standing, within 1.5 m of an obstacle, or without an obstacle grid; info results spoken |
-| Operator control | `scripts/spotctl` (hotkeys or one-shot over ssh): mute, unmute, listen, release, reset, hush, say, persona, stop, freeze, sit, stand, stow, status, crowd, voiceprint(flag) |
+| Operator control | `scripts/spotctl` (hotkeys or one-shot over ssh): mute, unmute, listen, release, reset, hush, say, persona, stop, freeze, sit, stand, stow, status, crowd, voiceprint(flag), lock(flag) |
 | Logs | `logs/utterances/`, `logs/conversations/`, `logs/latency-*.jsonl` (`--latency file`); `--no-transcript-log` for privacy |
 
 ---

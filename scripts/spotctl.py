@@ -9,8 +9,8 @@ Stdlib only.
   spotctl                      interactive hotkeys (raw tty), q quits
 
 Names: mute unmute listen release reset hush say persona stop freeze sit
-stand stow status crowd voiceprint   (say/persona need an arg;
-crowd/voiceprint take an optional on|off, no arg flips;
+stand stow status crowd voiceprint lock   (say/persona need an arg;
+crowd/voiceprint/lock take an optional on|off, no arg flips;
 `spotctl voiceprint threshold 0.3` sets the voiceprint threshold live, 0.0-0.9)
 """
 from __future__ import annotations
@@ -27,11 +27,11 @@ DEFAULT_PORT = 8770
 HOTKEYS = {
     "m": "mute", "u": "unmute", "l": "listen", "r": "release", "x": "reset",
     "h": "hush", "s": "stop", "f": "freeze", "w": "stow", "c": "crowd",
-    "v": "voiceprint", "?": "status",
+    "v": "voiceprint", "k": "lock", "?": "status",
 }
 
 HELP = ("keys: m mute  u unmute  l listen  r release  x reset  h hush  "
-        "s stop  f freeze  w stow  c crowd  v voiceprint  ? status  q quit")
+        "s stop  f freeze  w stow  c crowd  v voiceprint  k lock  ? status  q quit")
 
 
 class Unreachable(Exception):
