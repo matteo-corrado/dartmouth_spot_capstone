@@ -886,7 +886,7 @@ class Conversation:
                             print("[Listening...]")
 
         except KeyboardInterrupt:
-            print("\n\nShutting down...")
+            print("\n[Voice] Ctrl+C received, shutting down...")
         finally:
             if ctl_srv is not None:
                 try:

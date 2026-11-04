@@ -111,6 +111,11 @@ from src.spot.brain.factory import make_brain  # noqa: E402
 from src.spot.perception.factory import make_vision  # noqa: E402
 
 
+def _brain_backend() -> str:
+    """Name of the LLM server in use (llamacpp or ollama), for log lines."""
+    return os.environ.get("SPOT_BRAIN_BACKEND", "llamacpp").lower()
+
+
 def cleanup_spot():
     """Clean up Spot session and audio player on exit.
 
@@ -482,7 +487,8 @@ def _start_audio(args, tuning):
     # persistent OutputStream that all playback (TTS and beeps) flows through.
     # The mic-mute interlock in the audio callback reads its is_busy() state.
     print("\nInitializing audio player...")
-    _cap.CAPTURE._audio_player = AudioPlayer(output_device=args.output_device)
+    _cap.CAPTURE._audio_player = AudioPlayer(output_device=args.output_device,
+                                               debug=args.debug_audio)
 
     # Wire the audio feedback beeps to the shared player and apply volume.
     # ``beep.device`` is kept as a no-op attribute for backwards compat —
@@ -568,7 +574,7 @@ def _make_services(args, C):
     # Initialize LLM Brain
     brain = None
     if not args.no_brain:
-        print(f"\nInitializing LLM brain (model: {DEFAULT_MODEL})...")
+        print(f"\nInitializing LLM brain (backend: {_brain_backend()})...")
         brain = make_brain(DEFAULT_MODEL, cls=LLMBrain)
         # After a reboot llama-server answers 503 while loading: wait for it
         # instead of disabling the brain for the session.
@@ -576,7 +582,7 @@ def _make_services(args, C):
         ready = brain.wait_available(timeout_s=90.0)
         C._brain_ok = bool(ready)
         if ready:
-            print(f"[Brain] Ready — model: {DEFAULT_MODEL}")
+            print(f"[Brain] Ready — backend: {_brain_backend()}")
             # Warm the single brain model (gemma4:e4b handles both LLM and VLM).
             # Cold-start ~15-20s; surfaces model-load errors before the mic opens.
             rec = get_recorder()
@@ -725,7 +731,7 @@ def _start_conversation(args, C, audio, services, tuning):
         return None, utt_log
 
     brain, wake_detector = services.brain, audio.wake_detector
-    mode = f"LLM Brain ({DEFAULT_MODEL})" if brain else "Regex-only (legacy)"
+    mode = f"LLM Brain ({_brain_backend()})" if brain else "Regex-only (legacy)"
     if not audio.use_wake_word:
         ww_status = "OFF"
     elif wake_detector:
@@ -748,7 +754,7 @@ def _start_conversation(args, C, audio, services, tuning):
     # Safety condition C3: this is THE auto-arm gate. Mouth removed from
     # enabled.py (enable_mouth not registered) = never fold, never jaw.
     _auto = auto_arm_on(args, tuning)
-    print(f"[client_mic] automatic arm fold + mouth: {'on' if _auto else 'off'}")
+    print(f"[Spot] automatic arm fold + mouth: {'on' if _auto else 'off'}")
     if not args.dry_run:
         try:
             from src.spot.features.mouth.handlers import set_auto_arm

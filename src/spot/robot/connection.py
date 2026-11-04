@@ -91,19 +91,29 @@ class Connection:
             _r.NAV.cancel()
             _r.ARM.stow_now(self._session["cmd"], force=True)
             time.sleep(1.5)  # let the stow finish before sitting
+            _log("[Spot] Sitting...")
             try:
                 from bosdyn.client.robot_command import blocking_sit
                 blocking_sit(self._session["cmd"], timeout_sec=15)
             except Exception as e:
-                print(f"[Spot] Warning during sit: {e}")
+                _log(f"[Spot] Warning during sit: {e}")
+            _log("[Spot] Powering off motors...")
             try:
                 self._session["robot"].power_off(cut_immediately=False, timeout_sec=20)
             except Exception as e:
-                print(f"[Spot] Warning during power off: {e}")
+                _log(f"[Spot] Warning during power off: {e}")
             self._context.__exit__(None, None, None)
             self._session = None
             self._context = None
-            print("[Spot] Session closed.")
+            _log("[Spot] Session closed.")
+
+
+def _log(msg):
+    """Print that can never raise, so a closed stdout cannot skip sit/power off."""
+    try:
+        print(msg, flush=True)
+    except Exception:
+        pass
 
 
 def _conn():

@@ -135,7 +135,8 @@ class AudioPlayer:
     # perceivable latency for the recovery path.
     _CHUNK_MS = 100
 
-    def __init__(self, output_device=None, sample_rate: Optional[int] = None):
+    def __init__(self, output_device=None, sample_rate: Optional[int] = None,
+                 debug: bool = False):
         """Open the output stream and start the worker + watchdog threads.
 
         Args:
@@ -163,6 +164,7 @@ class AudioPlayer:
             except Exception:
                 sample_rate = 48000  # safe default for most modern devices
         self.sample_rate = sample_rate
+        self._debug = debug  # per-task playback lines (--debug-audio)
 
         # Try mono first; fall back to stereo by duplicating the mono signal
         # if the device refuses mono. The Spot speaker (UACDemoV1.0) accepts
@@ -509,7 +511,8 @@ class AudioPlayer:
             except queue.Empty:
                 continue
 
-            print(f"[DBG-worker] picked task={task.label} qsize={self._queue.qsize()} inflight={self._inflight}")
+            if self._debug:
+                print(f"[Player] picked task={task.label} qsize={self._queue.qsize()} inflight={self._inflight}")
             played_first_chunk = False
             try:
                 with self._inflight_lock:
@@ -519,7 +522,7 @@ class AudioPlayer:
                 _safe_cb(task.on_render_start)
                 samples, rate = self._materialize(task)
                 if samples is None:
-                    print(f"[DBG-worker] {task.label}: samples=None (render failed) -> skip")
+                    print(f"[Player] {task.label}: render failed, skipped")
                     _safe_cb(task.on_render_end)
                     continue
                 _safe_cb(task.on_render_end)
@@ -538,7 +541,8 @@ class AudioPlayer:
                         played_first_chunk = True
                     self._stream.write(samples[offset:offset + chunk_samples])
                     n_chunks_written += 1
-                print(f"[DBG-worker] {task.label}: wrote {n_chunks_written} chunks ({n_chunks_written * self._CHUNK_MS}ms), stop={stop.is_set()}, samples_total={len(samples)}")
+                if self._debug:
+                    print(f"[Player] {task.label}: wrote {n_chunks_written} chunks ({n_chunks_written * self._CHUNK_MS}ms), stop={stop.is_set()}, samples_total={len(samples)}")
                 _safe_cb(task.on_play_end)
             except Exception as e:
                 print(f"[Player] {task.label}: playback error: {e}")
