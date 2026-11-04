@@ -89,7 +89,7 @@ _DESCRIBE_ACKS = (
 #   halt (final-review I1): nothing that moves the body or the arm.
 # - "state_only": see execute_on_spot.
 
-MIN_SPEECH_DURATION = 0.3  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
+MIN_SPEECH_DURATION = 0.1  # Reject utterances shorter than this (catches noise bursts, real words are 0.3s+)
 
 
 # ============================================================================

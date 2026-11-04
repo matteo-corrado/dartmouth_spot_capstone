@@ -27,7 +27,7 @@ Start with `scripts/wakespot`. Log to keep: the full terminal output, saved unde
 
 | # | Check | Pass |
 |---|---|---|
-| 1.1 | Startup | No audio overflow lines; `scripts/spotctl status` shows `safety_kws_ok: true` and `mic_ok: true`; `[Features]` lists all 8 features, no `FAILED`; startup order is safety/mic/wake first, then ASR/TTS/brain (expected, see notes) |
+| 1.1 | Startup | No audio overflow lines; `scripts/spotctl status` shows `safety_kws_ok: true` and `mic_ok: true`; no `[Features]` lines at all (it prints only on failure; a clean start is silent); startup order is safety/mic/wake first, then ASR/TTS/brain (expected, see notes) |
 | 1.2 | Stop, normal voice | "Hey Spot, walk forward", then "stop": motion ends within ~0.5 s |
 | 1.3 | Stop, quiet voice | Same with a quiet "stop" and a quiet "freeze" (the bug the 3-stream fix targets) |
 | 1.4 | Stop from 3 m | Same, speaking from ~3 m |
