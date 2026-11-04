@@ -15,8 +15,36 @@ EMOTE_STALE_GRACE_S = 4.0
 # ChoreographyStatusResponse statuses that mean "still going"
 _CHOREO_RUNNING = {1, 3, 4, 5}  # DANCING, PREPPING, WAITING_FOR_START_TIME, VALIDATING
 _CHOREO_COMPLETED = 2           # STATUS_COMPLETED_SEQUENCE
-NO_ROOM_LINE = "I need a little more room to dance."
 NO_GRID_LINE = "I can't check my surroundings right now, so I'll skip the dance."
+
+
+def _side(bearing_rad):
+    """Body-frame bearing (0 = ahead, +left) -> spoken direction, or None."""
+    import math
+    try:
+        d = math.degrees(float(bearing_rad))
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(d):
+        return None
+    d = ((d + 180.0) % 360.0) - 180.0
+    if abs(d) <= 45:
+        return "in front of me"
+    if abs(d) >= 135:
+        return "behind me"
+    return "on my left" if d > 0 else "on my right"
+
+
+def no_room_line(distance_m, bearing_rad, clearance_m):
+    """Spoken refusal: how close the nearest obstacle is and how much more
+    room the dance needs, in centimetres rounded to 10 (shortfall rounded up)."""
+    import math
+    away_cm = max(0, int(round(distance_m * 10)) * 10)
+    need_cm = max(10, int(math.ceil(round((clearance_m - distance_m) * 100, 6) / 10)) * 10)
+    side = _side(bearing_rad)
+    where = f" {side}" if side else ""
+    return (f"The closest obstacle is {away_cm} centimetres away{where}. "
+            f"I need about {need_cm} more centimetres of room to dance.")
 
 
 def _clearance_refusal(robot):
@@ -35,7 +63,7 @@ def _clearance_refusal(robot):
         return NO_GRID_LINE
     if hit is not None and hit.distance_m < clearance:
         print(f"[Spot] emote: obstacle at {hit.distance_m:.2f} m < {clearance} m")
-        return NO_ROOM_LINE
+        return no_room_line(hit.distance_m, getattr(hit, "bearing_rad", None), clearance)
     return None
 
 

@@ -115,11 +115,12 @@ def test_dance_again_never_repeats(env):
 
 def test_refuses_when_crowded(env, monkeypatch):
     monkeypatch.setattr(oq, "clearance_scan",
-                        lambda r, max_radius_m: (True, SimpleNamespace(distance_m=0.8)))
+                        lambda r, max_radius_m: (True, SimpleNamespace(distance_m=0.8, bearing_rad=1.5)))
     said = []
     assert dispatcher.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}},
                              speak=said.append) is False
-    assert said == ["I need a little more room to dance."]
+    assert said == ["The closest obstacle is 80 centimetres away on my left. "
+                    "I need about 20 more centimetres of room to dance."]
     assert env.choreo.executed == [] and env.cmd.kinds() == []
 
 
@@ -148,7 +149,8 @@ def test_rechecks_clearance_right_before_dancing(env, monkeypatch):
                              speak=said.append) is True
     _join()
     assert env.choreo.executed == []           # someone stepped in: no dance
-    assert said == ["I need a little more room to dance."]
+    assert said == ["The closest obstacle is 50 centimetres away. "
+                    "I need about 50 more centimetres of room to dance."]
     assert env.cmd.kinds() == ["gripper", "arm_stow", "arm_joints"]  # arm put back
 
 
@@ -298,3 +300,12 @@ def test_last_routine_only_set_when_routine_started(env, monkeypatch):
     assert dispatcher.dispatch_intent({"intent": "emote", "params": {"name": "tail_wag"}}) is True
     _join()
     assert env.choreo.executed == [] and dance_h._last_routine is None
+
+
+def test_no_room_line_directions_and_rounding():
+    from src.spot.features.dance.handlers import no_room_line
+    assert no_room_line(0.93, 0.0, 1.0) == ("The closest obstacle is 90 centimetres away in front of me. "
+                                            "I need about 10 more centimetres of room to dance.")
+    assert no_room_line(0.42, -1.6, 1.0).startswith("The closest obstacle is 40 centimetres away on my right.")
+    assert "behind me" in no_room_line(0.6, 3.1, 1.0)
+    assert "about 60 more" in no_room_line(0.42, 0.0, 1.0)  # 58 cm short rounds up
